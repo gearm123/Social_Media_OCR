@@ -1,0 +1,90 @@
+[
+  {
+    "type": "status_bar",
+    "bbox": [
+      0,
+      104,
+      1307,
+      172
+    ],
+    "text_th": "",
+    "text_en": ""
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      439,
+      199,
+      874,
+      381
+    ],
+    "text_th": "พี่แคล้ว รุนเพ.. ซังวนเมื่อ 2 ชั่วโมง... โทรอีกครั",
+    "text_en": "P'Klaew Runphe.. called after 2 hours... called again."
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      640,
+      474,
+      899,
+      564
+    ],
+    "text_th": "ARAIBCOSE",
+    "text_en": "ARAIBCOSE"
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      708,
+      618,
+      836,
+      662
+    ],
+    "text_th": "โทรอีกร์",
+    "text_en": "Call again"
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      543,
+      839,
+      1035,
+      1079
+    ],
+    "text_th": "https:/ qift.truenoisy.on campaian/? V=019b3edse617757a9 8A0.42 e1405383a8e",
+    "text_en": "https:/ qift.truenoisy.on campaian/? V=019b3edse617757a9 8A0.42 e1405383a8e"
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      542,
+      1136,
+      730,
+      1166
+    ],
+    "text_th": "RGiKL L0 นD",
+    "text_en": "RGiKL L0.D"
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      340,
+      1215,
+      855,
+      1449
+    ],
+    "text_th": "https:W gift.truemoney.com/ cardoaian/? v=019b3f3ddd0671a790 6822f13ac236as",
+    "text_en": "https:W gift.truemoney.com/ cardoaian/? v=019b3f3ddd0671a790 6822f13ac236as"
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      344,
+      1610,
+      899,
+      1741
+    ],
+    "text_th": "MEIUSAMIRELMMODCO ทLURCรLUHNC CRLURLUHOISIUMCLNUCNM",
+    "text_en": "MEIUSAMIRELMMODCO ĞLURCġLUHNC CRLRULHOISIUMCLNUCNM"
+  }
+]

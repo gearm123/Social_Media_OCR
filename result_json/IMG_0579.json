@@ -1,0 +1,90 @@
+[
+  {
+    "type": "status_bar",
+    "bbox": [
+      0,
+      21,
+      1307,
+      113
+    ],
+    "text_th": "ETCIOA OOMDLH-ION",
+    "text_en": "ETCIOA OOMDLH-ION"
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      822,
+      166,
+      880,
+      231
+    ],
+    "text_th": "",
+    "text_en": ""
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      207,
+      305,
+      836,
+      488
+    ],
+    "text_th": "nuop MISCEGNM DEOA",
+    "text_en": "nuop MISCEGNM DEOA"
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      297,
+      738,
+      327,
+      771
+    ],
+    "text_th": "4",
+    "text_en": "4"
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      394,
+      836,
+      887,
+      939
+    ],
+    "text_th": "ใันก้อปล่อยให้เสันป่ระส เป็นสมอ ตบตายเถอร",
+    "text_en": "Whoever lets the serpent be an anchor, slaps him to death."
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      680,
+      1115,
+      878,
+      1164
+    ],
+    "text_th": "แคปเหนไร2",
+    "text_en": "What's happening in Cap 2?"
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      512,
+      1267,
+      637,
+      1316
+    ],
+    "text_th": "TLLUCR",
+    "text_en": "TLLUCR"
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      179,
+      1365,
+      228,
+      1411
+    ],
+    "text_th": "OD",
+    "text_en": "OF"
+  }
+]
