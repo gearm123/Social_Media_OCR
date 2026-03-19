@@ -1,0 +1,98 @@
+[
+  {
+    "type": "status_bar",
+    "bbox": [
+      0,
+      140,
+      1307,
+      314
+    ],
+    "text_th": "",
+    "text_en": "",
+    "speaker_text_th": "รรAl.. ปีไง.",
+    "speaker_text_en": "School Al.. What year?",
+    "speaker_bbox": [
+      355,
+      140,
+      661,
+      211
+    ]
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      519,
+      355,
+      877,
+      513
+    ],
+    "text_th": "ไปตึงทาเรือย่อน สก่ายไมเห้่อเยิ่งจักบ",
+    "text_en": "Go to the yacht I'm not too proud."
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      234,
+      563,
+      462,
+      709
+    ],
+    "text_th": "มีคำเรือนล้วา ใลไปส่ง",
+    "text_en": "I've got word for you. I'm going to send it."
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      573,
+      784,
+      847,
+      888
+    ],
+    "text_th": "ปมิปเจนนสง แไป",
+    "text_en": "Pamip Jennasong"
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      202,
+      925,
+      572,
+      1173
+    ],
+    "text_th": "ฮอคแสาหรบอก ศิหาให่ อมหัากชปต้องไท",
+    "text_en": "Hawk Sahara tells Siha Hai that the leader must be free."
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      588,
+      1244,
+      832,
+      1312
+    ],
+    "text_th": "ขอบคุณหลายๆ",
+    "text_en": "Many thanks"
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      418,
+      1328,
+      553,
+      1362
+    ],
+    "text_th": "เ0า 08:0A",
+    "text_en": "08:0A"
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      550,
+      1410,
+      821,
+      1482
+    ],
+    "text_th": "CHMLROGEOS",
+    "text_en": "CHMLROGEOS"
+  }
+]

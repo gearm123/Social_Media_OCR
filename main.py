@@ -25,7 +25,7 @@ def main():
             f"\n[PIPELINE] Image {index}/{total_images}: "
             f"{Path(path).name}"
         )
-        overlay, meta = process_image(str(path), craft_net)
+        overlay, meta, render_context = process_image(str(path), craft_net)
 
         out = os.path.join(OUTPUT_DIR, path.name)
         cv2.imwrite(out, overlay)
@@ -38,7 +38,11 @@ def main():
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
 
-        rendered_chat = render_chat(meta)
+        rendered_chat = render_chat(
+            meta,
+            speaker_text=render_context.get("speaker_text_en") if render_context else "",
+            profile_image=render_context.get("profile_image") if render_context else None,
+        )
         render_path = os.path.join(
             RENDER_DIR,
             Path(path.name).stem + "_chat.png"

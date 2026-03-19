@@ -44,34 +44,123 @@ def extract_region(img, rect, idx):
     return crop
 
 # --------------------------------------------------
-# OCR (UNCHANGED)
+# OCR
 # --------------------------------------------------
+
+def _normalize_ocr_text(text):
+    if not text:
+        return ""
+    return " ".join(str(text).split())
+
+def _region_scale(region):
+    h, w = region.shape[:2]
+    short_side = min(h, w)
+    if short_side <= 22:
+        return 2.4
+    if short_side <= 32:
+        return 2.1
+    if short_side <= 48:
+        return 1.8
+    return 1.55
+
+def _prepare_base_region(region):
+    scale = _region_scale(region)
+    prepared = cv2.resize(
+        region,
+        None,
+        fx=scale,
+        fy=scale,
+        interpolation=cv2.INTER_CUBIC
+    )
+
+    # Mild denoising + sharpening improves cracked-screen captures
+    prepared = cv2.bilateralFilter(prepared, 5, 30, 30)
+    sharpened = cv2.addWeighted(prepared, 1.18, cv2.GaussianBlur(prepared, (0, 0), 1.1), -0.18, 0)
+    return sharpened
+
+def _prepare_fallback_variants(region):
+    base = _prepare_base_region(region)
+    gray = cv2.cvtColor(base, cv2.COLOR_BGR2GRAY)
+
+    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8)).apply(gray)
+    clahe_bgr = cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR)
+
+    thresh = cv2.adaptiveThreshold(
+        clahe,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        11,
+    )
+    thresh_bgr = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+
+    variants = [("base", base)]
+
+    # Only pay for fallback passes when the crop is small or visually noisy.
+    h, w = region.shape[:2]
+    if min(h, w) <= 56 or gray.std() < 42:
+        variants.append(("clahe", clahe_bgr))
+    if min(h, w) <= 44 or gray.std() < 30:
+        variants.append(("thresh", thresh_bgr))
+
+    return variants
+
+def _extract_prediction(result):
+    if not result:
+        return "", 0.0
+
+    item = result[0]
+    if not isinstance(item, dict):
+        return "", 0.0
+
+    texts = item.get("rec_texts") or []
+    scores = item.get("rec_scores") or []
+
+    cleaned_texts = [_normalize_ocr_text(t) for t in texts if isinstance(t, str) and t.strip()]
+    if not cleaned_texts:
+        return "", 0.0
+
+    if isinstance(scores, (list, tuple)) and scores:
+        valid_scores = [float(s) for s in scores[:len(cleaned_texts)] if s is not None]
+        avg_score = sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
+    else:
+        avg_score = 0.0
+
+    return " ".join(cleaned_texts), avg_score
+
+def _ocr_quality_score(text, confidence):
+    if not text:
+        return -1.0
+
+    compact = text.replace(" ", "")
+    digit_bonus = 0.05 if any(ch.isdigit() for ch in compact) else 0.0
+    thai_bonus = 0.08 if any("\u0e00" <= ch <= "\u0e7f" for ch in compact) else 0.0
+    length_bonus = min(len(compact), 20) * 0.01
+    punctuation_penalty = 0.06 if len(compact) <= 2 and not any(ch.isdigit() for ch in compact) else 0.0
+    return confidence + digit_bonus + thai_bonus + length_bonus - punctuation_penalty
 
 def run_ocr_on_region(region):
     if region.size == 0:
         return ""
 
-    region = cv2.resize(
-        region,
-        None,
-        fx=1.6,
-        fy=1.6,
-        interpolation=cv2.INTER_CUBIC
-    )
+    best_text = ""
+    best_quality = -1.0
 
-    result = ocr_engine.predict(region)
+    for idx, (_, prepared) in enumerate(_prepare_fallback_variants(region)):
+        result = ocr_engine.predict(prepared)
+        text, confidence = _extract_prediction(result)
+        quality = _ocr_quality_score(text, confidence)
 
-    if not result:
-        return ""
+        if quality > best_quality:
+            best_quality = quality
+            best_text = text
 
-    r = result[0]
+        # Stop early when the first pass is already solid.
+        if idx == 0 and confidence >= 0.84 and len(text.replace(" ", "")) >= 4:
+            return text
 
-    if isinstance(r, dict) and "rec_texts" in r:
-        return " ".join(
-            [t for t in r["rec_texts"] if isinstance(t, str) and t.strip()]
-        )
-
-    return ""
+    return best_text
 
 # --------------------------------------------------
 # OCR + TRANSLATION LOOP (ONLY PLACE WE ADD LOGIC)
