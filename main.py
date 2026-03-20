@@ -11,17 +11,99 @@ import numpy as np
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from config import INPUT_DIR, OUTPUT_DIR, JSON_DIR, RENDER_DIR, load_craft
+from config import INPUT_DIR, OUTPUT_DIR, JSON_DIR, RENDER_DIR, load_craft, ocr_engine
 from ocr_translate import (
     ocr_and_translate_full_image, ocr_and_translate_region,
     translate_conversation_block, refine_and_translate_with_gemini,
     _set_source_language,
 )
-from pipeline import finalize_image_layout, prepare_image_crop_info, run_craft_and_group_on_combined
+from pipeline import prepare_image_crop_info, run_craft_and_group_on_combined
 from grouping import classify_object_type
 from chat_renderer import render_chat
 
 PAGE_GAP_PX = 48
+
+# UI strings that appear in phone status bars but are NOT contact names
+_STATUS_BAR_NOISE = {
+    "am", "pm", "lte", "5g", "4g", "3g", "wifi", "ok",
+    "back", "call", "video", "mute", "search",
+}
+
+
+def _extract_contact_name(info):
+    """OCR the status bar of an image and extract the contact/chat name.
+
+    The contact name is usually the largest, most central text in the header bar.
+    We filter out obvious phone-UI noise (time, signal, battery) and return the
+    most likely name string.
+    """
+    status_bar_info = info.get("status_bar_info")
+    if not status_bar_info:
+        return ""
+    bbox = status_bar_info.get("bbox")
+    if not bbox:
+        return ""
+    img = info["img"]
+    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+    region = img[y1:y2, x1:x2]
+    if region.size == 0:
+        return ""
+
+    try:
+        detections = ocr_engine.predict(region)
+    except Exception as e:
+        print(f"[NAME] Status bar OCR failed: {e}")
+        return ""
+
+    if not detections:
+        return ""
+
+    img_w = x2 - x1
+    img_cx = img_w / 2
+
+    # Score each detection: prefer central, longer, non-noise words
+    candidates = []
+    for det in detections:
+        text = det.get("text", "").strip()
+        if not text or len(text) < 2:
+            continue
+        # Skip pure numbers (time, battery %)
+        if text.replace(":", "").replace("%", "").replace(".", "").isdigit():
+            continue
+        # Skip known UI noise
+        if text.lower() in _STATUS_BAR_NOISE:
+            continue
+        # Skip very short all-caps (signal indicators like "LTE", "5G")
+        if len(text) <= 3 and text.isupper():
+            continue
+
+        bx1, _, bx2, _ = det["bbox"]
+        det_cx = (bx1 + bx2) / 2
+        # Centrality score: how close is the detection to the horizontal centre
+        centrality = 1.0 - abs(det_cx - img_cx) / max(img_cx, 1)
+        length_score = min(len(text) / 20, 1.0)
+        score = centrality * 0.7 + length_score * 0.3
+        candidates.append((score, det_cx, text))
+
+    if not candidates:
+        return ""
+
+    # Sort by score desc, group horizontally-adjacent words into a name phrase
+    candidates.sort(key=lambda c: -c[0])
+    # Take the top-scored word as the anchor, then collect adjacent words
+    best = candidates[0]
+    name_words = [best[2]]
+    for score, cx, text in candidates[1:]:
+        if abs(cx - best[1]) < img_w * 0.35:   # within 35% of image width
+            name_words.append(text)
+        if len(name_words) >= 4:
+            break
+
+    # Sort collected words by x position for correct reading order
+    top_dets = [(d[1], d[2]) for d in candidates if d[2] in name_words]
+    top_dets.sort(key=lambda t: t[0])
+    contact_name = " ".join(t[1] for t in top_dets)
+    return contact_name
 
 
 def combine_images_vertically(images, background=248):
@@ -216,19 +298,32 @@ def main():
         print("[GEMINI] To enable: $env:GEMINI_API_KEY = 'your_key'  (or set it permanently below)")
         print("[GEMINI] Permanent:  [System.Environment]::SetEnvironmentVariable('GEMINI_API_KEY','your_key','User')")
 
+    t_craft_load = time.time()
     craft_net = load_craft()
+    print(f"[TIMER] CRAFT model loaded in {time.time()-t_craft_load:.1f}s")
 
     images = sorted(Path(INPUT_DIR).glob("*"))
     print(f"[INPUT] Found {len(images)} images")
 
     # ── Step 1: read images + detect artifacts (no CRAFT yet) ─────────────
-    print("\n[STEP] Reading images and detecting artifacts...")
+    t1 = time.time()
+    print("\n[STEP 1/7] Reading images and detecting artifacts...")
     crop_infos = []
     for path in images:
         print(f"  {Path(path).name}")
         crop_infos.append(prepare_image_crop_info(str(path)))
+    print(f"[TIMER] Step 1 done in {time.time()-t1:.1f}s")
+
+    # Extract contact name from the first image's status bar
+    contact_name = _extract_contact_name(crop_infos[0]) if crop_infos else ""
+    if contact_name:
+        print(f"[NAME] Contact name detected: '{contact_name}'")
+    else:
+        print("[NAME] Contact name not detected — will use 'Person A'")
 
     # ── Step 2: concatenate cropped images ────────────────────────────────
+    t2 = time.time()
+    print("\n[STEP 2/7] Building combined image...")
     combined_img, page_ranges = build_combined_image(crop_infos)
     if combined_img is None:
         print("[ERROR] No images to process.")
@@ -236,34 +331,63 @@ def main():
 
     combined_ocr_path = os.path.join(OUTPUT_DIR, "combined_ocr_input.png")
     cv2.imwrite(combined_ocr_path, combined_img)
-    print(f"[OUTPUT] Saved OCR input canvas to {combined_ocr_path}")
-    print(f"[COMBINE] Combined image: {combined_img.shape[1]}x{combined_img.shape[0]} "
-          f"from {len(page_ranges)} pages")
+    print(f"[COMBINE] {combined_img.shape[1]}x{combined_img.shape[0]}px "
+          f"from {len(page_ranges)} pages → {combined_ocr_path}")
+    print(f"[TIMER] Step 2 done in {time.time()-t2:.1f}s")
 
     # ── Step 3: CRAFT + grouping on the combined image ────────────────────
+    t3 = time.time()
+    print("\n[STEP 3/7] CRAFT text detection + grouping on combined image...")
     all_objects = run_craft_and_group_on_combined(combined_img, craft_net, page_ranges)
     if not all_objects:
         print("[WARN] No objects detected in combined image.")
         return
+    print(f"[TIMER] Step 3 done in {time.time()-t3:.1f}s  "
+          f"→ {len(all_objects)} objects")
 
     # ── Step 4: Vision OCR on the combined image ──────────────────────────
+    t4 = time.time()
+    print("\n[STEP 4/7] Google Vision OCR on combined image...")
     all_objects = ocr_and_translate_full_image(
         all_objects, combined_img, progress_label="OCR combined"
     )
+    texts_found = sum(1 for o in all_objects if o.get("text_th"))
+    print(f"[TIMER] Step 4 done in {time.time()-t4:.1f}s  "
+          f"→ {texts_found}/{len(all_objects)} objects have text")
 
     # ── Step 5: fallback OCR for any missed objects ────────────────────────
+    t5 = time.time()
+    print("\n[STEP 5/7] Validating OCR (fallback for missed objects)...")
     validate_all_objects(all_objects, crop_infos, page_ranges)
+    print(f"[TIMER] Step 5 done in {time.time()-t5:.1f}s")
 
     # ── Step 6: classify sender/receiver for every object ─────────────────
+    t6 = time.time()
+    print("\n[STEP 6/7] Classifying sender / receiver / timestamp...")
     for obj in all_objects:
         if "type" not in obj:
             obj["type"] = classify_object_type(
                 combined_img, obj["bbox"],
                 obj.get("text_th", ""), obj.get("text_en", "")
             )
+    type_counts = {}
+    for obj in all_objects:
+        t = obj.get("type", "unknown")
+        type_counts[t] = type_counts.get(t, 0) + 1
+    print(f"[CLASSIFY] {dict(type_counts)}")
+    print(f"[TIMER] Step 6 done in {time.time()-t6:.1f}s")
 
     # ── Step 7: Gemini fix+translate in one shot ──────────────────────────
-    gemini_ok = refine_and_translate_with_gemini(all_objects)
+    t7 = time.time()
+    print("\n[STEP 7/7] Gemini OCR-fix + translation...")
+    gemini_ok, gemini_name = refine_and_translate_with_gemini(
+        all_objects, combined_img=combined_img, contact_name=contact_name
+    )
+    # Prefer the name Gemini inferred from conversation context over the
+    # OCR-extracted status-bar text (which may contain garbled UI text)
+    if gemini_name and gemini_name.lower() not in {"person a", "unknown", ""}:
+        contact_name = gemini_name
+        print(f"[NAME] Using Gemini-identified name: '{contact_name}'")
 
     if not gemini_ok:
         print("[TRANSLATE] Gemini unavailable — falling back to Google Translate")
@@ -281,64 +405,60 @@ def main():
             for obj, en in zip(gaps, gap_en):
                 if en:
                     obj["text_en"] = en
+    translated = sum(1 for o in all_objects if o.get("text_en"))
+    print(f"[TIMER] Step 7 done in {time.time()-t7:.1f}s  "
+          f"→ {translated}/{len(all_objects)} objects translated")
 
-    # ── Step 8: per-image overlays (bounding boxes on originals) + JSON ──────
-    all_meta = []   # collects result dicts for ALL objects in conversation order
-
-    for page_index, info in enumerate(crop_infos):
-        image_start = time.time()
-        path = Path(info["path"])
-        start_y, _, _, crop_top, _, _ = page_ranges[page_index]
-
-        # Filter objects belonging to this page
-        page_objects = [obj for obj in all_objects if obj.get("page_index") == page_index]
-
-        # Map bboxes from combined coords to original image coords for overlay drawing
-        orig_objects = []
-        for obj in page_objects:
-            cx1, cy1, cx2, cy2 = obj["bbox"]
-            orig_obj = dict(obj)
-            orig_obj["bbox"] = (cx1, cy1 - start_y + crop_top, cx2, cy2 - start_y + crop_top)
-            orig_objects.append(orig_obj)
-
-        virtual_layout = {
-            "path": str(path),
-            "img": info["img"],
-            "objects": orig_objects,
-            "status_bar_info": info["status_bar_info"],
-            "bottom_artifact_info": info["bottom_artifact_info"],
-            "status_bar_result": None,
-        }
-        overlay, meta, _ = finalize_image_layout(virtual_layout)
-        all_meta.extend(meta)   # accumulate in conversation order
-
-        out = os.path.join(OUTPUT_DIR, path.name)
-        cv2.imwrite(out, overlay)
-
-        json_path = os.path.join(JSON_DIR, path.stem + ".json")
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2, ensure_ascii=False)
-
-        image_runtime = time.time() - image_start
-        print(f"[OUTPUT] Saved overlay for {path.name} in {image_runtime:.2f}s")
+    # ── Step 8: collect metadata for all objects in conversation order ────────
+    t8 = time.time()
+    print("\n[STEP 8/8] Building conversation metadata...")
+    all_meta = []
+    for obj in all_objects:
+        typ = obj.get("type", "receiver")
+        if typ in {"status_bar", "bottom_artifact"}:
+            continue
+        all_meta.append({
+            "type": typ,
+            "bbox": [int(v) for v in obj["bbox"]],
+            "text_th": obj.get("text_th", ""),
+            "text_en": obj.get("text_en", ""),
+            "ocr_source": obj.get("ocr_source", ""),
+            "ocr_span_count": int(obj.get("ocr_span_count", 0) or 0),
+            "ocr_validated": bool(obj.get("ocr_validated", False)),
+            "ocr_trust_score": float(obj.get("ocr_trust_score", 0.0) or 0.0),
+            "ocr_low_confidence": bool(obj.get("ocr_low_confidence", False)),
+            "ocr_reasons": list(obj.get("ocr_reasons", []) or []),
+        })
+    print(f"[TIMER] Step 8 done in {time.time()-t8:.3f}s  "
+          f"→ {len(all_meta)} conversation items")
 
     # ── Step 9: single unified chat render for the full conversation ──────────
+    t9 = time.time()
+    print("\n[STEP 9] Rendering translated conversation...")
+
     # Stamp conversation order so render_chat doesn't re-sort by bbox y
-    # (per-image bbox coords overlap across pages and would scramble order).
     for i, item in enumerate(all_meta):
         item["order"] = i
 
-    combined_json_path = os.path.join(JSON_DIR, "combined_chat.json")
+    combined_json_path = os.path.join(JSON_DIR, "translated_conversation.json")
     with open(combined_json_path, "w", encoding="utf-8") as f:
         json.dump(all_meta, f, indent=2, ensure_ascii=False)
 
-    combined_chat = render_chat(all_meta)
-    combined_path = os.path.join(RENDER_DIR, "combined_chat.png")
+    combined_chat = render_chat(all_meta, contact_name=contact_name or "Person A")
+    combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
     cv2.imwrite(combined_path, combined_chat)
-    print(f"[OUTPUT] Saved combined conversation chat to {combined_path}")
+    print(f"[OUTPUT] Translated conversation → {combined_path}")
+    print(f"[TIMER] Step 9 done in {time.time()-t9:.1f}s")
 
     total_runtime = time.time() - pipeline_start
-    print(f"\n[PIPELINE] Finished processing all images in {total_runtime:.2f}s")
+    print(f"""
+╔══════════════════════════════════════════╗
+  PIPELINE SUMMARY
+  Images processed : {len(images)}
+  Objects detected : {len(all_objects)}
+  Objects translated: {sum(1 for o in all_meta if o.get('text_en'))}
+  Total runtime    : {total_runtime:.1f}s
+╚══════════════════════════════════════════╝""")
 
 if __name__ == "__main__":
     main()

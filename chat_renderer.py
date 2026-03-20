@@ -124,6 +124,42 @@ def draw_speaker_title(img, text, width, y):
     return y + text_h + 12
 
 
+def draw_chat_header(img, contact_name, width):
+    """Draw a Messenger-style header bar with the contact name at the top."""
+    header_h = 56
+    header_bg  = (75, 90, 200)   # deep blue-indigo (BGR)
+    avatar_bg  = (210, 190, 170)
+    avatar_acc = (120, 90, 70)
+
+    cv2.rectangle(img, (0, 0), (width, header_h), header_bg, -1)
+
+    # Avatar circle on the left
+    av_cx, av_cy = 36, header_h // 2
+    draw_avatar(img, av_cx, av_cy, avatar_bg, avatar_acc)
+
+    # Contact name
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.72
+    thickness = 2
+    (tw, th), _ = cv2.getTextSize(contact_name, font, scale, thickness)
+    tx = av_cx + 26
+    ty = (header_h + th) // 2
+    cv2.putText(img, contact_name, (tx, ty), font, scale,
+                (255, 255, 255), thickness, cv2.LINE_AA)
+    return header_h
+
+
+def draw_name_label(img, name, x, y):
+    """Draw a small name label just above a receiver bubble."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.40
+    thickness = 1
+    color = (90, 90, 90)
+    (tw, th), _ = cv2.getTextSize(name, font, scale, thickness)
+    cv2.putText(img, name, (x, y + th), font, scale, color, thickness, cv2.LINE_AA)
+    return y + th + 4
+
+
 def draw_timestamp(img, text, width, y):
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.47
@@ -208,19 +244,35 @@ def estimate_canvas_height(objects):
 # RENDER CHAT
 # --------------------------------------------------
 
-def render_chat(objects, width=600, speaker_text="", profile_image=None):
+def render_chat(objects, width=600, speaker_text="", profile_image=None,
+                contact_name=""):
     objects = sort_objects(objects)
+
+    # Reserve space for Messenger-style header if we have a contact name
+    header_h = 56 if contact_name else 0
     speaker_title_height = 26 if speaker_text else 0
     top_gap = 12 if speaker_text else 0
-    canvas_height = estimate_canvas_height(objects) + speaker_title_height + top_gap
+    canvas_height = (
+        estimate_canvas_height(objects)
+        + header_h
+        + speaker_title_height
+        + top_gap
+        + 60  # extra padding for name labels above receiver bubbles
+    )
 
     canvas = np.ones((canvas_height, width, 3), dtype=np.uint8) * 248
 
-    y = 18
+    # Draw the header bar (returns header height so we start content below it)
+    y = 0
+    if contact_name:
+        y = draw_chat_header(canvas, contact_name, width)
+        y += 12  # breathing room below header
+
     if speaker_text:
         y = draw_speaker_title(canvas, speaker_text, width, y)
 
     rendered_count = 0
+    prev_type = None  # track previous bubble type to show name label only on first receiver run
 
     for obj in objects:
         text_en = (obj.get("text_en") or "").strip()
@@ -242,6 +294,7 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None):
 
         if obj_type == "timestamp":
             y = draw_timestamp(canvas, text, width, y)
+            prev_type = "timestamp"
 
         elif obj_type == "sender":
             y = draw_bubble(
@@ -253,8 +306,14 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None):
                 align="right",
                 bubble_color=(240, 73, 255)
             )
+            prev_type = "sender"
 
         else:  # receiver
+            # Show name label above the first bubble in each consecutive receiver run
+            if contact_name and prev_type != "receiver":
+                avatar_space = 52 + 12  # matches draw_bubble left indent
+                y = draw_name_label(canvas, contact_name, 20 + avatar_space, y)
+
             y = draw_bubble(
                 canvas,
                 text,
@@ -265,18 +324,19 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None):
                 bubble_color=(235, 235, 235),
                 profile_image=profile_image,
             )
+            prev_type = "receiver"
 
     if rendered_count == 0:
         cv2.putText(
             canvas,
             "No translated text available",
-            (20, 50),
+            (20, header_h + 50),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (80, 80, 80),
             2
         )
-        y = 80
+        y = header_h + 80
 
     final_height = min(max(y + 20, 120), canvas.shape[0])
     return canvas[:final_height, :]

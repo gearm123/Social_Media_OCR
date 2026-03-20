@@ -5,7 +5,7 @@ import sys
 import re
 from difflib import SequenceMatcher
 import numpy as np
-from config import DEBUG_DIR, ocr_engine, translator, translation_cache
+from config import DEBUG_DIR, OUTPUT_DIR, ocr_engine, translator, translation_cache
 
 # --------------------------------------------------
 # SOURCE LANGUAGE  (auto-detected from Vision OCR)
@@ -111,8 +111,12 @@ def _gemini_discover_model(api_key):
     return None, None
 
 
-def _gemini_generate(prompt):
-    """Call Gemini REST API directly — no SDK package required."""
+def _gemini_generate(prompt, image_b64=None):
+    """Call Gemini REST API directly (text-only or multimodal).
+
+    Pass *image_b64* (base64-encoded JPEG string) to send an image alongside
+    the text prompt — Gemini Vision will see the actual chat screenshot.
+    """
     global _gemini_api_key, _gemini_active_model
     import requests as _req
 
@@ -138,40 +142,74 @@ def _gemini_generate(prompt):
         f"https://generativelanguage.googleapis.com/{ver}/models/"
         f"{model}:generateContent?key={_gemini_api_key}"
     )
+
+    parts = []
+    if image_b64:
+        parts.append({"inlineData": {"mimeType": "image/jpeg", "data": image_b64}})
+    parts.append({"text": prompt})
+
     r = _req.post(
         url,
-        json={"contents": [{"parts": [{"text": prompt}]}]},
+        json={"contents": [{"parts": parts}]},
         timeout=120,
     )
     r.raise_for_status()
     candidates = r.json().get("candidates", [])
     if not candidates:
         return ""
-    parts = candidates[0].get("content", {}).get("parts", [])
-    return "".join(p.get("text", "") for p in parts)
+    resp_parts = candidates[0].get("content", {}).get("parts", [])
+    return "".join(p.get("text", "") for p in resp_parts)
 
 
-def refine_and_translate_with_gemini(objects):
-    """Send the full labelled conversation to Gemini in one call.
+def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""):
+    """Send the full labelled conversation to Gemini in one multimodal call.
 
-    Gemini receives every message with its sender/receiver role (from bounding-box
-    classification), fixes any OCR character errors using conversation context,
-    and returns a natural English translation — all in one step.
+    When *combined_img* is provided (the concatenated OCR canvas), it is sent
+    alongside the text so Gemini can see bubble positions, visual alignment, and
+    any text the OCR may have misread — using the image as ground truth.
 
-    Writes both corrected "text_th" and translated "text_en" back into each object.
-    Returns True if successful so the caller can skip Google Translate.
+    Writes translated "text_en" (and corrected "type" for timestamps) back into
+    each object.  Returns True on success so the caller can skip Google Translate.
     """
     if not objects:
-        return False
+        return False, ""
 
     # Trigger model discovery
     if _gemini_api_key is None:
         _gemini_generate("discovery")
     if not _gemini_active_model:
-        return False
+        return False, ""
+
+    # Encode combined image for multimodal input (downscale if very large)
+    image_b64 = None
+    if combined_img is not None:
+        try:
+            import base64 as _b64
+            img_to_encode = combined_img
+            h, w = img_to_encode.shape[:2]
+            max_side = 1600
+            if max(h, w) > max_side:
+                scale = max_side / max(h, w)
+                img_to_encode = cv2.resize(
+                    img_to_encode,
+                    (int(w * scale), int(h * scale)),
+                    interpolation=cv2.INTER_AREA,
+                )
+            _, buf = cv2.imencode(".jpg", img_to_encode,
+                                  [cv2.IMWRITE_JPEG_QUALITY, 85])
+            image_b64 = _b64.b64encode(buf.tobytes()).decode("utf-8")
+            print(f"[GEMINI] Image attached: "
+                  f"{img_to_encode.shape[1]}x{img_to_encode.shape[0]}px "
+                  f"({len(image_b64)//1024}KB base64)")
+        except Exception as e:
+            print(f"[GEMINI] Could not encode image, falling back to text-only: {e}")
+            image_b64 = None
+
+    # Determine display names for the two speakers
+    person_a_label = contact_name.strip() if contact_name.strip() else "Person A"
+    person_b_label = "Person B (you)"
 
     # Build slots — chat bubbles AND timestamps; skip only links and UI artifacts
-    # Each slot: (orig_idx, role_label, source_text)
     slots = []
     for i, obj in enumerate(objects):
         th = (obj.get("text_th") or "").strip()
@@ -183,13 +221,13 @@ def refine_and_translate_with_gemini(objects):
         if obj_type == "timestamp":
             role = "Timestamp"
         elif obj_type == "sender":
-            role = "Person B (you)"
+            role = person_b_label
         else:
-            role = "Person A (other)"
+            role = person_a_label
         slots.append((i, role, th))
 
     if not slots:
-        return False
+        return False, ""
 
     dialogue = "\n".join(
         f"{idx+1}. [{role}]: {th}"
@@ -197,34 +235,83 @@ def refine_and_translate_with_gemini(objects):
     )
 
     lang_name = _source_lang_name
+    person_a_desc = (
+        f"Person A is '{person_a_label}' (the other person in this chat)."
+        if person_a_label != "Person A"
+        else "Person A is the other person."
+    )
+    image_instruction = (
+        f"I am also attaching the actual screenshot of the chat so you can "
+        f"see the bubble layout, alignment (left = {person_a_label}, right = Person B/you), "
+        "and any text the OCR may have misread — use the image as ground truth "
+        "when the extracted text is ambiguous.\n\n"
+        if image_b64 else ""
+    )
     prompt = (
-        f"You are translating a {lang_name} chat conversation extracted via OCR "
-        f"(OCR may have misread some {lang_name} characters).\n"
-        "Person A is the other person; Person B is the phone owner.\n\n"
-        "TASK: Translate every numbered line into English and output them in order.\n\n"
-        "STRICT RULES:\n"
-        f"- Output ONLY English. Do NOT include any {lang_name} characters.\n"
-        "- Use conversation context to fix OCR mistakes before translating.\n"
-        "- Keep the same numbering and speaker labels exactly.\n"
-        "- [Timestamp] lines: output the time/date as readable English (e.g. 'Sun. 11:50'). "
-        "  Keep them in their original position.\n"
-        "- Do NOT add explanations, notes, asterisks, or extra lines.\n\n"
-        "OUTPUT FORMAT (follow exactly):\n"
-        "1. [Person A (other)]: English text\n"
-        "2. [Person B (you)]: English text\n"
-        "3. [Timestamp]: Sun. 11:50\n\n"
-        "CONVERSATION TO TRANSLATE:\n"
+        f"Below is a real two-person chat conversation in {lang_name}, "
+        f"extracted by OCR (some characters may be misread).\n"
+        f"{image_instruction}"
+        f"{person_a_desc} Person B is the phone owner (you).\n\n"
+        "WORK THROUGH THESE STEPS IN ORDER:\n\n"
+        "STEP 1 — Read the entire conversation (and examine the image if provided).\n"
+        "Write these two lines:\n"
+        "NAME: [Person A's real name in English/romanized — infer from context or the image; "
+        "if truly unknown write 'Person A']\n"
+        "CONTEXT: [one sentence describing the topic, tone, and relationship]\n\n"
+        "STEP 2 — For each numbered entry:\n"
+        "  a) Translate it in isolation.\n"
+        "  b) Cross-check against the CONTEXT, image, and surrounding messages — "
+        "revise if needed so the whole conversation flows naturally.\n"
+        "  c) Output only the final, validated English translation.\n\n"
+        "RULES:\n"
+        f"- Output ONLY English. Zero {lang_name} characters anywhere.\n"
+        "- NAME and CONTEXT lines must come first, before the numbered entries.\n"
+        "- Preserve speaker labels and numbering exactly as given in the conversation below.\n"
+        "- [Timestamp] lines: readable English (e.g. 'Sun. 11:50 AM').\n"
+        "- No asterisks, footnotes, or extra blank lines.\n\n"
+        "OUTPUT FORMAT:\n"
+        "NAME: Phee Klaew\n"
+        "CONTEXT: brief summary here\n"
+        f"1. [{person_a_label}]: natural English text\n"
+        "2. [Person B (you)]: natural English text\n"
+        "3. [Timestamp]: Sun. 11:50 AM\n\n"
+        f"CONVERSATION ({lang_name}, {len(slots)} entries):\n"
         f"{dialogue}"
     )
 
+    # Write debug input file before the API call so it's always available
+    _write_gemini_debug(prompt, None, slots)
+
     print(f"[GEMINI] Sending {len(slots)} items (messages + timestamps) for OCR fix + translation...")
+    t_gemini_start = time.time()
+
     for attempt in range(3):
         try:
-            raw = _gemini_generate(prompt)
+            t_attempt = time.time()
+            raw = _gemini_generate(prompt, image_b64=image_b64)
             if not raw:
                 raise ValueError("Empty response")
             raw = raw.strip()
-            print(f"[GEMINI] Response preview (first 300 chars): {raw[:300]}")
+            elapsed = time.time() - t_attempt
+            print(f"[GEMINI] Response received in {elapsed:.1f}s  ({len(raw)} chars)")
+
+            # Extract NAME and CONTEXT header lines
+            gemini_name = ""
+            context_line = ""
+            for _cl in raw.splitlines():
+                cl = _cl.strip()
+                if not gemini_name and cl.upper().startswith("NAME:"):
+                    gemini_name = cl[len("NAME:"):].strip()
+                if not context_line and cl.upper().startswith("CONTEXT:"):
+                    context_line = cl[len("CONTEXT:"):].strip()
+                if gemini_name and context_line:
+                    break
+            if gemini_name:
+                print(f"[GEMINI] Contact name identified: {gemini_name}")
+            if context_line:
+                print(f"[GEMINI] Conversation context: {context_line}")
+
+            print(f"[GEMINI] Response preview:\n{raw[:500]}")
 
             parsed = {}   # slot_num → (is_timestamp, text)
             lines = raw.splitlines()
@@ -273,8 +360,12 @@ def refine_and_translate_with_gemini(objects):
                     if is_ts:
                         objects[orig_idx]["type"] = "timestamp"
 
-            print(f"[GEMINI] Translated {len(parsed)}/{len(slots)} items")
-            return True
+            print(f"[GEMINI] Parsed {len(parsed)}/{len(slots)} items  "
+                  f"(total Gemini time: {time.time()-t_gemini_start:.1f}s)")
+
+            # Write debug file with the full round-trip
+            _write_gemini_debug(prompt, raw, slots, parsed, context_line)
+            return True, gemini_name
 
         except Exception as e:
             err = str(e)
@@ -282,12 +373,53 @@ def refine_and_translate_with_gemini(objects):
             suggested = int(delay_match.group(1)) if delay_match else 0
             wait = max(suggested + 5, 15)
             if attempt < 2:
-                print(f"[GEMINI] Error, waiting {wait}s before retry {attempt+2}/3: {err[:100]}")
+                print(f"[GEMINI] Attempt {attempt+1} failed ({err[:120]}), "
+                      f"retrying in {wait}s...")
                 time.sleep(wait)
             else:
-                print(f"[GEMINI] Failed after 3 attempts: {err[:200]}")
+                print(f"[GEMINI] All 3 attempts failed: {err[:200]}")
+                _write_gemini_debug(prompt, f"ERROR: {err}", slots)
 
-    return False
+    return False, ""
+
+
+def _write_gemini_debug(prompt, response, slots, parsed=None, context_line=""):
+    """Write a human-readable debug file with the full Gemini round-trip."""
+    debug_path = os.path.join(OUTPUT_DIR, "gemini_debug.txt")
+    try:
+        with open(debug_path, "w", encoding="utf-8") as f:
+            f.write("=" * 60 + "\n")
+            f.write("GEMINI DEBUG — INPUT PROMPT\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(prompt)
+            f.write("\n\n" + "=" * 60 + "\n")
+            f.write("GEMINI DEBUG — RAW RESPONSE\n")
+            f.write("=" * 60 + "\n\n")
+            if response is None:
+                f.write("(not yet received)\n")
+            else:
+                f.write(response)
+
+            if parsed is not None:
+                if context_line:
+                    f.write("\n\n" + "=" * 60 + "\n")
+                    f.write("GEMINI CONVERSATION CONTEXT\n")
+                    f.write("=" * 60 + "\n\n")
+                    f.write(f"  {context_line}\n")
+
+                f.write("\n\n" + "=" * 60 + "\n")
+                f.write("GEMINI DEBUG — PARSED MAPPING  (src → EN)\n")
+                f.write("=" * 60 + "\n\n")
+                for slot_idx, (orig_idx, role, src_text) in enumerate(slots):
+                    result = parsed.get(slot_idx)
+                    en = result[1] if result else "[NOT PARSED]"
+                    f.write(f"  slot {slot_idx+1:>2}  [{role}]\n")
+                    f.write(f"    SRC : {src_text}\n")
+                    f.write(f"    EN  : {en}\n\n")
+
+        print(f"[GEMINI] Debug file → {debug_path}")
+    except Exception as exc:
+        print(f"[GEMINI] Could not write debug file: {exc}")
 
 
 def refine_thai_with_gemini(objects):

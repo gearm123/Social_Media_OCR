@@ -8,7 +8,7 @@
       665
     ],
     "text_th": "การ โทร ด้วย เสียง 326 ครั้ง โทร อีก",
-    "text_en": "Making another voice call 03:26",
+    "text_en": "Voice call (326 attempts). Call again.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 8,
     "ocr_validated": true,
@@ -46,7 +46,7 @@
       1164
     ],
     "text_th": "11:50 อา . เวลา",
-    "text_en": "Sun. time 11:50",
+    "text_en": "Sun. 11:50 AM",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 4,
     "ocr_validated": true,
@@ -87,7 +87,7 @@
       1928
     ],
     "text_th": "การ หลอกลวง มัก เริ่ม ต้น ด้วย คำขอ ให้ คุณ ค้า เนิน การ โดย ด่วน หาก พี่ แคลง จด ตัน , คุณ โอน เงิน หรือ บอก ราย แคล้ว พี่ รุน เพ .... กำลัง ไฟ กัน",
-    "text_en": "Scams often begin with an urgent request for you to take action. If you become suspicious or pressured, you might transfer money or reveal details to the culprits. They are currently operating.",
+    "text_en": "Scams often begin with requests for you to act urgently. If Phee Klaew suspects you transferred money or told any code.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 34,
     "ocr_validated": true,
@@ -100,12 +100,12 @@
     "type": "sender",
     "bbox": [
       397,
-      840,
+      2300,
       884,
-      941
+      2401
     ],
     "text_th": "งั้น ก้อ ปล่อย ให้ เส้น ประสา ใน สมอ ตีบ ตาย เถ อ",
-    "text_en": "In that case, let the nerves in your brain atrophy and die.",
+    "text_en": "Then just let my brain just rot then.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 12,
     "ocr_validated": true,
@@ -118,12 +118,12 @@
     "type": "sender",
     "bbox": [
       678,
-      1114,
+      2574,
       884,
-      1167
+      2627
     ],
     "text_th": "แค ป เห่ ย โรง",
-    "text_en": "Screenshot it!",
+    "text_en": "What the f*** screenshot is this?",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 5,
     "ocr_validated": true,
@@ -138,9 +138,9 @@
     "type": "sender",
     "bbox": [
       631,
-      380,
+      2893,
       944,
-      420
+      2933
     ],
     "text_th": "การ โทร ด้วย เสียง ที่ ไม่ ได้ รั",
     "text_en": "Missed voice call.",
@@ -156,12 +156,12 @@
     "type": "timestamp",
     "bbox": [
       631,
-      426,
+      2939,
       718,
-      460
+      2973
     ],
     "text_th": "45 04",
-    "text_en": "04:45",
+    "text_en": "04:45 AM",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 2,
     "ocr_validated": true,
@@ -174,12 +174,12 @@
     "type": "receiver",
     "bbox": [
       359,
-      646,
+      3159,
       485,
-      699
+      3212
     ],
     "text_th": "ไหน ย ถ",
-    "text_en": "Let me see.",
+    "text_en": "Which one?",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 3,
     "ocr_validated": true,
@@ -195,12 +195,12 @@
     "type": "sender",
     "bbox": [
       815,
-      776,
+      3289,
       1013,
-      844
+      3357
     ],
     "text_th": "ม ไม่ ต้อง ถาม",
-    "text_en": "No need to ask.",
+    "text_en": "You don't need to ask.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 4,
     "ocr_validated": true,
@@ -213,12 +213,12 @@
     "type": "receiver",
     "bbox": [
       359,
-      892,
+      3405,
       445,
-      939
+      3452
     ],
     "text_th": "ก็ เจ ม",
-    "text_en": "That's harsh.",
+    "text_en": "Well, it's screwed up.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 3,
     "ocr_validated": true,
@@ -234,12 +234,12 @@
     "type": "receiver",
     "bbox": [
       352,
-      992,
+      3505,
       439,
-      1032
+      3545
     ],
     "text_th": "ดุจ ท",
-    "text_en": "See?",
+    "text_en": "You're insulting.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 2,
     "ocr_validated": true,
@@ -254,12 +254,12 @@
     "type": "receiver",
     "bbox": [
       339,
-      1085,
+      3598,
       419,
-      1118
+      3631
     ],
     "text_th": "เจ ม",
-    "text_en": "It hurts.",
+    "text_en": "Screwed up.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 2,
     "ocr_validated": true,
@@ -274,12 +274,12 @@
     "type": "sender",
     "bbox": [
       471,
-      1195,
+      3708,
       998,
-      1298
+      3811
     ],
     "text_th": "มี อะไร ไม่ ต้อง ทัก ไป หา ผัว กู ให้ ช่วย อีก น่ะ",
-    "text_en": "If there's anything, don't contact my husband to help again.",
+    "text_en": "If there's anything, don't message my husband for help again.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 13,
     "ocr_validated": true,
@@ -292,12 +292,12 @@
     "type": "timestamp",
     "bbox": [
       565,
-      1351,
+      3864,
       658,
-      1391
+      3904
     ],
     "text_th": "05:18",
-    "text_en": "05:18",
+    "text_en": "05:18 AM",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 1,
     "ocr_validated": true,
