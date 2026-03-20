@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from timestamp_detection import is_timestamp
+from timestamp_detection import is_timestamp, parse_timestamp_text
 import re
 
 ROW_VERTICAL_GAP_PX = 30
@@ -73,6 +73,7 @@ def _pairwise_metrics(rects, rect):
         "min_y_gap": min(y_gaps, default=0),
     }
 
+
 def sides_are_compatible(a, b):
     if a == "unknown" or b == "unknown":
         return True
@@ -81,6 +82,28 @@ def sides_are_compatible(a, b):
     if a == "center" or b == "center":
         return True
     return False
+
+
+def _any_compatible_side(rects, rect, image_width=None):
+    rect_side = side_hint(rect, image_width)
+    known_sides = [side_hint(existing, image_width) for existing in rects]
+    known_sides = [side for side in known_sides if side != "unknown"]
+
+    if not known_sides or rect_side == "unknown":
+        return True
+
+    return any(sides_are_compatible(existing_side, rect_side) for existing_side in known_sides)
+
+
+def _any_compatible_visual(rects, rect, img=None):
+    rect_visual = visual_message_type(img, rect)
+    known_visuals = [visual_message_type(img, existing) for existing in rects]
+    known_visuals = [visual for visual in known_visuals if visual != "unknown"]
+
+    if not known_visuals or rect_visual == "unknown":
+        return True
+
+    return any(existing_visual == rect_visual for existing_visual in known_visuals)
 
 def side_hint(rect, image_width=None):
     if image_width is None or image_width <= 0:
@@ -139,7 +162,6 @@ def group_rows(rects, image_width=None, img=None):
 
     for r in rects:
         placed = False
-
         for row in rows:
             if _can_join_row(row["boxes"], row["bbox"], r, image_width, img):
                 row["boxes"].append(r)
@@ -156,17 +178,13 @@ def group_rows(rects, image_width=None, img=None):
     return rows
 
 def _can_join_object(obj_rows, obj_bbox, row_bbox, image_width=None, img=None):
-    obj_side = side_hint(obj_bbox, image_width)
-    row_side = side_hint(row_bbox, image_width)
-    if not sides_are_compatible(obj_side, row_side):
-        return False
-
-    obj_visual = visual_message_type(img, obj_bbox)
-    row_visual = visual_message_type(img, row_bbox)
-    if obj_visual != "unknown" and row_visual != "unknown" and obj_visual != row_visual:
-        return False
-
     row_rects = [existing_row["bbox"] for existing_row in obj_rows]
+    if not _any_compatible_side(row_rects, row_bbox, image_width):
+        return False
+
+    if not _any_compatible_visual(row_rects, row_bbox, img):
+        return False
+
     metrics = _pairwise_metrics(row_rects, row_bbox)
     allowed_y_gap = (
         OBJECT_VERTICAL_GAP_WITH_X_OVERLAP_PX
@@ -197,7 +215,6 @@ def group_objects(rows, image_width=None, img=None):
 
     for row in rows:
         placed = False
-
         for obj in objects:
             if _can_join_object(obj["rows"], obj["bbox"], row["bbox"], image_width, img):
                 obj["rows"].append(row)
@@ -250,19 +267,45 @@ def _is_center_aligned_timestamp_text(text, rect, img):
     if not text or img is None:
         return False
 
-    compact = text.replace(" ", "")
-    if len(compact) < 2:
+    image_width = img.shape[1]
+    center_delta = abs(rect_center_x(rect) - (image_width / 2))
+    if center_delta > image_width * TIMESTAMP_CENTER_TOLERANCE_RATIO:
         return False
-    if not TIMESTAMP_NUMERIC_FORMAT_RE.fullmatch(compact):
-        return False
-    if not TIMESTAMP_HAS_FORMATTING_RE.search(compact):
-        return False
-    if not any(ch.isdigit() for ch in compact):
+
+    return parse_timestamp_text(text) is not None
+
+
+def _is_center_aligned_timestamp_candidate(rect, img, text_th="", text_en=""):
+    if img is None:
         return False
 
     image_width = img.shape[1]
+    image_height = img.shape[0]
     center_delta = abs(rect_center_x(rect) - (image_width / 2))
-    return center_delta <= image_width * TIMESTAMP_CENTER_TOLERANCE_RATIO
+    if center_delta > image_width * 0.14:
+        return False
+
+    if rect_width(rect) > image_width * 0.22:
+        return False
+    if rect_height(rect) > max(58, int(image_height * 0.035)):
+        return False
+
+    parsed = parse_timestamp_text(text_th) or parse_timestamp_text(text_en)
+    if parsed:
+        return True
+
+    compact = f"{text_th} {text_en}".replace(" ", "").strip()
+    if compact and len(compact) <= 12 and any(ch.isdigit() for ch in compact):
+        return True
+
+    if (
+        compact
+        and len(compact) <= 14
+        and blue_purple_ratio(img, rect) < 0.08
+    ):
+        return True
+
+    return False
 
 def classify_object_type(img, rect, text_th="", text_en=""):
     if (
@@ -270,6 +313,7 @@ def classify_object_type(img, rect, text_th="", text_en=""):
         or is_timestamp(text_en)
         or _is_center_aligned_timestamp_text(text_th, rect, img)
         or _is_center_aligned_timestamp_text(text_en, rect, img)
+        or _is_center_aligned_timestamp_candidate(rect, img, text_th, text_en)
     ):
         return "timestamp"
     return classify_sender_receiver(img, rect)

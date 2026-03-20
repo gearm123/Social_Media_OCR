@@ -185,7 +185,9 @@ def draw_bubble(img, text, x, y, max_width, align="left", bubble_color=(200, 200
 def estimate_canvas_height(objects):
     base_height = 70
     for obj in objects:
-        text = obj.get("text_en", "")
+        text_en = (obj.get("text_en") or "").strip()
+        text_th = (obj.get("text_th") or "").strip()
+        text = text_en or text_th
         if not text:
             continue
 
@@ -217,13 +219,19 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None):
     rendered_count = 0
 
     for obj in objects:
-        text = obj.get("text_en", "")
+        text_en = (obj.get("text_en") or "").strip()
+        text_th = (obj.get("text_th") or "").strip()
         obj_type = obj.get("type", "receiver")
 
         if obj_type in {"status_bar", "bottom_artifact", "bottom_bar", "keyboard"}:
             continue
 
-        if not text:
+        # Use English translation; if missing but Thai exists, show placeholder
+        if text_en:
+            text = text_en
+        elif text_th:
+            text = "[untranslated]"
+        else:
             continue
 
         rendered_count += 1

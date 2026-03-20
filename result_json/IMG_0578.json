@@ -1,0 +1,94 @@
+[
+  {
+    "type": "timestamp",
+    "bbox": [
+      638,
+      472,
+      897,
+      665
+    ],
+    "text_th": "การ โทร ด้วย เสียง 326 ครั้ง โทร อีก",
+    "text_en": "Making another voice call 03:26",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 8,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.6406173196,
+    "ocr_low_confidence": true,
+    "ocr_reasons": []
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      545,
+      844,
+      1037,
+      1084
+    ],
+    "text_th": "https // : gift.truemoney.com/ campaign / ? V - 019b3ed9961775790 e1405a83a8e2-42",
+    "text_en": "https // : gift.truemoney.com/ campaign / ? V - 019b3ed9961775790 e1405a83a8e2-42",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 11,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.6705424552727274,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [
+      "fragmented_tokens"
+    ]
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      591,
+      1137,
+      651,
+      1164
+    ],
+    "text_th": "11:50 อา . เวลา",
+    "text_en": "Sun. time 11:50",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 4,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.343213156,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [
+      "mixed_thai_noise",
+      "weak_thai_sentence"
+    ]
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      332,
+      1217,
+      844,
+      1450
+    ],
+    "text_th": "https : // gift.truemoney.com/ paign carf / ? 019b8f3ddd0671a79dd42 v = 6822f13ac236as",
+    "text_en": "https : // gift.truemoney.com/ paign carf / ? 019b8f3ddd0671a79dd42 v = 6822f13ac236as",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 12,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.68866606,
+    "ocr_low_confidence": false,
+    "ocr_reasons": [
+      "fragmented_tokens"
+    ]
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      345,
+      1609,
+      904,
+      1928
+    ],
+    "text_th": "การ หลอกลวง มัก เริ่ม ต้น ด้วย คำขอ ให้ คุณ ค้า เนิน การ โดย ด่วน หาก พี่ แคลง จด ตัน , คุณ โอน เงิน หรือ บอก ราย แคล้ว พี่ รุน เพ .... กำลัง ไฟ กัน",
+    "text_en": "Scams often begin with a request for you to act urgently. If you are suspicious, you transfer money or tell personal details .... Be aware of the danger.",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 34,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.5957784579764707,
+    "ocr_low_confidence": true,
+    "ocr_reasons": []
+  }
+]
