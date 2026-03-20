@@ -8,7 +8,7 @@
       420
     ],
     "text_th": "การ โทร ด้วย เสียง ที่ ไม่ ได้ รั",
-    "text_en": "The voice call that wasn't received.",
+    "text_en": "Missed voice call.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 8,
     "ocr_validated": true,
@@ -25,7 +25,7 @@
       460
     ],
     "text_th": "45 04",
-    "text_en": "45 04",
+    "text_en": "04:45",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 2,
     "ocr_validated": true,
@@ -42,7 +42,7 @@
       699
     ],
     "text_th": "ไหน ย ถ",
-    "text_en": "Where, really?",
+    "text_en": "Let me see.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 3,
     "ocr_validated": true,
@@ -62,7 +62,7 @@
       844
     ],
     "text_th": "ม ไม่ ต้อง ถาม",
-    "text_en": "Don't ask.",
+    "text_en": "No need to ask.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 4,
     "ocr_validated": true,
@@ -79,7 +79,7 @@
       939
     ],
     "text_th": "ก็ เจ ม",
-    "text_en": "Well, that's it.",
+    "text_en": "That's harsh.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 3,
     "ocr_validated": true,
@@ -99,7 +99,7 @@
       1032
     ],
     "text_th": "ดุจ ท",
-    "text_en": "Stop.",
+    "text_en": "See?",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 2,
     "ocr_validated": true,
@@ -118,7 +118,7 @@
       1118
     ],
     "text_th": "เจ ม",
-    "text_en": "It's over.",
+    "text_en": "It hurts.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 2,
     "ocr_validated": true,
@@ -137,7 +137,7 @@
       1298
     ],
     "text_th": "มี อะไร ไม่ ต้อง ทัก ไป หา ผัว กู ให้ ช่วย อีก น่ะ",
-    "text_en": "If there's anything, don't message my husband for help again.",
+    "text_en": "If there's anything, don't contact my husband to help again.",
     "ocr_source": "combined_canvas",
     "ocr_span_count": 13,
     "ocr_validated": true,

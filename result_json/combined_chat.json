@@ -1,0 +1,309 @@
+[
+  {
+    "type": "timestamp",
+    "bbox": [
+      638,
+      472,
+      897,
+      665
+    ],
+    "text_th": "การ โทร ด้วย เสียง 326 ครั้ง โทร อีก",
+    "text_en": "Making another voice call 03:26",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 8,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.6406173196,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [],
+    "order": 0
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      545,
+      844,
+      1037,
+      1084
+    ],
+    "text_th": "https // : gift.truemoney.com/ campaign / ? V - 019b3ed9961775790 e1405a83a8e2-42",
+    "text_en": "https // : gift.truemoney.com/ campaign / ? V - 019b3ed9961775790 e1405a83a8e2-42",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 11,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.6705424552727274,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [
+      "fragmented_tokens"
+    ],
+    "order": 1
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      591,
+      1137,
+      651,
+      1164
+    ],
+    "text_th": "11:50 อา . เวลา",
+    "text_en": "Sun. time 11:50",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 4,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.343213156,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [
+      "mixed_thai_noise",
+      "weak_thai_sentence"
+    ],
+    "order": 2
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      332,
+      1217,
+      844,
+      1450
+    ],
+    "text_th": "https : // gift.truemoney.com/ paign carf / ? 019b8f3ddd0671a79dd42 v = 6822f13ac236as",
+    "text_en": "https : // gift.truemoney.com/ paign carf / ? 019b8f3ddd0671a79dd42 v = 6822f13ac236as",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 12,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.68866606,
+    "ocr_low_confidence": false,
+    "ocr_reasons": [
+      "fragmented_tokens"
+    ],
+    "order": 3
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      345,
+      1609,
+      904,
+      1928
+    ],
+    "text_th": "การ หลอกลวง มัก เริ่ม ต้น ด้วย คำขอ ให้ คุณ ค้า เนิน การ โดย ด่วน หาก พี่ แคลง จด ตัน , คุณ โอน เงิน หรือ บอก ราย แคล้ว พี่ รุน เพ .... กำลัง ไฟ กัน",
+    "text_en": "Scams often begin with an urgent request for you to take action. If you become suspicious or pressured, you might transfer money or reveal details to the culprits. They are currently operating.",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 34,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.5957784579764707,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [],
+    "order": 4
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      397,
+      840,
+      884,
+      941
+    ],
+    "text_th": "งั้น ก้อ ปล่อย ให้ เส้น ประสา ใน สมอ ตีบ ตาย เถ อ",
+    "text_en": "In that case, let the nerves in your brain atrophy and die.",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 12,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.63976224,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [],
+    "order": 5
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      678,
+      1114,
+      884,
+      1167
+    ],
+    "text_th": "แค ป เห่ ย โรง",
+    "text_en": "Screenshot it!",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 5,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.47649271424000006,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [
+      "fragmented_tokens"
+    ],
+    "order": 6
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      631,
+      380,
+      944,
+      420
+    ],
+    "text_th": "การ โทร ด้วย เสียง ที่ ไม่ ได้ รั",
+    "text_en": "Missed voice call.",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 8,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.6450614456000001,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [],
+    "order": 7
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      631,
+      426,
+      718,
+      460
+    ],
+    "text_th": "45 04",
+    "text_en": "04:45",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 2,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.6436611600000001,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [],
+    "order": 8
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      359,
+      646,
+      485,
+      699
+    ],
+    "text_th": "ไหน ย ถ",
+    "text_en": "Let me see.",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 3,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.4588104906666668,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [
+      "weak_thai_sentence",
+      "fragmented_tokens"
+    ],
+    "order": 9
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      815,
+      776,
+      1013,
+      844
+    ],
+    "text_th": "ม ไม่ ต้อง ถาม",
+    "text_en": "No need to ask.",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 4,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.6250063848,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [],
+    "order": 10
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      359,
+      892,
+      445,
+      939
+    ],
+    "text_th": "ก็ เจ ม",
+    "text_en": "That's harsh.",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 3,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.46343504533333346,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [
+      "weak_thai_sentence",
+      "fragmented_tokens"
+    ],
+    "order": 11
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      352,
+      992,
+      439,
+      1032
+    ],
+    "text_th": "ดุจ ท",
+    "text_en": "See?",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 2,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.538518496,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [
+      "weak_thai_sentence"
+    ],
+    "order": 12
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      339,
+      1085,
+      419,
+      1118
+    ],
+    "text_th": "เจ ม",
+    "text_en": "It hurts.",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 2,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.5446284320000001,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [
+      "weak_thai_sentence"
+    ],
+    "order": 13
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      471,
+      1195,
+      998,
+      1298
+    ],
+    "text_th": "มี อะไร ไม่ ต้อง ทัก ไป หา ผัว กู ให้ ช่วย อีก น่ะ",
+    "text_en": "If there's anything, don't contact my husband to help again.",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 13,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.6377885934769232,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [],
+    "order": 14
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      565,
+      1351,
+      658,
+      1391
+    ],
+    "text_th": "05:18",
+    "text_en": "05:18",
+    "ocr_source": "combined_canvas",
+    "ocr_span_count": 1,
+    "ocr_validated": true,
+    "ocr_trust_score": 0.56121728,
+    "ocr_low_confidence": true,
+    "ocr_reasons": [],
+    "order": 15
+  }
+]

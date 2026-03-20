@@ -6,6 +6,10 @@ import numpy as np
 # --------------------------------------------------
 
 def sort_objects(objects):
+    # Use explicit conversation order when present (multi-page combined render).
+    # Fall back to bbox y-coordinate for single-page renders.
+    if objects and "order" in objects[0]:
+        return sorted(objects, key=lambda o: o.get("order", 0))
     return sorted(objects, key=lambda o: o["bbox"][1])
 
 

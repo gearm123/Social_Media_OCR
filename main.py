@@ -273,10 +273,14 @@ def main():
             if en:
                 obj["text_en"] = en
     else:
-        # Fill any gaps (timestamps, links) that Gemini skipped
-        for obj in all_objects:
-            if not obj.get("text_en") and obj.get("text_th"):
-                obj["text_en"] = translate_conversation_block([obj["text_th"]])[0]
+        # Fill any remaining gaps (links or objects Gemini skipped)
+        gaps = [obj for obj in all_objects if not obj.get("text_en") and obj.get("text_th")]
+        if gaps:
+            gap_texts = [obj["text_th"] for obj in gaps]
+            gap_en = translate_conversation_block(gap_texts)
+            for obj, en in zip(gaps, gap_en):
+                if en:
+                    obj["text_en"] = en
 
     # ── Step 8: per-image overlays (bounding boxes on originals) + JSON ──────
     all_meta = []   # collects result dicts for ALL objects in conversation order
@@ -319,7 +323,11 @@ def main():
         print(f"[OUTPUT] Saved overlay for {path.name} in {image_runtime:.2f}s")
 
     # ── Step 9: single unified chat render for the full conversation ──────────
-    # all_meta contains every object across all pages in order — render once.
+    # Stamp conversation order so render_chat doesn't re-sort by bbox y
+    # (per-image bbox coords overlap across pages and would scramble order).
+    for i, item in enumerate(all_meta):
+        item["order"] = i
+
     combined_json_path = os.path.join(JSON_DIR, "combined_chat.json")
     with open(combined_json_path, "w", encoding="utf-8") as f:
         json.dump(all_meta, f, indent=2, ensure_ascii=False)

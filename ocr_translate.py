@@ -170,14 +170,22 @@ def refine_and_translate_with_gemini(objects):
     if not _gemini_active_model:
         return False
 
-    # Build slots: only chat bubbles (skip timestamps, empty, links)
-    slots = []  # (orig_idx, role_label, thai_text)
+    # Build slots — chat bubbles AND timestamps; skip only links and UI artifacts
+    # Each slot: (orig_idx, role_label, source_text)
+    slots = []
     for i, obj in enumerate(objects):
         th = (obj.get("text_th") or "").strip()
         obj_type = (obj.get("type") or "receiver").lower()
-        if not th or _looks_like_link_text(th) or obj_type in {"timestamp", "status_bar", "bottom_artifact"}:
+        if not th or _looks_like_link_text(th):
             continue
-        role = "Person B (you)" if obj_type == "sender" else "Person A (other)"
+        if obj_type in {"status_bar", "bottom_artifact"}:
+            continue
+        if obj_type == "timestamp":
+            role = "Timestamp"
+        elif obj_type == "sender":
+            role = "Person B (you)"
+        else:
+            role = "Person A (other)"
         slots.append((i, role, th))
 
     if not slots:
@@ -188,26 +196,28 @@ def refine_and_translate_with_gemini(objects):
         for idx, (_, role, th) in enumerate(slots)
     )
 
-    lang_name = _source_lang_name  # e.g. "Thai", "Chinese", "Arabic" …
+    lang_name = _source_lang_name
     prompt = (
-        f"You are translating a {lang_name} chat conversation that was extracted via OCR "
+        f"You are translating a {lang_name} chat conversation extracted via OCR "
         f"(OCR may have misread some {lang_name} characters).\n"
         "Person A is the other person; Person B is the phone owner.\n\n"
-        "TASK: For each numbered message below, output ONLY the English translation "
-        "of that message — nothing else.\n\n"
+        "TASK: Translate every numbered line into English and output them in order.\n\n"
         "STRICT RULES:\n"
-        f"- Your output must be ONLY English. Do NOT include any {lang_name} characters.\n"
-        "- Use the conversation context to fix obvious OCR mistakes before translating.\n"
-        "- Keep exactly the same numbering and speaker labels.\n"
+        f"- Output ONLY English. Do NOT include any {lang_name} characters.\n"
+        "- Use conversation context to fix OCR mistakes before translating.\n"
+        "- Keep the same numbering and speaker labels exactly.\n"
+        "- [Timestamp] lines: output the time/date as readable English (e.g. 'Sun. 11:50'). "
+        "  Keep them in their original position.\n"
         "- Do NOT add explanations, notes, asterisks, or extra lines.\n\n"
         "OUTPUT FORMAT (follow exactly):\n"
-        "1. [Person A (other)]: English text here\n"
-        "2. [Person B (you)]: English text here\n\n"
-        "MESSAGES TO TRANSLATE:\n"
+        "1. [Person A (other)]: English text\n"
+        "2. [Person B (you)]: English text\n"
+        "3. [Timestamp]: Sun. 11:50\n\n"
+        "CONVERSATION TO TRANSLATE:\n"
         f"{dialogue}"
     )
 
-    print(f"[GEMINI] Sending {len(slots)} messages for OCR fix + translation...")
+    print(f"[GEMINI] Sending {len(slots)} items (messages + timestamps) for OCR fix + translation...")
     for attempt in range(3):
         try:
             raw = _gemini_generate(prompt)
@@ -216,20 +226,20 @@ def refine_and_translate_with_gemini(objects):
             raw = raw.strip()
             print(f"[GEMINI] Response preview (first 300 chars): {raw[:300]}")
 
-            parsed = {}
+            parsed = {}   # slot_num → (is_timestamp, text)
             lines = raw.splitlines()
             for line_idx, line in enumerate(lines):
                 line = line.strip()
-                m = re.match(r"^(\d+)\.\s*\[.*?\]:\s*(.+)$", line)
+                m = re.match(r"^(\d+)\.\s*\[(.*?)\]:\s*(.+)$", line)
                 if not m:
                     continue
                 slot_num = int(m.group(1)) - 1
-                captured = m.group(2).strip()
+                label    = m.group(2).strip().lower()
+                captured = m.group(3).strip()
+                is_ts    = "timestamp" in label
 
-                # If Gemini returned source-language text in the numbered line,
-                # look for the English translation on the same line (after a
-                # separator) or on the immediately following line.
-                if _is_non_latin(captured):
+                # If Gemini returned source-language text, recover the English
+                if not is_ts and _is_non_latin(captured):
                     eng_match = re.search(
                         r"(?:\*\s*English\s*:|→|->|=>)\s*([A-Za-z].+)$",
                         captured, re.IGNORECASE
@@ -247,20 +257,23 @@ def refine_and_translate_with_gemini(objects):
                         elif not _is_non_latin(next_line) and next_line:
                             captured = next_line
                         else:
-                            continue  # genuinely no English found, skip
+                            continue
 
-                if not _is_non_latin(captured) and captured:
-                    parsed[slot_num] = captured
+                if captured and (is_ts or not _is_non_latin(captured)):
+                    parsed[slot_num] = (is_ts, captured)
 
             if not parsed:
-                raise ValueError(f"Could not parse any English lines from response:\n{raw[:400]}")
+                raise ValueError(f"Could not parse any lines from response:\n{raw[:400]}")
 
-            for slot_idx, (orig_idx, _, th) in enumerate(slots):
-                en = parsed.get(slot_idx, "")
-                if en:
+            for slot_idx, (orig_idx, _, _th) in enumerate(slots):
+                result = parsed.get(slot_idx)
+                if result:
+                    is_ts, en = result
                     objects[orig_idx]["text_en"] = en
+                    if is_ts:
+                        objects[orig_idx]["type"] = "timestamp"
 
-            print(f"[GEMINI] Translated {len(parsed)}/{len(slots)} messages")
+            print(f"[GEMINI] Translated {len(parsed)}/{len(slots)} items")
             return True
 
         except Exception as e:
