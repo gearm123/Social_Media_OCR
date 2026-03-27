@@ -79,8 +79,11 @@ def sides_are_compatible(a, b):
         return True
     if a == b:
         return True
-    if a == "center" or b == "center":
+    # Center lane = date/time rows — must NOT merge with left/right message bubbles.
+    if a == "center" and b == "center":
         return True
+    if a == "center" or b == "center":
+        return False
     return False
 
 

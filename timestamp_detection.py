@@ -37,8 +37,7 @@ THAI_MONTH_HINT = [
 ]
 
 EN_MONTH_HINT = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 ]
 
 THAI_MONTH_REGEX = "|".join(re.escape(month) for month in THAI_MONTH_HINT)

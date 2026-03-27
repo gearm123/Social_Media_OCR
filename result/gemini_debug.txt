@@ -1,140 +1,167 @@
-============================================================
-GEMINI DEBUG — INPUT PROMPT
-============================================================
+GEMINI — stitched chat transcription / OCR rewrite / translation
 
-Below is a real two-person chat conversation in the source language, extracted by OCR (some characters may be misread).
-I am also attaching the actual screenshot of the chat so you can see the bubble layout, alignment (left = ชั่วโมง เพ .... ..., right = Person B/you), and any text the OCR may have misread — use the image as ground truth when the extracted text is ambiguous.
+=== PROMPT ===
+these are images representing a conversation on facebook messenger between two speakers
 
-Person A is 'ชั่วโมง เพ .... ...' (the other person in this chat). Person B is the phone owner (you).
+transcribe the conversation in the original language
+the first image is the oldest
 
-WORK THROUGH THESE STEPS IN ORDER:
+i count 14 message bubbles in total
 
-STEP 1 — Read the entire conversation (and examine the image if provided).
-Write these two lines:
-NAME: [Person A's real name in English/romanized — infer from context or the image; if truly unknown write 'Person A']
-CONTEXT: [one sentence describing the topic, tone, and relationship]
+in image 1
+i count 2 message bubbles
+sender
+receiver
 
-STEP 2 — For each numbered entry:
-  a) Translate it in isolation.
-  b) Cross-check against the CONTEXT, image, and surrounding messages — revise if needed so the whole conversation flows naturally.
-  c) Output only the final, validated English translation.
+in image 2
+i count 6 message bubbles
+receiver
+receiver
+receiver
+sender
+receiver
+sender
 
-RULES:
-- Output ONLY English. Zero the source language characters anywhere.
-- NAME and CONTEXT lines must come first, before the numbered entries.
-- Preserve speaker labels and numbering exactly as given in the conversation below.
-- [Timestamp] lines: readable English (e.g. 'Sun. 11:50 AM').
-- No asterisks, footnotes, or extra blank lines.
+in image 3
+i count 6 message bubbles
+receiver
+sender
+receiver
+receiver
+receiver
+sender
 
-OUTPUT FORMAT:
-NAME: Phee Klaew
-CONTEXT: brief summary here
-1. [ชั่วโมง เพ .... ...]: natural English text
-2. [Person B (you)]: natural English text
-3. [Timestamp]: Sun. 11:50 AM
+transcribe what you see
+the added information above is guidance about the actual text bubbles
 
-CONVERSATION (the source language, 14 entries):
-1. [Timestamp]: การ โทร ด้วย เสียง 326 ครั้ง โทร อีก
-2. [Timestamp]: 11:50 อา . เวลา
-3. [ชั่วโมง เพ .... ...]: การ หลอกลวง มัก เริ่ม ต้น ด้วย คำขอ ให้ คุณ ค้า เนิน การ โดย ด่วน หาก พี่ แคลง จด ตัน , คุณ โอน เงิน หรือ บอก ราย แคล้ว พี่ รุน เพ .... กำลัง ไฟ กัน
-4. [Person B (you)]: งั้น ก้อ ปล่อย ให้ เส้น ประสา ใน สมอ ตีบ ตาย เถ อ
-5. [Person B (you)]: แค ป เห่ ย โรง
-6. [Person B (you)]: การ โทร ด้วย เสียง ที่ ไม่ ได้ รั
-7. [Timestamp]: 45 04
-8. [ชั่วโมง เพ .... ...]: ไหน ย ถ
-9. [Person B (you)]: ม ไม่ ต้อง ถาม
-10. [ชั่วโมง เพ .... ...]: ก็ เจ ม
-11. [ชั่วโมง เพ .... ...]: ดุจ ท
-12. [ชั่วโมง เพ .... ...]: เจ ม
-13. [Person B (you)]: มี อะไร ไม่ ต้อง ทัก ไป หา ผัว กู ให้ ช่วย อีก น่ะ
-14. [Timestamp]: 05:18
+return json in this structure:
+{"contact_name":"<header or empty>","messages":[{"role":"contact|user","text_src":"<original-language transcription>"}]}
 
-============================================================
-GEMINI DEBUG — RAW RESPONSE
-============================================================
+output json only.
 
-NAME: Phee Klaew
-CONTEXT: This is a highly aggressive and emotional chat between two individuals, where Person B is accusing Phee Klaew of something, possibly related to a scam or financial issue, and is extremely angry, threatening Phee Klaew not to involve their husband.
+=== RAW RESPONSE ===
+```json
+{
+  "contact_name": "พี่แคล้ว รุนเพ...",
+  "messages": [
+    {
+      "role": "contact",
+      "text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2"
+    },
+    {
+      "role": "contact",
+      "text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as"
+    },
+    {
+      "role": "contact",
+      "text_src": "ไป"
+    },
+    {
+      "role": "contact",
+      "text_src": "มา"
+    },
+    {
+      "role": "contact",
+      "text_src": "ที่"
+    },
+    {
+      "role": "user",
+      "text_src": "งั้นก้อปล่อยให้มันประสาทในสมองดิบตายเถอะ"
+    },
+    {
+      "role": "contact",
+      "text_src": "กุ"
+    },
+    {
+      "role": "user",
+      "text_src": "แค่เห็นไง"
+    },
+    {
+      "role": "contact",
+      "text_src": "ยกไหน"
+    },
+    {
+      "role": "user",
+      "text_src": "มึงไม่ต้องถาม"
+    },
+    {
+      "role": "contact",
+      "text_src": "ก็เจ็บ"
+    },
+    {
+      "role": "contact",
+      "text_src": "ดู"
+    },
+    {
+      "role": "contact",
+      "text_src": "เจ็บ"
+    },
+    {
+      "role": "user",
+      "text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ"
+    }
+  ]
+}
+```
 
-1. [Timestamp]: Voice call (326 attempts). Call again.
-2. [Timestamp]: Sun. 11:50 AM
-3. [Phee Klaew]: Scams often begin with requests for you to act urgently. If Phee Klaew suspects you transferred money or told any code.
-4. [Person B (you)]: Then just let my brain just rot then.
-5. [Person B (you)]: What the f*** screenshot is this?
-6. [Person B (you)]: Missed voice call.
-7. [Timestamp]: 04:45 AM
-8. [Phee Klaew]: Which one?
-9. [Person B (you)]: You don't need to ask.
-10. [Phee Klaew]: Well, it's screwed up.
-11. [Phee Klaew]: You're insulting.
-12. [Phee Klaew]: Screwed up.
-13. [Person B (you)]: If there's anything, don't message my husband for help again.
-14. [Timestamp]: 05:18 AM
+=== GEMINI API (parsed JSON) ===
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "```json\n{\n  \"contact_name\": \"พี่แคล้ว รุนเพ...\",\n  \"messages\": [\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2\"\n    },\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as\"\n    },\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"ไป\"\n    },\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"มา\"\n    },\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"ที่\"\n    },\n    {\n      \"role\": \"user\",\n      \"text_src\": \"งั้นก้อปล่อยให้มันประสาทในสมองดิบตายเถอะ\"\n    },\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"กุ\"\n    },\n    {\n      \"role\": \"user\",\n      \"text_src\": \"แค่เห็นไง\"\n    },\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"ยกไหน\"\n    },\n    {\n      \"role\": \"user\",\n      \"text_src\": \"มึงไม่ต้องถาม\"\n    },\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"ก็เจ็บ\"\n    },\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"ดู\"\n    },\n    {\n      \"role\": \"contact\",\n      \"text_src\": \"เจ็บ\"\n    },\n    {\n      \"role\": \"user\",\n      \"text_src\": \"มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ\"\n    }\n  ]\n}\n```"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0,
+      "safetyRatings": [
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "probability": "NEGLIGIBLE"
+        },
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "probability": "NEGLIGIBLE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "probability": "NEGLIGIBLE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "probability": "NEGLIGIBLE"
+        }
+      ]
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 937,
+    "candidatesTokenCount": 496,
+    "totalTokenCount": 4533,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 163
+      },
+      {
+        "modality": "IMAGE",
+        "tokenCount": 774
+      }
+    ],
+    "thoughtsTokenCount": 3100
+  },
+  "modelVersion": "gemini-2.5-pro",
+  "responseId": "TsTGafeLKIfhnsEPnvLs0Qg"
+}
 
-============================================================
-GEMINI CONVERSATION CONTEXT
-============================================================
-
-  This is a highly aggressive and emotional chat between two individuals, where Person B is accusing Phee Klaew of something, possibly related to a scam or financial issue, and is extremely angry, threatening Phee Klaew not to involve their husband.
-
-
-============================================================
-GEMINI DEBUG — PARSED MAPPING  (src → EN)
-============================================================
-
-  slot  1  [Timestamp]
-    SRC : การ โทร ด้วย เสียง 326 ครั้ง โทร อีก
-    EN  : Voice call (326 attempts). Call again.
-
-  slot  2  [Timestamp]
-    SRC : 11:50 อา . เวลา
-    EN  : Sun. 11:50 AM
-
-  slot  3  [ชั่วโมง เพ .... ...]
-    SRC : การ หลอกลวง มัก เริ่ม ต้น ด้วย คำขอ ให้ คุณ ค้า เนิน การ โดย ด่วน หาก พี่ แคลง จด ตัน , คุณ โอน เงิน หรือ บอก ราย แคล้ว พี่ รุน เพ .... กำลัง ไฟ กัน
-    EN  : Scams often begin with requests for you to act urgently. If Phee Klaew suspects you transferred money or told any code.
-
-  slot  4  [Person B (you)]
-    SRC : งั้น ก้อ ปล่อย ให้ เส้น ประสา ใน สมอ ตีบ ตาย เถ อ
-    EN  : Then just let my brain just rot then.
-
-  slot  5  [Person B (you)]
-    SRC : แค ป เห่ ย โรง
-    EN  : What the f*** screenshot is this?
-
-  slot  6  [Person B (you)]
-    SRC : การ โทร ด้วย เสียง ที่ ไม่ ได้ รั
-    EN  : Missed voice call.
-
-  slot  7  [Timestamp]
-    SRC : 45 04
-    EN  : 04:45 AM
-
-  slot  8  [ชั่วโมง เพ .... ...]
-    SRC : ไหน ย ถ
-    EN  : Which one?
-
-  slot  9  [Person B (you)]
-    SRC : ม ไม่ ต้อง ถาม
-    EN  : You don't need to ask.
-
-  slot 10  [ชั่วโมง เพ .... ...]
-    SRC : ก็ เจ ม
-    EN  : Well, it's screwed up.
-
-  slot 11  [ชั่วโมง เพ .... ...]
-    SRC : ดุจ ท
-    EN  : You're insulting.
-
-  slot 12  [ชั่วโมง เพ .... ...]
-    SRC : เจ ม
-    EN  : Screwed up.
-
-  slot 13  [Person B (you)]
-    SRC : มี อะไร ไม่ ต้อง ทัก ไป หา ผัว กู ให้ ช่วย อีก น่ะ
-    EN  : If there's anything, don't message my husband for help again.
-
-  slot 14  [Timestamp]
-    SRC : 05:18
-    EN  : 05:18 AM
-
+=== NOTE ===
+{
+  "contact_name": "พี่แคล้ว รุนเพ...",
+  "n_messages": 14,
+  "ambiguity_ledger": [],
+  "has_ref_placeholders": false
+}

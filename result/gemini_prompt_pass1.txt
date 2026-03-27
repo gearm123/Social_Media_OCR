@@ -1,0 +1,40 @@
+Pass 1 (vision)
+============================================================
+
+these are images representing a conversation on facebook messenger between two speakers
+
+transcribe the conversation in the original language
+the first image is the oldest
+
+i count 14 message bubbles in total
+
+in image 1
+i count 2 message bubbles
+sender
+receiver
+
+in image 2
+i count 6 message bubbles
+receiver
+receiver
+receiver
+sender
+receiver
+sender
+
+in image 3
+i count 6 message bubbles
+receiver
+sender
+receiver
+receiver
+receiver
+sender
+
+transcribe what you see
+the added information above is guidance about the actual text bubbles
+
+return json in this structure:
+{"contact_name":"<header or empty>","messages":[{"role":"contact|user","text_src":"<original-language transcription>"}]}
+
+output json only.

@@ -1,0 +1,111 @@
+{
+  "manual_expected_message_count": 14,
+  "crop_count": 0,
+  "pass1_output_count": 14,
+  "pass2_output_count": 0,
+  "pass2_effective_count": 0,
+  "ocr_hint_message_count": 0,
+  "pass3_output_count": 0,
+  "third_pass_skipped": true,
+  "ocr_by_message_present": false,
+  "pass2_ocr_page_count": 3,
+  "pass_debug": {
+    "pass1_count": 14,
+    "pass2_count": 0,
+    "pass2_effective_count": 0,
+    "pass2_crop_refine": {
+      "enabled": false,
+      "skipped": true,
+      "reason": "ocr_hints_only_mode",
+      "input_messages": 14,
+      "input_crops": 0,
+      "output_messages": 0
+    },
+    "pass3_count": 0,
+    "first_pass_only": false,
+    "third_pass_skipped": true,
+    "pass1_messages": [
+      {
+        "role": "contact",
+        "text_en": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2",
+        "text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2"
+      },
+      {
+        "role": "contact",
+        "text_en": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as",
+        "text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as"
+      },
+      {
+        "role": "contact",
+        "text_en": "ไป",
+        "text_src": "ไป"
+      },
+      {
+        "role": "contact",
+        "text_en": "มา",
+        "text_src": "มา"
+      },
+      {
+        "role": "contact",
+        "text_en": "ที่",
+        "text_src": "ที่"
+      },
+      {
+        "role": "user",
+        "text_en": "งั้นก้อปล่อยให้มันประสาทในสมองดิบตายเถอะ",
+        "text_src": "งั้นก้อปล่อยให้มันประสาทในสมองดิบตายเถอะ"
+      },
+      {
+        "role": "contact",
+        "text_en": "กุ",
+        "text_src": "กุ"
+      },
+      {
+        "role": "user",
+        "text_en": "แค่เห็นไง",
+        "text_src": "แค่เห็นไง"
+      },
+      {
+        "role": "contact",
+        "text_en": "ยกไหน",
+        "text_src": "ยกไหน"
+      },
+      {
+        "role": "user",
+        "text_en": "มึงไม่ต้องถาม",
+        "text_src": "มึงไม่ต้องถาม"
+      },
+      {
+        "role": "contact",
+        "text_en": "ก็เจ็บ",
+        "text_src": "ก็เจ็บ"
+      },
+      {
+        "role": "contact",
+        "text_en": "ดู",
+        "text_src": "ดู"
+      },
+      {
+        "role": "contact",
+        "text_en": "เจ็บ",
+        "text_src": "เจ็บ"
+      },
+      {
+        "role": "user",
+        "text_en": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ",
+        "text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ"
+      }
+    ],
+    "pass2_crop_messages": [],
+    "pass3_messages": []
+  },
+  "index_alignment": {
+    "manual_expected_vs_pass1_match": true,
+    "manual_expected_vs_pre_ocr_match": true,
+    "pass1_vs_pass2_match": false,
+    "pass2_vs_ocr_hints_match": true,
+    "pass2_effective_vs_pass3_match": true,
+    "pre_ocr_vs_final_match": true
+  },
+  "rows": []
+}

@@ -1,11 +1,20 @@
 import os
+import json
 import cv2
 import time
 import sys
 import re
 from difflib import SequenceMatcher
+from typing import NamedTuple, Optional, Any, Dict
 import numpy as np
-from config import DEBUG_DIR, OUTPUT_DIR, ocr_engine, translator, translation_cache
+from config import (
+    DEBUG_DIR,
+    GOOGLE_VISION_API_KEY,
+    OUTPUT_DIR,
+    ocr_engine,
+    translator,
+    translation_cache,
+)
 
 # --------------------------------------------------
 # SOURCE LANGUAGE  (auto-detected from Vision OCR)
@@ -21,6 +30,540 @@ def _set_source_language(code: str, name: str):
     _source_lang_name = name
 
 
+def collect_vision_ocr_hints(page_images):
+    """Run Google Vision DOCUMENT_TEXT_DETECTION on each page crop; return one string.
+
+    Used as an **auxiliary** transcript for Gemini Pass 1 (names, numbers, Thai spellings).
+    Returns ``""`` if Vision is not configured or all pages fail.
+    """
+    if not GOOGLE_VISION_API_KEY:
+        return ""
+    parts = []
+    for i, img in enumerate(page_images or []):
+        if img is None or getattr(img, "size", 0) == 0:
+            continue
+        try:
+            txt = ocr_engine.document_plain_text(img)
+        except Exception as e:
+            print(f"[OCR HINT] Page {i + 1} Vision failed: {e}")
+            continue
+        if txt:
+            parts.append(
+                f"--- Page {i + 1} (same order as single-page image {i + 1} before the stitch) ---\n"
+                f"{txt}\n"
+            )
+    return "\n".join(parts).strip()
+
+
+def _vision_role_from_bbox(bbox, img_w: int) -> str:
+    """Map paragraph bbox to Gemini role using horizontal center (Messenger-style)."""
+    x1, y1, x2, y2 = bbox
+    w = float(max(img_w, 1))
+    cx = (x1 + x2) / 2.0 / w
+    left_max = float(os.environ.get("GEMINI_OCR_LEFT_MAX_CX", "0.46"))
+    right_min = float(os.environ.get("GEMINI_OCR_RIGHT_MIN_CX", "0.54"))
+    if cx <= left_max:
+        return "contact"
+    if cx >= right_min:
+        return "user"
+    return "system"
+
+
+def collect_vision_ocr_structured_hints(page_images):
+    """Per-page Vision paragraphs with **contact|user|system** from bbox center.
+
+    One indexed line per paragraph, top-to-bottom. Tuned for left=incoming / right=outgoing.
+    Returns ``""`` if Vision unavailable or all pages fail.
+
+    .. note::
+        The main Gemini pipeline prefers :func:`collect_vision_ocr_stitch_high_confidence_hints`
+        (word-level, confidence-filtered, mapped to the stitched canvas).
+    """
+    if not GOOGLE_VISION_API_KEY:
+        return ""
+    parts = []
+    global_idx = 0
+    for pi, img in enumerate(page_images or []):
+        if img is None or getattr(img, "size", 0) == 0:
+            continue
+        try:
+            paras = ocr_engine.document_paragraph_boxes(img)
+        except Exception as e:
+            print(f"[OCR STRUCT] Page {pi + 1} Vision failed: {e}")
+            continue
+        _h, w = img.shape[:2]
+        parts.append(f"\n### Page {pi + 1} (image width {w}px)\n")
+        for p in paras:
+            role = _vision_role_from_bbox(p["bbox"], w)
+            t = (p["text"] or "").replace("\n", " ").strip()
+            if not t:
+                continue
+            parts.append(f"[{global_idx}] [{role}] {t}\n")
+            global_idx += 1
+    return "".join(parts).strip()
+
+
+def collect_vision_ocr_stitch_high_confidence_hints(
+    page_images,
+    page_ranges,
+    combined_h: int,
+    combined_w: int,
+    num_stitch_bands: int = 1,
+):
+    """Per-page Vision **word** boxes, filtered by confidence, mapped to stitched-image coordinates.
+
+    Each screenshot is OCR'd separately. Only tokens with score ≥ ``GEMINI_OCR_HINT_MIN_CONF``
+    (default ``0.82``) are listed. Positions use the **same vertical layout** as the stitched
+    image: ``y_norm`` is center-of-word / stitched height (0–1), so they stay valid if the
+    stitch is uniformly scaled for the API.
+
+    *num_stitch_bands* must match how many vertical bands Gemini will receive (1 = one full
+    stitch; >1 = equal-height slices). Each line then includes ``stitch_band=b/K`` so the model
+    knows **which input image** contains that token while **y_norm** stays on the **unified**
+    scroll (seamless across bands).
+
+    Per-word ``[contact|user|system]`` tags are **omitted by default** — Vision's horizontal
+    bucketing mis-tags URLs, banners, and wrapped lines. Set ``GEMINI_OCR_HINT_ROLES=1`` to
+    restore them (legacy / debugging).
+
+    Returns ``""`` if Vision is unavailable or all pages fail.
+    """
+    if not GOOGLE_VISION_API_KEY:
+        return ""
+    include_spk_roles = os.environ.get("GEMINI_OCR_HINT_ROLES", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    min_conf = float(os.environ.get("GEMINI_OCR_HINT_MIN_CONF", "0.90"))
+    min_conf = max(0.90, min(1.0, min_conf))
+
+    pages = list(page_images or [])
+    ranges = list(page_ranges or [])
+    if len(pages) != len(ranges):
+        n = min(len(pages), len(ranges))
+        print(
+            f"[OCR STITCH] page_images ({len(pages)}) vs page_ranges ({len(ranges)}) "
+            f"— using first {n} pairs"
+        )
+        pages = pages[:n]
+        ranges = ranges[:n]
+
+    ch = max(int(combined_h), 1)
+    cw = max(int(combined_w), 1)
+    K = max(1, int(num_stitch_bands))
+    rows = []
+
+    for pi, (img, pr) in enumerate(zip(pages, ranges)):
+        if img is None or getattr(img, "size", 0) == 0:
+            continue
+        start_y = int(pr[0])
+        ih, iw = img.shape[:2]
+        if iw <= 0 or ih <= 0:
+            continue
+        try:
+            detections = ocr_engine.predict(img)
+        except Exception as e:
+            print(f"[OCR STITCH] Page {pi + 1} Vision failed: {e}")
+            continue
+
+        for det in detections:
+            text = (det.get("text") or "").strip()
+            if not text:
+                continue
+            conf = float(det.get("score") or 0.0)
+            if conf < min_conf:
+                continue
+            bbox = det.get("bbox")
+            if not bbox or len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+            role = (
+                _vision_role_from_bbox((x1, y1, x2, y2), iw)
+                if include_spk_roles
+                else None
+            )
+            gcy = start_y + (y1 + y2) * 0.5
+            gcx = (x1 + x2) * 0.5
+            y_norm = gcy / ch
+            x_norm = gcx / cw
+            b0 = min(K - 1, max(0, int(y_norm * K)))
+            if y_norm >= 1.0:
+                b0 = K - 1
+            rows.append(
+                {
+                    "pi": pi,
+                    "y1": start_y + y1,
+                    "x1": x1,
+                    "role": role,
+                    "text": text,
+                    "conf": conf,
+                    "y_norm": y_norm,
+                    "x_norm": x_norm,
+                    "stitch_band": b0 + 1,
+                }
+            )
+
+    if not rows:
+        return ""
+
+    rows.sort(key=lambda r: (r["y1"], r["x1"]))
+    band_help = ""
+    if K > 1:
+        band_help = (
+            f"The stitch is sent as **{K}** equal-height vertical **bands** (same scroll). "
+            f"**stitch_band=b** = look in **Gemini input image b** (1=top … {K}=bottom). "
+            f"That band covers **y_norm** in **[ (b-1)/{K}, b/{K} )** on the **one** virtual canvas — "
+            f"use **y_norm** to place the token in the correct **message** (bubble) along the thread; "
+            f"use **stitch_band** only to open the right crop.\n\n"
+        )
+    parts = [
+        "\n### Stitched layout (reference)\n",
+        band_help,
+        f"Virtual stitched canvas: height={ch}px width={cw}px. "
+        f"**y_norm** / **x_norm** = word center as fraction of that full canvas (not per-band). "
+        f"Only tokens with Vision confidence ≥ {min_conf:.2f} are listed. "
+        + (
+            "**No** `contact`/`user` tags on lines — use **bubble side in images** for speaker.\n\n"
+            if not include_spk_roles
+            else "**Bracket roles** from Vision geometry are **unreliable** — prefer bubble pixels for JSON `role`.\n\n"
+        ),
+    ]
+    for i, r in enumerate(rows):
+        # JSON-quote token text so special characters cannot break the prompt
+        tjson = json.dumps(r["text"], ensure_ascii=False)
+        sb = f"stitch_band={r['stitch_band']}/{K} " if K > 1 else ""
+        spk = f"[{r['role']}] " if include_spk_roles and r.get("role") else ""
+        parts.append(
+            f"[{i}] {sb}y_norm={r['y_norm']:.4f} x_norm={r['x_norm']:.4f} "
+            f"{spk}conf={r['conf']:.3f} text={tjson} "
+            f"(source page {r['pi'] + 1})\n"
+        )
+
+    return "".join(parts).strip()
+
+
+def format_craft_bands_for_gemini_prompt(combined_h: int, craft_objects_sorted) -> str:
+    """One markdown line per CRAFT row: message_index and approximate y_norm span on the stitch."""
+    if not craft_objects_sorted:
+        return ""
+    ch = max(int(combined_h), 1)
+    lines = []
+    for i, obj in enumerate(craft_objects_sorted):
+        bbox = obj.get("bbox") or [0, 0, 0, 0]
+        if len(bbox) < 4:
+            continue
+        y0 = float(bbox[1]) / ch
+        y1 = float(bbox[3]) / ch
+        lines.append(
+            f"- **message_index {i}** (top→bottom): **y_norm** ≈ {y0:.4f}–{y1:.4f}\n"
+        )
+    return "".join(lines)
+
+
+def _craft_message_index_for_gcy(gcy: float, craft_objects_sorted) -> int:
+    """Map a combined-canvas Y (pixels) to CRAFT row index."""
+    if not craft_objects_sorted:
+        return 0
+    for i, obj in enumerate(craft_objects_sorted):
+        bbox = obj.get("bbox")
+        if not bbox or len(bbox) < 4:
+            continue
+        if bbox[1] <= gcy <= bbox[3]:
+            return i
+    best_i = 0
+    best_d = 1e18
+    for i, obj in enumerate(craft_objects_sorted):
+        bbox = obj.get("bbox")
+        if not bbox or len(bbox) < 4:
+            continue
+        cy = (bbox[1] + bbox[3]) * 0.5
+        d = abs(float(gcy) - cy)
+        if d < best_d:
+            best_d = d
+            best_i = i
+    return best_i
+
+
+def collect_vision_ocr_stitch_by_message_index(
+    combined_img,
+    combined_h: int,
+    combined_w: int,
+    num_stitch_bands: int,
+    craft_objects_sorted,
+):
+    """Run Vision **once** on the **full stitched** image; bucket words under CRAFT ``message_index``.
+
+    Word center *(x, y)* is in **combined canvas** coordinates — same space as CRAFT boxes from
+    :func:`run_craft_and_group_on_combined`. Assignment: vertical overlap / nearest CRAFT row.
+
+    Pass 2 uses this only as **text** context; **speakers** come from Gemini Pass 1.
+    """
+    if not GOOGLE_VISION_API_KEY or not craft_objects_sorted:
+        return ""
+    if combined_img is None or getattr(combined_img, "size", 0) == 0:
+        return ""
+
+    min_conf = float(os.environ.get("GEMINI_OCR_HINT_MIN_CONF", "0.82"))
+    min_conf = max(0.0, min(1.0, min_conf))
+    include_spk_roles = os.environ.get("GEMINI_OCR_HINT_ROLES", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+    ih, iw = combined_img.shape[:2]
+    if iw <= 0 or ih <= 0:
+        return ""
+
+    ch = max(int(combined_h), 1)
+    cw = max(int(combined_w), 1)
+    K = max(1, int(num_stitch_bands))
+    buckets: Dict[int, list] = {}
+
+    try:
+        detections = ocr_engine.predict(combined_img)
+    except Exception as e:
+        print(f"[OCR BY-MSG] Vision on stitched image failed: {e}")
+        return ""
+
+    for det in detections:
+        text = (det.get("text") or "").strip()
+        if not text:
+            continue
+        conf = float(det.get("score") or 0.0)
+        if conf < min_conf:
+            continue
+        bbox = det.get("bbox")
+        if not bbox or len(bbox) < 4:
+            continue
+        x1, y1, x2, y2 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        role = (
+            _vision_role_from_bbox((x1, y1, x2, y2), iw)
+            if include_spk_roles
+            else None
+        )
+        gcy = (y1 + y2) * 0.5
+        gcx = (x1 + x2) * 0.5
+        y_norm = gcy / ch
+        x_norm = gcx / cw
+        b0 = min(K - 1, max(0, int(y_norm * K)))
+        if y_norm >= 1.0:
+            b0 = K - 1
+        midx = _craft_message_index_for_gcy(gcy, craft_objects_sorted)
+        buckets.setdefault(midx, []).append(
+            {
+                "y_norm": y_norm,
+                "x_norm": x_norm,
+                "conf": conf,
+                "text": text,
+                "role": role,
+                "stitch_band": b0 + 1,
+            }
+        )
+
+    if not buckets:
+        return ""
+
+    parts = [
+        "OCR run on the **full stitched** image (same canvas as CRAFT). "
+        "Only **high-confidence** tokens (`conf >= 0.90`) are kept. "
+        "Tokens are grouped by **message_index** (CRAFT row). **Not** used for speaker — Pass 1 decides `role`.\n\n",
+    ]
+    for midx in sorted(buckets.keys()):
+        items = sorted(buckets[midx], key=lambda z: (z["y_norm"], z["x_norm"]))
+        parts.append(f"### message_index {midx}\n")
+        for j, it in enumerate(items):
+            tjson = json.dumps(it["text"], ensure_ascii=False)
+            sb = f"stitch_band={it['stitch_band']}/{K} " if K > 1 else ""
+            spk = f"[{it['role']}] " if include_spk_roles and it.get("role") else ""
+            parts.append(
+                f"  [{j}] {sb}y_norm={it['y_norm']:.4f} x_norm={it['x_norm']:.4f} "
+                f"{spk}conf={it['conf']:.3f} text={tjson}\n"
+            )
+        parts.append("\n")
+
+    return "".join(parts).strip()
+
+
+def collect_vision_ocr_crop_by_message_index(crop_images):
+    """Run Vision on ordered message crops; each crop index is already `message_index`."""
+    if not GOOGLE_VISION_API_KEY or not crop_images:
+        return ""
+
+    min_conf = float(os.environ.get("GEMINI_OCR_HINT_MIN_CONF", "0.90"))
+    min_conf = max(0.0, min(1.0, min_conf))
+    parts = [
+        "OCR run on the ordered per-message crops. "
+        "Each block already matches the same `message_index` as the crop list. "
+        "Only high-confidence tokens are kept.\n\n"
+    ]
+    kept_any = False
+
+    for midx, crop in enumerate(crop_images):
+        if crop is None or getattr(crop, "size", 0) == 0:
+            continue
+        ih, iw = crop.shape[:2]
+        if ih <= 0 or iw <= 0:
+            continue
+        try:
+            detections = ocr_engine.predict(crop)
+        except Exception as e:
+            print(f"[OCR BY-MSG] Vision on crop {midx} failed: {e}")
+            continue
+
+        items = []
+        for det in detections:
+            text = (det.get("text") or "").strip()
+            if not text:
+                continue
+            conf = float(det.get("score") or 0.0)
+            if conf < min_conf:
+                continue
+            bbox = det.get("bbox")
+            if not bbox or len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = (
+                float(bbox[0]),
+                float(bbox[1]),
+                float(bbox[2]),
+                float(bbox[3]),
+            )
+            items.append(
+                {
+                    "y_norm": ((y1 + y2) * 0.5) / float(ih),
+                    "x_norm": ((x1 + x2) * 0.5) / float(iw),
+                    "conf": conf,
+                    "text": text,
+                }
+            )
+        if not items:
+            continue
+        kept_any = True
+        items = sorted(items, key=lambda z: (z["y_norm"], z["x_norm"]))
+        parts.append(f"### message_index {midx}\n")
+        for j, it in enumerate(items):
+            tjson = json.dumps(it["text"], ensure_ascii=False)
+            parts.append(
+                f"  [{j}] y_norm={it['y_norm']:.4f} x_norm={it['x_norm']:.4f} "
+                f"conf={it['conf']:.3f} text={tjson}\n"
+            )
+        parts.append("\n")
+
+    if not kept_any:
+        return ""
+    return "".join(parts).strip()
+
+
+def collect_vision_ocr_page_by_message_index(page_images, page_ranges, craft_objects_sorted):
+    """Run Vision on the cleaned page images and bucket tokens by CRAFT message_index."""
+    if not GOOGLE_VISION_API_KEY or not page_images or not page_ranges or not craft_objects_sorted:
+        return ""
+
+    min_conf = float(os.environ.get("GEMINI_OCR_HINT_MIN_CONF", "0.90"))
+    min_conf = max(0.0, min(1.0, min_conf))
+    page_map = {int(pr[2]): pr for pr in page_ranges}
+    page_rows: Dict[int, list] = {}
+    for midx, obj in enumerate(craft_objects_sorted):
+        bbox = obj.get("bbox") or [0, 0, 0, 0]
+        if len(bbox) < 4:
+            continue
+        page_index = int(obj.get("page_index", 0))
+        pr = page_map.get(page_index)
+        if pr is None:
+            continue
+        start_y = float(pr[0])
+        page_rows.setdefault(page_index, []).append(
+            {
+                "message_index": midx,
+                "y0": float(bbox[1]) - start_y,
+                "y1": float(bbox[3]) - start_y,
+            }
+        )
+    buckets: Dict[int, list] = {}
+
+    for page_idx, page_img in enumerate(page_images):
+        if page_img is None or getattr(page_img, "size", 0) == 0:
+            continue
+        pr = page_map.get(page_idx)
+        if pr is None:
+            continue
+        start_y = float(pr[0])
+        ih, iw = page_img.shape[:2]
+        if ih <= 0 or iw <= 0:
+            continue
+        try:
+            detections = ocr_engine.predict(page_img)
+        except Exception as e:
+            print(f"[OCR BY-MSG] Vision on page {page_idx} failed: {e}")
+            continue
+
+        rows_here = page_rows.get(page_idx, [])
+        row_pad = 18.0
+
+        for det in detections:
+            text = (det.get("text") or "").strip()
+            if not text:
+                continue
+            conf = float(det.get("score") or 0.0)
+            if conf < min_conf:
+                continue
+            bbox = det.get("bbox")
+            if not bbox or len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = (
+                float(bbox[0]),
+                float(bbox[1]),
+                float(bbox[2]),
+                float(bbox[3]),
+            )
+            lcy = (y1 + y2) * 0.5
+            candidate_rows = [
+                r for r in rows_here
+                if (r["y0"] - row_pad) <= lcy <= (r["y1"] + row_pad)
+            ]
+            if not candidate_rows:
+                continue
+            best_row = min(
+                candidate_rows,
+                key=lambda r: abs(lcy - ((r["y0"] + r["y1"]) * 0.5)),
+            )
+            gcx = (x1 + x2) * 0.5
+            midx = int(best_row["message_index"])
+            buckets.setdefault(midx, []).append(
+                {
+                    "y_norm": lcy / float(ih),
+                    "x_norm": gcx / float(iw),
+                    "conf": conf,
+                    "text": text,
+                    "page": page_idx + 1,
+                }
+            )
+
+    if not buckets:
+        return ""
+
+    parts = [
+        "OCR run on the cleaned page images. "
+        "Tokens are assigned to `message_index` using the same CRAFT row map. "
+        "Only high-confidence tokens are kept.\n\n"
+    ]
+    for midx in sorted(buckets.keys()):
+        items = sorted(buckets[midx], key=lambda z: (z["page"], z["y_norm"], z["x_norm"]))
+        parts.append(f"### message_index {midx}\n")
+        for j, it in enumerate(items):
+            tjson = json.dumps(it["text"], ensure_ascii=False)
+            parts.append(
+                f"  [{j}] page={it['page']} y_norm={it['y_norm']:.4f} "
+                f"x_norm={it['x_norm']:.4f} conf={it['conf']:.3f} text={tjson}\n"
+            )
+        parts.append("\n")
+
+    return "".join(parts).strip()
+
+
 def _is_non_latin(text: str) -> bool:
     """Return True if *text* contains characters outside the Latin/ASCII range.
 
@@ -30,6 +573,28 @@ def _is_non_latin(text: str) -> bool:
     the English translation.
     """
     return any(ord(c) > 0x024F for c in text if not c.isspace())
+
+
+def _prefer_english_surface(text: str, fallback: str = "") -> str:
+    """Keep English-only renderable text when Gemini returns mixed-script output."""
+    t = (text or "").strip()
+    fb = (fallback or "").strip()
+    if not t:
+        return fb
+    if not _is_non_latin(t):
+        return t
+
+    # Common Gemini pattern: "<source> (English translation)"
+    paren_hits = re.findall(r"\(([^()]+)\)", t)
+    for cand in reversed(paren_hits):
+        c = cand.strip()
+        if c and not _is_non_latin(c):
+            return c
+
+    # Fallback: use the English-only baseline if available.
+    if fb and not _is_non_latin(fb):
+        return fb
+    return t
 
 try:
     from pythainlp.util import normalize as thai_normalize
@@ -99,8 +664,11 @@ def _gemini_discover_model(api_key):
             ]
             if not capable:
                 continue
-            # Pick highest-priority model
+            # Pick highest-priority model, preferring Pro over Flash.
             for pref in _GEMINI_PREFER:
+                for name in capable:
+                    if pref in name and "pro" in name:
+                        return name, ver
                 for name in capable:
                     if pref in name and "flash" in name:
                         return name, ver
@@ -111,21 +679,21 @@ def _gemini_discover_model(api_key):
     return None, None
 
 
-def _gemini_generate(prompt, image_b64=None):
-    """Call Gemini REST API directly (text-only or multimodal).
+class GeminiApiResult(NamedTuple):
+    """Result of a ``generateContent`` call (text + full parsed JSON for debugging)."""
 
-    Pass *image_b64* (base64-encoded JPEG string) to send an image alongside
-    the text prompt — Gemini Vision will see the actual chat screenshot.
-    """
+    text: str
+    response_json: Optional[Dict[str, Any]]
+
+
+def _gemini_discover_if_needed() -> bool:
+    """Load API key from env and pick a model. Returns False if Gemini is unavailable."""
     global _gemini_api_key, _gemini_active_model
-    import requests as _req
 
     if _gemini_api_key is None:
         _gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip() or None
-
     if not _gemini_api_key:
-        return None
-
+        return False
     if _gemini_active_model is None:
         print("[GEMINI] Discovering available models...")
         model, ver = _gemini_discover_model(_gemini_api_key)
@@ -135,7 +703,39 @@ def _gemini_generate(prompt, image_b64=None):
         else:
             print("[GEMINI] No generateContent-capable model found — refinement disabled")
             _gemini_api_key = ""
-            return None
+            return False
+    return True
+
+
+def _gemini_candidate_finish_reason(api_payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not api_payload:
+        return None
+    cands = api_payload.get("candidates") or []
+    if not cands:
+        return None
+    return cands[0].get("finishReason")
+
+
+def _gemini_generate(
+    prompt,
+    image_b64=None,
+    image_b64_list=None,
+    timeout=120,
+    max_output_tokens_override: Optional[int] = None,
+):
+    """Call Gemini REST API directly (text-only or multimodal).
+
+    Pass *image_b64* (single JPEG base64) or *image_b64_list* (several JPEGs in order)
+    before the text prompt.
+
+    Returns ``GeminiApiResult(text, response_json)``, or ``None`` if the API key / model
+    is not configured. *response_json* is the full API object (for empty/blocked replies).
+    """
+    global _gemini_api_key, _gemini_active_model
+    import requests as _req
+
+    if not _gemini_discover_if_needed():
+        return None
 
     model, ver = _gemini_active_model
     url = (
@@ -144,168 +744,1576 @@ def _gemini_generate(prompt, image_b64=None):
     )
 
     parts = []
-    if image_b64:
+    if image_b64_list:
+        for b64 in image_b64_list:
+            if b64:
+                parts.append({"inlineData": {"mimeType": "image/jpeg", "data": b64}})
+    elif image_b64:
         parts.append({"inlineData": {"mimeType": "image/jpeg", "data": image_b64}})
     parts.append({"text": prompt})
 
-    r = _req.post(
-        url,
-        json={"contents": [{"parts": parts}]},
-        timeout=120,
+    if max_output_tokens_override is not None:
+        max_out = int(max_output_tokens_override)
+    else:
+        max_out = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "32768"))
+    gen_cfg: Dict[str, Any] = {
+        "maxOutputTokens": max(1024, min(max_out, 65536)),
+        "temperature": 0.0,
+        "topP": 1.0,
+    }
+    # Gemini 2.5 **Flash** (not Pro): internal "thinking" shares the output token cap → truncated JSON.
+    # Default thinkingBudget=0 for OCR/translation (set GEMINI_THINKING_BUDGET=-1 for dynamic thinking).
+    # 2.5 Pro cannot disable thinking per API docs — omit thinkingConfig for Pro.
+    _mname = (model or "").lower()
+    if "2.5" in _mname and "pro" not in _mname:
+        _tb = os.environ.get("GEMINI_THINKING_BUDGET", "0").strip()
+        try:
+            thinking_budget = int(_tb)
+        except ValueError:
+            thinking_budget = 0
+        gen_cfg["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+    # Optional: force JSON body (no markdown fence). Disable if the API rejects your model/payload.
+    _jm = os.environ.get("GEMINI_JSON_OUTPUT", "0").strip().lower()
+    if _jm not in ("0", "false", "no", "off"):
+        gen_cfg["responseMimeType"] = "application/json"
+    payload: Dict[str, Any] = {
+        "contents": [{"parts": parts}],
+        "generationConfig": gen_cfg,
+    }
+    # Chat screenshots often trip default safety (meds, travel, etc.) → empty candidates.
+    _rel = os.environ.get("GEMINI_SAFETY_RELAXED", "1").strip().lower()
+    if _rel not in ("0", "false", "no", "off"):
+        payload["safetySettings"] = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+        ]
+
+    image_count = len(image_b64_list or ([] if not image_b64 else [image_b64]))
+    prompt_chars = len(prompt or "")
+    print(
+        f"[GEMINI] Request start: model={model} images={image_count} "
+        f"prompt_chars={prompt_chars} max_tokens={gen_cfg['maxOutputTokens']} timeout={timeout}s",
+        flush=True,
+    )
+    t_http = time.time()
+    r = _req.post(url, json=payload, timeout=timeout)
+    print(
+        f"[GEMINI] HTTP response received in {time.time()-t_http:.1f}s with status {r.status_code}",
+        flush=True,
     )
     r.raise_for_status()
-    candidates = r.json().get("candidates", [])
+    t_json = time.time()
+    data = r.json()
+    print(
+        f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
+        flush=True,
+    )
+
+    pf = data.get("promptFeedback")
+    if pf:
+        print(f"[GEMINI] promptFeedback: {pf}")
+
+    candidates = data.get("candidates") or []
     if not candidates:
-        return ""
-    resp_parts = candidates[0].get("content", {}).get("parts", [])
-    return "".join(p.get("text", "") for p in resp_parts)
+        print(
+            "[GEMINI] No candidates in API response — often prompt blocked or request too large. "
+            "See result/gemini_debug.txt (=== GEMINI API ===)."
+        )
+        return GeminiApiResult("", data)
+
+    c0 = candidates[0]
+    fr = c0.get("finishReason")
+    usage = data.get("usageMetadata") or {}
+    thoughts_tokens = usage.get("thoughtsTokenCount")
+    total_tokens = usage.get("totalTokenCount")
+    print(
+        f"[GEMINI] Candidate summary: finishReason={fr or 'unknown'} "
+        f"totalTokens={total_tokens if total_tokens is not None else 'n/a'} "
+        f"thoughtsTokens={thoughts_tokens if thoughts_tokens is not None else 'n/a'}",
+        flush=True,
+    )
+    if fr and fr not in ("STOP", "MAX_TOKENS", "FINISH_REASON_STOP", "FINISH_REASON_MAX_TOKENS"):
+        print(f"[GEMINI] finishReason: {fr}")
+
+    content = c0.get("content") or {}
+    resp_parts = content.get("parts") or []
+    text = "".join(
+        p.get("text", "") for p in resp_parts if isinstance(p, dict)
+    )
+    sr = c0.get("safetyRatings")
+    if sr and not text.strip():
+        print(f"[GEMINI] safetyRatings: {sr}")
+    if not text.strip():
+        print(
+            "[GEMINI] Empty model text — check finishReason / promptFeedback in "
+            "result/gemini_debug.txt (=== GEMINI API ===)."
+        )
+    return GeminiApiResult(text, data)
 
 
-def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""):
-    """Send the full labelled conversation to Gemini in one multimodal call.
+def _resize_image_for_gemini_vision(img, max_long_edge=16384, min_short_edge=800):
+    """Resize *img* so Gemini can read bubble text on very tall combined screenshots.
 
-    When *combined_img* is provided (the concatenated OCR canvas), it is sent
-    alongside the text so Gemini can see bubble positions, visual alignment, and
-    any text the OCR may have misread — using the image as ground truth.
-
-    Writes translated "text_en" (and corrected "type" for timestamps) back into
-    each object.  Returns True on success so the caller can skip Google Translate.
+    A naive ``max(h,w) <= 1600`` scale makes a 1300×20000px stitch into ~104×1600 —
+    unreadable.  We cap the *long* edge but ensure the *short* edge stays >= *min_short_edge*
+    when physically possible; if still impossible, prefer the long-edge cap.
     """
+    if img is None or getattr(img, "size", 0) == 0:
+        return img
+    h, w = img.shape[:2]
+    long_m = max(h, w)
+    short_m = min(h, w)
+    if long_m <= 0 or short_m <= 0:
+        return img
+
+    scale = min(1.0, max_long_edge / long_m)
+    if short_m * scale < min_short_edge:
+        scale = min_short_edge / short_m
+    if long_m * scale > max_long_edge:
+        scale = max_long_edge / long_m
+
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    if new_w == w and new_h == h:
+        return img
+    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+    return cv2.resize(img, (new_w, new_h), interpolation=interp)
+
+
+def _prepare_stitch_for_gemini(img):
+    """Resize **only** the stitched image for Gemini: never upscale; avoid crushing width.
+
+    Returns ``(out_bgr, user_note, error_message)``. *error_message* is set when the band is
+    too extreme to resize safely; the caller may try more vertical slices via
+    :func:`_prepare_stitch_slices_for_gemini`.
+
+    Environment:
+      GEMINI_STITCH_MAX_LONG_EDGE — max(longest side) after resize (default ``16384``).
+      GEMINI_STITCH_ABORT_LONG_EDGE — if native longest side exceeds this, abort (default ``120000``).
+      GEMINI_STITCH_ABORT_MIN_SHORT — if the shorter side after **downscale-only** would be below
+        this (in px), abort as unreadable (default ``280``).
+    """
+    if img is None or getattr(img, "size", 0) == 0:
+        return img, "", ""
+
+    h, w = img.shape[:2]
+    long_m = max(h, w)
+    short_m = min(h, w)
+    if long_m <= 0 or short_m <= 0:
+        return img, "", ""
+
+    abort_native = int(os.environ.get("GEMINI_STITCH_ABORT_LONG_EDGE", "120000"))
+    if long_m > abort_native:
+        return (
+            None,
+            "",
+            (
+                f"concatenated image too long ({w}×{h}px, long edge {long_m}px > "
+                f"{abort_native}); use fewer screenshots or increase GEMINI_STITCH_ABORT_LONG_EDGE"
+            ),
+        )
+
+    max_long = int(os.environ.get("GEMINI_STITCH_MAX_LONG_EDGE", "16384"))
+    min_short_floor = int(os.environ.get("GEMINI_STITCH_ABORT_MIN_SHORT", "280"))
+
+    # Downscale only (never enlarge tall stitches — that blows API limits).
+    scale = min(1.0, float(max_long) / float(long_m))
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    new_short = min(new_w, new_h)
+
+    if new_short < min_short_floor:
+        return (
+            None,
+            "",
+            (
+                f"concatenated image too long to resize safely: after fitting long edge to "
+                f"{max_long}px the short side would be {new_short}px (< {min_short_floor}). "
+                f"Native size {w}×{h}px — try automatic stitch splitting (more vertical bands)"
+            ),
+        )
+
+    if new_w == w and new_h == h:
+        return img, "", ""
+
+    interp = cv2.INTER_AREA
+    out = cv2.resize(img, (new_w, new_h), interpolation=interp)
+    note = (
+        f"Stitched image was **uniformly downscaled** for the API from {w}×{h}px to "
+        f"{new_w}×{new_h}px (long edge cap {max_long}px). Layout and y_norm hints still match "
+        f"the original stack."
+    )
+    return out, note, ""
+
+
+def _split_combined_vertical_equal(img, n: int):
+    """Split *img* into *n* contiguous horizontal strips (equal height bands, remainder to lower indices)."""
+    if img is None or getattr(img, "size", 0) == 0 or n < 1:
+        return []
+    if n == 1:
+        return [img]
+    h = int(img.shape[0])
+    out = []
+    y0 = 0
+    for i in range(n):
+        y1 = (i + 1) * h // n
+        if y1 > y0:
+            out.append(img[y0:y1, :].copy())
+        y0 = y1
+    return out if out else [img]
+
+
+def _prepare_stitch_slices_for_gemini(combined_img):
+    """Prepare the stitched canvas for Gemini as one or more vertical slices.
+
+    Tries **one** full-height image first (with downscale-only policy). If that fails, splits the
+    same canvas into **2, 3, …** equal-height bands until each band passes
+    :func:`_prepare_stitch_for_gemini`, up to ``GEMINI_STITCH_MAX_SLICES`` (default **5**).
+
+    Returns ``(prepared_bgr_list, human_note, n_slices, error_str)``.
+    """
+    if combined_img is None or getattr(combined_img, "size", 0) == 0:
+        return [], "", 0, ""
+
+    max_slices = int(os.environ.get("GEMINI_STITCH_MAX_SLICES", "5"))
+    max_slices = max(1, min(20, max_slices))  # sanity cap
+
+    last_err = ""
+    for n in range(1, max_slices + 1):
+        bands = _split_combined_vertical_equal(combined_img, n)
+        if len(bands) != n:
+            last_err = f"stitch split internal error (expected {n} bands)"
+            continue
+        prepared = []
+        slice_notes = []
+        ok = True
+        for bi, band in enumerate(bands):
+            rc, note, err = _prepare_stitch_for_gemini(band)
+            if err:
+                ok = False
+                last_err = err
+                break
+            prepared.append(rc)
+            if note:
+                slice_notes.append(f"Band {bi + 1}/{n}: {note}")
+        if ok and prepared:
+            if n == 1:
+                meta = slice_notes[0] if slice_notes else ""
+            else:
+                h0 = combined_img.shape[0]
+                meta = (
+                    f"Full stitch ({combined_img.shape[1]}×{h0}px) was sent as **{n} equal-height** "
+                    f"vertical bands (contiguous, top→bottom). **Band 1** includes the status bar; "
+                    f"later bands are lower in the same conversation.\n"
+                )
+                if slice_notes:
+                    meta += "\n".join(slice_notes)
+            print(f"[GEMINI] Stitch prepared as {n} vertical band(s)")
+            return prepared, meta.strip(), n, ""
+
+    return (
+        [],
+        "",
+        0,
+        last_err
+        or (
+            f"concatenated image could not be prepared for Gemini even after splitting into "
+            f"{max_slices} equal-height bands"
+        ),
+    )
+
+
+prepare_stitch_bands_for_gemini = _prepare_stitch_slices_for_gemini
+
+
+def _jpeg_b64_from_bgr(img, quality=90):
+    import base64 as _b64
+
+    if img is None or getattr(img, "size", 0) == 0:
+        return ""
+    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return _b64.b64encode(buf.tobytes()).decode("utf-8")
+
+
+def _canonicalize_gemini_role(role_raw: str) -> str:
+    """Map model-specific labels to exactly one of: contact | user | system.
+
+    **contact** = other person / incoming / LEFT grey bubble.
+    **user** = phone owner / outgoing / RIGHT colored bubble.
+    Do NOT treat pronouns like \"you\" / \"them\" as roles — those were mis-mapped before.
+    """
+    r = (role_raw or "").strip().lower()
+    if r in (
+        "receiver",
+        "incoming",
+        "other_party",
+        "left",
+        "person_a",
+        "other",
+        "contact",
+        "person1",
+    ):
+        return "contact"
+    if r in ("sender", "outgoing", "self", "right", "person_b", "user", "person2"):
+        return "user"
+    if r in ("system", "timestamp", "center", "ui", "meta", "notice"):
+        return "system"
+    return r
+
+
+def _write_gemini_prompt_file(filename: str, label: str, prompt: str):
+    path = os.path.join(OUTPUT_DIR, filename)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"{label}\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(prompt)
+        print(f"[GEMINI] Prompt file → {path}")
+    except Exception as exc:
+        print(f"[GEMINI] Could not write prompt file {filename}: {exc}")
+
+
+def _extract_json_object(text: str) -> Optional[str]:
+    """If the model adds prose around JSON, pull the first top-level ``{...}`` object."""
+    if not text:
+        return None
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    quote = ""
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                in_str = False
+            continue
+        if ch in "\"'":
+            in_str = True
+            quote = ch
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _parse_gemini_full_vision_json(raw: str):
+    """Parse JSON from Gemini; return (contact_name, messages_list, ambiguity_ledger).
+
+    *ambiguity_ledger* is a list of dicts from pass 1, e.g.
+    ``[{"id": "REF1", "message_index": 2, "note": "..."}]`` — may be empty.
+    """
+    if not raw or not raw.strip():
+        return "", [], []
+    text = raw.strip().lstrip("\ufeff")
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.I)
+    if fence:
+        text = fence.group(1).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        blob = _extract_json_object(text)
+        if not blob:
+            raise
+        data = json.loads(blob)
+    name = (data.get("contact_name") or data.get("contact") or "").strip()
+    msgs = data.get("messages") or data.get("conversation") or []
+    ledger = data.get("ambiguity_ledger") or data.get("ambiguities") or []
+    if not isinstance(msgs, list):
+        return name, [], []
+    if not isinstance(ledger, list):
+        ledger = []
+    normalized = []
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        raw_role = (m.get("role") or m.get("speaker") or "").strip().lower()
+        role = _canonicalize_gemini_role(raw_role)
+        if role not in ("contact", "user", "system"):
+            print(
+                f"[GEMINI] Unknown message role {raw_role!r} → treating as 'system' "
+                f"(check gemini_debug.txt)"
+            )
+            role = "system"
+        crop_text_src = (m.get("crop_text_src") or "").strip()
+        text_src = (m.get("text_src") or m.get("source_text") or crop_text_src or "").strip()
+        text_en_debug = (
+            m.get("text_en_debug")
+            or m.get("debug_translation")
+            or m.get("text_en")
+            or m.get("english")
+            or ""
+        ).strip()
+        te = (
+            m.get("text_en")
+            or text_src
+            or m.get("text")
+            or m.get("english")
+            or ""
+        ).strip()
+        if not (te or text_src or text_en_debug):
+            continue
+        normalized.append(
+            {
+                "role": role,
+                "text_en": te or text_src or text_en_debug,
+                "text_src": text_src,
+                "crop_text_src": crop_text_src,
+                "text_en_debug": text_en_debug,
+                "legibility": (m.get("legibility") or "").strip(),
+                "note": (m.get("note") or "").strip(),
+            }
+        )
+    return name, normalized, ledger
+
+
+def _pass1_has_suspicious_repetition(messages) -> bool:
+    """Detect degenerate Pass 1 outputs with repeated non-link content."""
+    msgs = list(messages or [])
+    if len(msgs) < 8:
+        return False
+
+    counts = {}
+    prev = None
+    streak = 0
+    max_streak = 0
+
+    for m in msgs:
+        t = (m.get("text_src") or m.get("text_en") or "").strip()
+        if not t or _looks_like_link_text(t) or re.fullmatch(r"[\d\s:./-]+", t):
+            prev = None
+            streak = 0
+            continue
+        counts[t] = counts.get(t, 0) + 1
+        if t == prev:
+            streak += 1
+        else:
+            prev = t
+            streak = 1
+        max_streak = max(max_streak, streak)
+
+    repeated_max = max(counts.values(), default=0)
+    return max_streak >= 4 or repeated_max >= max(5, len(msgs) // 3)
+
+
+_REF_PLACEHOLDER_RE = re.compile(r"⟦REF\d+⟧")
+
+
+def _conversation_has_ref_placeholders(messages):
+    return any(
+        _REF_PLACEHOLDER_RE.search((m.get("text_en") or ""))
+        for m in (messages or [])
+    )
+
+
+def _gemini_resolve_referent_placeholders(
+    contact_name: str,
+    messages: list,
+    ambiguity_ledger: list,
+    timeout: int,
+):
+    """Pass 2: text-only — translate the source transcript into English."""
+    if not messages:
+        return messages, contact_name
+
+    payload = {
+        "contact_name": contact_name,
+        "ambiguity_ledger": ambiguity_ledger or [],
+        "messages": [
+            {
+                "message_index": i,
+                "role": m["role"],
+                "text_src": m["text_en"],
+            }
+            for i, m in enumerate(messages)
+        ],
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
+    expected_n = len(messages)
+
+    prompt = f"""You are **PASS 2 of 2**: translate an already-transcribed mobile chat into English.
+
+## Input JSON
+- `messages[i].message_index == i` is the canonical row index from the stitched chat.
+- `text_src` is the current source-language transcription for that exact row.
+- `role` is already fixed from bubble side and must never change.
+
+## Your task
+- Translate each `text_src` into natural, faithful English as `text_en`.
+- Keep the same meaning, order, speaker, timestamps, money, places, and system notices.
+- Read the whole thread top→bottom so short replies make conversational sense.
+- If a source line is ambiguous, choose the most likely faithful English from the local chat context.
+- Do **not** invent extra content that is not supported by the source transcript.
+
+## Rules
+- Keep **message count** and **message_index** alignment identical.
+- For each output row, copy `role` exactly from the input row with the same `message_index`.
+- Translate **only** the text content. Do not merge, split, reorder, or delete messages.
+- `text_en` must be English. `contact_name` may remain as-is.
+
+## Output
+Return **only** valid JSON (no markdown):
+{{"contact_name":"<string>","messages":[{{"role":"contact|user|system","text_en":"<english translation>"}}]}}
+
+INPUT JSON:
+{payload_json}"""
+
+    _write_gemini_prompt_file(
+        "gemini_prompt_pass2.txt",
+        "Pass 2 (final translation)",
+        prompt,
+    )
+
+    try:
+        gres = _gemini_generate(prompt, timeout=timeout)
+        raw = gres.text if gres else ""
+    except Exception as e:
+        print(f"[GEMINI] Pass 2 translation failed: {e}")
+        _append_gemini_debug_pass2(prompt, f"ERROR: {e}")
+        return messages, contact_name
+
+    if not raw or not raw.strip():
+        print("[GEMINI] Pass 2 empty response — keeping source transcript")
+        _append_gemini_debug_pass2(prompt, raw or "")
+        return messages, contact_name
+
+    try:
+        name2, msgs2, _ledger = _parse_gemini_full_vision_json(raw)
+    except json.JSONDecodeError as e:
+        print(f"[GEMINI] Pass 2 JSON parse failed: {e} — keeping source transcript")
+        _append_gemini_debug_pass2(prompt, raw)
+        return messages, contact_name
+
+    if not msgs2 or len(msgs2) != len(messages):
+        print(
+            f"[GEMINI] Pass 2 message count mismatch ({len(msgs2)} vs {len(messages)}) — keeping source transcript"
+        )
+        _append_gemini_debug_pass2(prompt, raw)
+        return messages, contact_name
+
+    # If pass 2 changed any role or reordered semantics, do not merge — wrong line ↔ side pairing.
+    for i, m in enumerate(msgs2):
+        r2 = _canonicalize_gemini_role(m.get("role") or "")
+        if r2 not in ("contact", "user", "system"):
+            r2 = "system"
+        if r2 != messages[i]["role"]:
+            print(
+                f"[GEMINI] Pass 2 role mismatch at index {i}: pass1={messages[i]['role']!r} "
+                f"pass2={m.get('role')!r} — discarding entire pass 2, keeping pass 1"
+            )
+            _append_gemini_debug_pass2(prompt, raw + "\n\n[MERGE ABORTED: role drift]\n")
+            return messages, contact_name
+
+    merged = []
+    for i, m in enumerate(msgs2):
+        merged.append(
+            {"role": messages[i]["role"], "text_en": m.get("text_en", messages[i]["text_en"])}
+        )
+    final_name = (name2 or contact_name or "").strip() or contact_name
+    _append_gemini_debug_pass2(prompt, raw)
+    if _conversation_has_ref_placeholders(merged):
+        print("[GEMINI] Pass 2 left some ⟦REF⟧ tokens — check gemini_debug.txt")
+    else:
+        print("[GEMINI] Pass 2 applied (final English translation).")
+    return merged, final_name
+
+
+def _append_gemini_debug_ocr_refine(prompt: str, response: str):
+    path = os.path.join(OUTPUT_DIR, "gemini_debug.txt")
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n\n" + "=" * 60 + "\n")
+            f.write("PASS 1b — OCR-GUIDED TRANSCRIPT REWRITE (text-only)\n")
+            f.write("=" * 60 + "\n\n")
+            f.write("=== PROMPT ===\n")
+            f.write(prompt)
+            f.write("\n\n=== RAW RESPONSE ===\n")
+            f.write(response or "(empty)\n")
+    except Exception as exc:
+        print(f"[GEMINI] Could not append OCR-refine debug: {exc}")
+
+
+def _append_gemini_debug_crop_refine(prompt: str, response: str, batch_label: str):
+    path = os.path.join(OUTPUT_DIR, "gemini_debug.txt")
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n\n" + "=" * 60 + "\n")
+            f.write(f"PASS 2 — CROP REFINE ({batch_label})\n")
+            f.write("=" * 60 + "\n\n")
+            f.write("=== PROMPT ===\n")
+            f.write(prompt)
+            f.write("\n\n=== RAW RESPONSE ===\n")
+            f.write(response or "(empty)\n")
+    except Exception as exc:
+        print(f"[GEMINI] Could not append crop-refine debug: {exc}")
+
+
+def _gemini_crop_refine_pass(
+    contact_name: str,
+    messages: list,
+    crop_images: list,
+    timeout: int,
+):
+    """Pass 2: transcribe ordered message crops in the original language."""
+    if not messages or not crop_images:
+        return [], contact_name, {
+            "enabled": bool(crop_images),
+            "skipped": True,
+            "reason": "missing_messages_or_crops",
+            "input_messages": len(messages or []),
+            "input_crops": len(crop_images or []),
+        }
+
+    batch_size = max(1, int(os.environ.get("GEMINI_CROP_REFINE_BATCH_SIZE", "5")))
+    crop_msgs = [dict(m) for m in messages]
+    batch_debug = []
+    usable_n = min(len(messages), len(crop_images))
+
+    for start in range(0, usable_n, batch_size):
+        end = min(usable_n, start + batch_size)
+        batch_msgs = messages[start:end]
+        batch_imgs = crop_images[start:end]
+        batch_payload = {
+            "contact_name": contact_name,
+            "messages": [
+                {
+                    "message_index": start + i,
+                    "role": m["role"],
+                    "pass1_text_src": m.get("text_src") or m.get("text_en") or "",
+                }
+                for i, m in enumerate(batch_msgs)
+            ],
+        }
+        payload_json = json.dumps(batch_payload, ensure_ascii=False, indent=2)
+        prompt = f"""You are PASS 2 of 3.
+
+You receive a small ordered batch of cropped Facebook/Messenger message images.
+Image 1 corresponds to `message_index {start}`, image 2 to `message_index {start + 1}`, and so on.
+
+Task for each message:
+1. Read the cropped image by itself.
+2. Transcribe the visible message in the original language as `crop_text_src`.
+3. Use the provided `pass1_text_src` only as a fallback anchor when the crop is noisy or incomplete.
+4. Keep the same ordering and roles.
+
+Rules:
+- Keep exactly {end - start} messages.
+- Keep the same `message_index` values.
+- Keep `role` unchanged.
+- Do not merge, split, reorder, add, or remove messages.
+- Do not translate to English in this pass.
+
+Input JSON:
+{payload_json}
+
+Output JSON only:
+{{"messages":[{{"message_index":<int>,"role":"contact|user|system","crop_text_src":"<source-language crop reading>","legibility":"clear|partial|noise","note":"<short note>"}}]}}"""
+
+        batch_label = f"indices {start}-{end - 1}"
+
+        img_b64_list = []
+        for img in batch_imgs:
+            if img is None or getattr(img, "size", 0) == 0:
+                continue
+            b64 = _jpeg_b64_from_bgr(img, quality=90)
+            if b64:
+                img_b64_list.append(b64)
+
+        try:
+            gres = _gemini_generate(prompt, image_b64_list=img_b64_list, timeout=timeout)
+            raw = (gres.text if gres else "") or ""
+        except Exception as e:
+            _append_gemini_debug_crop_refine(prompt, f"ERROR: {e}", batch_label)
+            batch_debug.append(
+                {"start": start, "end": end - 1, "ok": False, "reason": f"request_error: {e}"}
+            )
+            continue
+
+        if not raw.strip():
+            _append_gemini_debug_crop_refine(prompt, raw, batch_label)
+            batch_debug.append(
+                {"start": start, "end": end - 1, "ok": False, "reason": "empty_response"}
+            )
+            continue
+
+        try:
+            _name2, msgs2, _ledger2 = _parse_gemini_full_vision_json(raw)
+        except json.JSONDecodeError as e:
+            _append_gemini_debug_crop_refine(prompt, raw, batch_label)
+            batch_debug.append(
+                {"start": start, "end": end - 1, "ok": False, "reason": f"json_error: {e}"}
+            )
+            continue
+
+        if len(msgs2) != len(batch_msgs):
+            _append_gemini_debug_crop_refine(prompt, raw, batch_label)
+            batch_debug.append(
+                {
+                    "start": start,
+                    "end": end - 1,
+                    "ok": False,
+                    "reason": f"count_mismatch:{len(msgs2)}",
+                }
+            )
+            continue
+
+        role_drift = False
+        for i, m in enumerate(msgs2):
+            if _canonicalize_gemini_role(m.get("role") or "") != batch_msgs[i]["role"]:
+                role_drift = True
+                break
+        if role_drift:
+            _append_gemini_debug_crop_refine(prompt, raw + "\n[ABORT: role drift]\n", batch_label)
+            batch_debug.append(
+                {"start": start, "end": end - 1, "ok": False, "reason": "role_drift"}
+            )
+            continue
+
+        for i, m in enumerate(msgs2):
+            crop_msgs[start + i] = {
+                "role": batch_msgs[i]["role"],
+                "text_en": (batch_msgs[i].get("text_src") or batch_msgs[i].get("text_en") or "").strip(),
+                "text_src": (batch_msgs[i].get("text_src") or batch_msgs[i].get("text_en") or "").strip(),
+                "crop_text_src": (m.get("crop_text_src") or m.get("text_src") or "").strip(),
+                "legibility": (m.get("legibility") or "").strip(),
+                "note": (m.get("note") or "").strip(),
+            }
+        _append_gemini_debug_crop_refine(prompt, raw, batch_label)
+        batch_debug.append({"start": start, "end": end - 1, "ok": True, "reason": ""})
+
+    return crop_msgs, contact_name, {
+        "enabled": True,
+        "skipped": False,
+        "batch_size": batch_size,
+        "input_messages": len(messages),
+        "input_crops": len(crop_images),
+        "usable_pairs": usable_n,
+        "output_messages": len(crop_msgs),
+        "batches": batch_debug,
+    }
+
+
+def _gemini_ocr_context_refine_pass(
+    contact_name: str,
+    pass1_messages: list,
+    crop_messages: list,
+    ambiguity_ledger: list,
+    ocr_pass2_text: str,
+    timeout: int,
+    context_images=None,
+    prompt_label: str = "Pass 3 (OCR-guided final translation)",
+):
+    """Pass 3: fuse Pass 1 + Pass 2 + OCR hints and return final English.
+
+    Returns ``(messages, contact_name, ambiguity_ledger)`` — on failure returns inputs unchanged.
+    """
+    if not pass1_messages:
+        return pass1_messages, contact_name, ambiguity_ledger or []
+
+    payload = {
+        "contact_name": contact_name,
+        "ambiguity_ledger": ambiguity_ledger or [],
+        "messages": [
+            {
+                "message_index": i,
+                "role": m.get("role"),
+                "pass1_text_src": (m.get("text_src") or m.get("text_en") or "").strip(),
+                "pass2_crop_text_src": (
+                    crop_messages[i].get("crop_text_src")
+                    if i < len(crop_messages or [])
+                    else ""
+                ) or "",
+                "pass2_legibility": (
+                    crop_messages[i].get("legibility")
+                    if i < len(crop_messages or [])
+                    else ""
+                ) or "",
+                "pass2_note": (
+                    crop_messages[i].get("note")
+                    if i < len(crop_messages or [])
+                    else ""
+                ) or "",
+            }
+            for i, m in enumerate(pass1_messages)
+        ],
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
+    expected_n = len(pass1_messages)
+    max_c = int(os.environ.get("GEMINI_OCR_HINTS_MAX_CHARS", "120000"))
+    ot = (ocr_pass2_text or "").strip()
+    if len(ot) > max_c:
+        ot = ot[:max_c] + "\n\n[... OCR block truncated ...]"
+
+    ocr_section = (
+        "## High-confidence OCR on the cleaned page images, by **message_index**\n"
+        "Each block lists only high-confidence Vision words assigned to that same message row. "
+        "These are **source-language fragments** and **soft hints** only.\n\n"
+        f"{ot}\n\n"
+        if ot
+        else "## OCR hints\nNo OCR hints were available for this run. Fuse from Pass 1 and Pass 2 alone.\n\n"
+    )
+
+    prompt = f"""You are **PASS 3 of 3**: finalize a mobile chat conversation per message.
+
+## Shared index system (critical)
+- The input transcript uses **`message_index` = array index = top-to-bottom conversation order**.
+- The Pass 2 crop transcript and OCR hint blocks use that **same** `message_index`.
+- Therefore all inputs for `message_index k` refer to the same message row.
+- The input contains exactly **{expected_n}** messages, so the output must also contain exactly **{expected_n}** messages.
+
+## Speaker policy (non-negotiable)
+- `role` was fixed in Pass 1 from bubble side in the stitched image.
+- You **must not** change, swap, or “correct” any `role`.
+
+## Input JSON
+{payload_json}
+
+{ocr_section}## Your task
+- Process the conversation **per message object**.
+- For each `message_index`, reconstruct the best final source reading by considering:
+  - `pass1_text_src`
+  - `pass2_crop_text_src`
+  - `pass2_legibility`
+  - OCR hints for the same `message_index`
+- Treat OCR as soft context only.
+- If `pass2_legibility` is `noise` or `partial`, prefer Pass 1 unless the crop still clearly adds a small detail.
+- If the crop clearly reads the message better, prefer the crop.
+- Then translate the chosen final reading to English as `text_en`.
+- Read the whole thread so short replies still make conversational sense.
+
+## Rules (critical)
+- Return **only** valid JSON (no markdown fences): `{{"contact_name":"...","messages":[{{"message_index":0,"role":"...","text_src":"...","text_en":"..."}}]}}`
+- **Same** `messages.length` as input. **Same** `message_index` mapping. **Same** `role` per index.
+- Use OCR as **general context**: these words were **probably** in that message. Recreate the message with that added information in mind, then translate it.
+- Do **not** paste OCR fragments blindly if they make the line worse.
+- Ignore obvious artifacts, call banners, broken URLs, duplicated UI labels, and visual debris unless they are clearly the actual message content.
+- `text_en` must be English.
+- `text_src` must be the chosen final source-language reading for that message.
+- **Do not** add, drop, merge, or split messages.
+
+## Output
+{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<final source reading>","text_en":"<final English line>"}}]}}"""
+
+    _write_gemini_prompt_file("gemini_prompt_pass3.txt", prompt_label, prompt)
+
+    img_b64_list = []
+    for img in list(context_images or []):
+        if img is None or getattr(img, "size", 0) == 0:
+            continue
+        b64 = _jpeg_b64_from_bgr(img, quality=90)
+        if b64:
+            img_b64_list.append(b64)
+
+    try:
+        gres = _gemini_generate(prompt, image_b64_list=img_b64_list, timeout=timeout)
+        raw = (gres.text if gres else "") or ""
+    except Exception as e:
+        print(f"[GEMINI] Pass 3 failed: {e}")
+        _append_gemini_debug_pass2(prompt, f"ERROR: {e}")
+        return pass1_messages, contact_name, ambiguity_ledger or []
+
+    if not raw.strip():
+        print("[GEMINI] Pass 3 empty — keeping source transcript")
+        _append_gemini_debug_pass2(prompt, raw)
+        return pass1_messages, contact_name, ambiguity_ledger or []
+
+    try:
+        name2, msgs2, ledger2 = _parse_gemini_full_vision_json(raw)
+    except json.JSONDecodeError as e:
+        print(f"[GEMINI] Pass 3 JSON parse failed: {e}")
+        _append_gemini_debug_pass2(prompt, raw)
+        return pass1_messages, contact_name, ambiguity_ledger or []
+
+    if not msgs2 or len(msgs2) != len(pass1_messages):
+        print(
+            f"[GEMINI] Pass 3 message count mismatch ({len(msgs2)} vs {len(pass1_messages)}) — "
+            "keeping source transcript"
+        )
+        _append_gemini_debug_pass2(prompt, raw)
+        return pass1_messages, contact_name, ambiguity_ledger or []
+
+    role_drift_indices = []
+    for i, m in enumerate(msgs2):
+        r2 = _canonicalize_gemini_role(m.get("role") or "")
+        if r2 not in ("contact", "user", "system"):
+            r2 = "system"
+        if r2 != pass1_messages[i]["role"]:
+            role_drift_indices.append(i)
+
+    if role_drift_indices:
+        print(
+            f"[GEMINI] Pass 3 role drift at indices {role_drift_indices[:8]} "
+            f"(keeping Pass 1 roles, using Pass 3 text)"
+        )
+        _append_gemini_debug_pass2(
+            prompt,
+            raw + f"\n[ROLE DRIFT IGNORED: {role_drift_indices}]\n",
+        )
+
+    merged = [
+        {
+            "role": pass1_messages[i]["role"],
+            "text_src": (
+                msgs2[i].get("text_src")
+                or pass1_messages[i].get("text_src")
+                or pass1_messages[i].get("text_en")
+                or ""
+            ).strip(),
+            "text_en": "",
+        }
+        for i in range(len(pass1_messages))
+    ]
+    for i, mm in enumerate(merged):
+        src = (mm.get("text_src") or "").strip()
+        en_raw = (
+            msgs2[i].get("text_en")
+            or pass1_messages[i].get("text_en")
+            or ""
+        ).strip()
+        mm["text_en"] = _prefer_english_surface(en_raw, translate_to_en(src) or src)
+    final_name = (name2 or contact_name or "").strip() or contact_name
+    ledger_out = ledger2 if isinstance(ledger2, list) else (ambiguity_ledger or [])
+    if not role_drift_indices:
+        _append_gemini_debug_pass2(prompt, raw)
+    return merged, final_name, ledger_out
+
+
+def _append_gemini_debug_pass2(prompt: str, response: str):
+    path = os.path.join(OUTPUT_DIR, "gemini_debug.txt")
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n\n" + "=" * 60 + "\n")
+            f.write("PASS 3 — FINAL ENGLISH TRANSLATION (text-only)\n")
+            f.write("=" * 60 + "\n\n")
+            f.write("=== PROMPT ===\n")
+            f.write(prompt)
+            f.write("\n\n=== RAW RESPONSE ===\n")
+            f.write(response or "(empty)\n")
+    except Exception as exc:
+        print(f"[GEMINI] Could not append pass-2 debug: {exc}")
+
+
+_ROLE_TO_RENDER_TYPE = {
+    "contact": "receiver",
+    "user": "sender",
+    "system": "timestamp",
+}
+
+
+def _meta_from_gemini_messages(gemini_messages):
+    """Build render_chat-compatible dicts with synthetic bbox + order."""
+    out = []
+    for i, gm in enumerate(gemini_messages):
+        role = _canonicalize_gemini_role(gm.get("role") or "")
+        if role not in ("contact", "user", "system"):
+            role = "system"
+        typ = _ROLE_TO_RENDER_TYPE.get(role, "timestamp")
+        src = (gm.get("text_src") or gm.get("text_en") or "").strip()
+        text_en = _prefer_english_surface(
+            gm.get("text_en") or "",
+            translate_to_en(src) or src,
+        )
+        out.append({
+            "type": typ,
+            "bbox": [0, i * 40, 400, i * 40 + 35],
+            "text_th": "",
+            "text_en": text_en,
+            "order": i,
+            "ocr_source": "gemini_full_vision",
+            "ocr_span_count": 0,
+            "ocr_validated": True,
+            "ocr_trust_score": 1.0,
+            "ocr_low_confidence": False,
+            "ocr_reasons": [],
+        })
+    return out
+
+
+def _write_gemini_debug_vision_only(prompt, response, footer="", api_payload=None):
+    path = os.path.join(OUTPUT_DIR, "gemini_debug.txt")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("GEMINI — stitched chat transcription / OCR rewrite / translation\n\n")
+            f.write("=== PROMPT ===\n")
+            f.write(prompt)
+            f.write("\n\n=== RAW RESPONSE ===\n")
+            f.write(response or "(empty)\n")
+            if api_payload is not None:
+                f.write("\n\n=== GEMINI API (parsed JSON) ===\n")
+                try:
+                    f.write(json.dumps(api_payload, indent=2, ensure_ascii=False))
+                except (TypeError, ValueError):
+                    f.write(repr(api_payload))
+                f.write("\n")
+            if footer:
+                f.write("\n=== NOTE ===\n")
+                f.write(footer)
+        print(f"[GEMINI] Debug file → {path}")
+    except Exception as exc:
+        print(f"[GEMINI] Could not write debug file: {exc}")
+
+
+def translate_conversation_gemini_multimodal(
+    page_images,
+    combined_img,
+    pass1_message_images=None,
+    pass1_role_hints=None,
+    contact_hint="",
+    source_language_name=None,
+    ocr_hints=None,
+    ocr_hints_format="none",
+    precomputed_stitch_bands=None,
+    precomputed_stitch_meta=None,
+    pass1_exclude_ocr_hints: bool = False,
+    craft_expected_message_rows: Optional[int] = None,
+    craft_vertical_bands_markdown: Optional[str] = None,
+    ocr_pass2_by_message: Optional[str] = None,
+):
+    """Chat images → English (page-image Pass 1, crop transcript Pass 2, fusion Pass 3).
+
+    Returns ``(success, contact_name, meta_list_for_render_chat, pre_ocr_english_meta_for_render_chat, pass_debug)``.
+    """
+    if not _gemini_discover_if_needed():
+        return False, "", [], [], {}
+
+    timeout = int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600"))
+    b64_list = []
+    pass1_message_images = list(pass1_message_images or [])
+    for page_idx, img in enumerate(list(page_images or [])):
+        if img is None or getattr(img, "size", 0) == 0:
+            continue
+        b64 = _jpeg_b64_from_bgr(img, quality=90)
+        if b64:
+            b64_list.append(b64)
+            print(
+                f"[GEMINI] Pass 1 page {page_idx + 1}/{len(page_images)}: "
+                f"{img.shape[1]}x{img.shape[0]}px ({len(b64) // 1024}KB base64)"
+            )
+
+    if not b64_list:
+        print("[GEMINI] No page images to send")
+        return False, "", [], [], {}
+
+    intro = "these are images representing a conversation on facebook messenger between two speakers"
+    hint = (contact_hint or "").strip()
+    _n_exp = int(craft_expected_message_rows) if craft_expected_message_rows is not None else 0
+    craft_section = (
+        f"i count {_n_exp} message bubbles in total\n\n"
+        if _n_exp > 0
+        else ""
+    )
+    bubble_section = (
+        f"{craft_vertical_bands_markdown.strip()}\n\n"
+        if craft_vertical_bands_markdown and str(craft_vertical_bands_markdown).strip()
+        else ""
+    )
+    prompt = f"""{intro}
+
+transcribe the conversation in the original language
+the first image is the oldest
+
+{craft_section}{bubble_section}transcribe what you see
+the added information above is guidance about the actual text bubbles
+
+return json in this structure:
+{{"contact_name":"<header or empty>","messages":[{{"role":"contact|user","text_src":"<original-language transcription>"}}]}}
+
+output json only."""
+
+    _write_gemini_prompt_file("gemini_prompt_pass1.txt", "Pass 1 (vision)", prompt)
+
+    pass1_started = time.time()
+    try:
+        gres = _gemini_generate(prompt, image_b64_list=b64_list, timeout=timeout)
+        raw = (gres.text if gres else "") or ""
+        api_payload = gres.response_json if gres else None
+    except Exception as e:
+        print(f"[GEMINI] Request failed: {e}")
+        _write_gemini_debug_vision_only(prompt, f"ERROR: {e}", "")
+        return False, hint or "", [], [], {}
+
+    if not raw or not raw.strip():
+        print("[GEMINI] Empty response from full-vision translation")
+        _write_gemini_debug_vision_only(prompt, raw or "", "", api_payload=api_payload)
+        return False, hint or "", [], [], {}
+
+    def _finish_warn(pay):
+        fr = _gemini_candidate_finish_reason(pay)
+        if fr == "MAX_TOKENS":
+            print(
+                f"[GEMINI] Pass 1 finishReason={fr!r} — if JSON fails, internal "
+                "thinking may have consumed the output token budget (see PIPELINE.md)."
+            )
+        return fr
+
+    _finish_warn(api_payload)
+
+    parse_err = None
+    try:
+        gname, gmsgs, amb_ledger = _parse_gemini_full_vision_json(raw)
+    except json.JSONDecodeError as e:
+        parse_err = e
+        gname, gmsgs, amb_ledger = "", [], []
+
+    if parse_err is not None:
+        print(f"[GEMINI] JSON parse failed: {parse_err}")
+        _write_gemini_debug_vision_only(
+            prompt, raw, f"JSON ERROR: {parse_err}", api_payload=api_payload
+        )
+        return False, hint or "", [], [], {}
+
+    if _n_exp > 0 and len(gmsgs) != _n_exp:
+        print(
+            f"[GEMINI] Pass 1 count mismatch: expected {_n_exp}, got {len(gmsgs)}."
+        )
+
+    contact_name = gname or hint or ""
+    if not gmsgs:
+        print("[GEMINI] Parsed JSON but no messages")
+        _write_gemini_debug_vision_only(prompt, raw, "NO MESSAGES PARSED", api_payload=api_payload)
+        return False, contact_name, [], [], {}
+
+    pass1_footer = json.dumps(
+        {
+            "contact_name": contact_name,
+            "n_messages": len(gmsgs),
+            "ambiguity_ledger": amb_ledger,
+            "has_ref_placeholders": _conversation_has_ref_placeholders(gmsgs),
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+    _write_gemini_debug_vision_only(prompt, raw, pass1_footer, api_payload=api_payload)
+
+    print(f"[GEMINI] Pass 1 (vision): {len(gmsgs)} messages")
+    print(f"[TIMER] Pass 1 Gemini in {time.time()-pass1_started:.1f}s")
+    pass1_source_msgs = [
+        {
+            "role": m.get("role"),
+            "text_en": ((m.get("text_src") or m.get("text_en") or "").strip()),
+            "text_src": (m.get("text_src") or m.get("text_en") or "").strip(),
+        }
+        for m in gmsgs
+    ]
+    pre_ocr_meta = _meta_from_gemini_messages(
+        [
+            {
+                "role": m.get("role"),
+                "text_en": _prefer_english_surface(
+                    translate_to_en(m.get("text_src") or ""), m.get("text_src") or ""
+                ),
+            }
+            for m in pass1_source_msgs
+        ]
+    )
+    print("[GEMINI] Pass 2 disabled here: OCR hints only.")
+    pass2_effective_msgs = []
+    pass2_effective_count = 0
+    pass2_meta = {
+        "enabled": False,
+        "skipped": True,
+        "reason": "ocr_hints_only_mode",
+        "input_messages": len(pass1_source_msgs),
+        "input_crops": 0,
+        "output_messages": 0,
+    }
+    print("[GEMINI] Pass 3 disabled: keeping Pass 1 output as final result.")
+
+    final_msgs = [
+        {
+            "role": m.get("role"),
+            "text_src": (m.get("text_src") or "").strip(),
+            "text_en": _prefer_english_surface(
+                translate_to_en(m.get("text_src") or ""),
+                m.get("text_src") or "",
+            ),
+        }
+        for m in pass1_source_msgs
+    ]
+
+    meta = _meta_from_gemini_messages(final_msgs)
+    if not meta:
+        return False, contact_name, [], pre_ocr_meta, {
+            "pass1_count": len(pass1_source_msgs),
+            "pass2_count": len(pass2_effective_msgs),
+            "pass2_effective_count": pass2_effective_count,
+            "pass2_crop_refine": pass2_meta,
+            "pass3_count": 0,
+            "first_pass_only": False,
+            "third_pass_skipped": True,
+            "pass1_messages": pass1_source_msgs,
+            "pass2_crop_messages": pass2_effective_msgs,
+            "pass3_messages": [],
+        }
+
+    print(f"[GEMINI] Pass 1 final output OK → {len(meta)} messages, contact={contact_name!r}")
+    return True, contact_name, meta, pre_ocr_meta, {
+        "pass1_count": len(pass1_source_msgs),
+        "pass2_count": len(pass2_effective_msgs),
+        "pass2_effective_count": pass2_effective_count,
+        "pass2_crop_refine": pass2_meta,
+        "pass3_count": 0,
+        "first_pass_only": False,
+        "third_pass_skipped": True,
+        "pass1_messages": pass1_source_msgs,
+        "pass2_crop_messages": pass2_effective_msgs,
+        "pass3_messages": [],
+    }
+
+
+def _contact_ocr_unreliable_for_prompt(name: str) -> bool:
+    """True when status-bar OCR is clearly junk — do not put it in the Gemini prompt."""
+    if not name or not str(name).strip():
+        return True
+    n = str(name).strip()
+    if n.lower() in {"person a", "unknown"}:
+        return False
+    if any(ord(c) > 0x024F for c in n if not c.isspace()):
+        return True
+    if "ชั่วโมง" in n:
+        return True
+    if "...." in n or (n.count(".") >= 3 and len(n) > 15):
+        return True
+    return False
+
+
+def _prompt_person_a_side_label(contact_name: str, has_image: bool) -> str:
+    if has_image and _contact_ocr_unreliable_for_prompt(contact_name):
+        return "Person A (LEFT grey bubbles)"
+    return (contact_name or "Person A").strip() or "Person A"
+
+
+def _parse_gemini_slots_response(raw: str):
+    """Extract NAME, CONTEXT, and slot_num → (is_timestamp, english_text) from Gemini output."""
+    gemini_name = ""
+    context_line = ""
+    for _cl in raw.splitlines():
+        cl = _cl.strip()
+        if not gemini_name and cl.upper().startswith("NAME:"):
+            gemini_name = cl[len("NAME:"):].strip()
+        if not context_line and cl.upper().startswith("CONTEXT:"):
+            context_line = cl[len("CONTEXT:"):].strip()
+        if gemini_name and context_line:
+            break
+
+    parsed = {}
+    lines = raw.splitlines()
+    for line_idx, line in enumerate(lines):
+        line = line.strip()
+        m = re.match(r"^(\d+)\.\s*\[(.*?)\]:\s*(.+)$", line)
+        if not m:
+            continue
+        slot_num = int(m.group(1)) - 1
+        label = m.group(2).strip().lower()
+        captured = m.group(3).strip()
+        is_ts = "timestamp" in label
+
+        if not is_ts and _is_non_latin(captured):
+            eng_match = re.search(
+                r"(?:\*\s*English\s*:|→|->|=>)\s*([A-Za-z].+)$",
+                captured, re.IGNORECASE
+            )
+            if eng_match:
+                captured = eng_match.group(1).strip()
+            elif line_idx + 1 < len(lines):
+                next_line = lines[line_idx + 1].strip()
+                eng_next = re.match(
+                    r"^\*?\s*(?:English|Translation)\s*:\s*(.+)$",
+                    next_line, re.IGNORECASE
+                )
+                if eng_next:
+                    captured = eng_next.group(1).strip()
+                elif not _is_non_latin(next_line) and next_line:
+                    captured = next_line
+                else:
+                    continue
+
+        if captured and (is_ts or not _is_non_latin(captured)):
+            parsed[slot_num] = (is_ts, captured)
+
+    return gemini_name, context_line, parsed
+
+
+def _apply_gemini_parsed_to_objects(objects, slots, parsed):
+    """Write parsed English lines back into *objects* using *slots* index mapping."""
+    for slot_idx, (orig_idx, _, _th) in enumerate(slots):
+        result = parsed.get(slot_idx)
+        if result:
+            is_ts, en = result
+            objects[orig_idx]["text_en"] = en
+            if is_ts:
+                objects[orig_idx]["type"] = "timestamp"
+
+
+def _gemini_recovery_pass(image_b64, draft_text: str, num_entries: int, person_a_label: str):
+    """Second pass: compare draft to image and expand lines that omit visible detail."""
+    prompt = (
+        "The attached image is the same chat screenshot as before.\n"
+        "Below is a DRAFT English translation (NAME, CONTEXT, and numbered lines).\n\n"
+        "TASK — Compare each NUMBERED line to the matching bubble or timestamp in the image "
+        "(same order, top to bottom). For any line where the visible text includes names, "
+        "hotels, places, addresses, numbers, or clauses that are missing, shortened, or wrong "
+        "in the draft, REVISE that line so the English fully reflects what is shown.\n\n"
+        "If the draft CONTEXT or any line describes people, places, or events that do NOT appear "
+        "in this image, replace them with what the image actually shows — do not preserve a wrong story.\n\n"
+        "RULES:\n"
+        "- Output ONLY English.\n"
+        "- Do NOT add or remove numbered entries. Do NOT merge or split lines.\n"
+        "- Keep the same speaker labels and numbers as in the draft.\n"
+        "- Fix NAME:/CONTEXT: if they contradict the image; CONTEXT must only summarize this screenshot.\n"
+        "- No commentary, no bullet list of changes — only the final transcript.\n\n"
+        f"Expected entry count: {num_entries} numbered lines after CONTEXT.\n\n"
+        "--- DRAFT ---\n"
+        f"{draft_text.strip()}"
+    )
+    gres = _gemini_generate(prompt, image_b64=image_b64)
+    text = gres.text if gres else None
+    return text, prompt
+
+
+def _append_gemini_debug_recovery_section(recovery_prompt, recovery_response):
+    path = os.path.join(OUTPUT_DIR, "gemini_debug.txt")
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n\n" + "=" * 60 + "\n")
+            f.write("GEMINI DEBUG — RECOVERY PASS (INPUT)\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(recovery_prompt or "")
+            f.write("\n\n" + "=" * 60 + "\n")
+            f.write("GEMINI DEBUG — RECOVERY PASS (RAW RESPONSE)\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(recovery_response or "")
+            f.write("\n")
+    except OSError:
+        pass
+
+
+def refine_and_translate_with_gemini(objects, combined_img=None, contact_name="",
+                                     raw_ocr_spans=None):
+    """Send conversation structure + screenshot to Gemini; write English into *objects*.
+
+    Strategy: **image-first** — the prompt uses a numbered scaffold (speaker roles only)
+    so Gemini reads bubble text from pixels, not from noisy OCR strings.  A second
+    **recovery** multimodal call (set ``GEMINI_RECOVERY_PASS=0`` to disable) compares
+    the draft translation to the image again to expand omitted names, places, etc.
+
+    *raw_ocr_spans* is accepted for API compatibility with *main.py*; it is not sent
+    in the prompt (vision + recovery replace it).
+
+    Returns ``(True, name)`` on success.
+    """
+    _ = raw_ocr_spans  # not sent in prompt; kept for caller compatibility
     if not objects:
         return False, ""
 
-    # Trigger model discovery
-    if _gemini_api_key is None:
-        _gemini_generate("discovery")
-    if not _gemini_active_model:
+    if not _gemini_discover_if_needed():
         return False, ""
 
-    # Encode combined image for multimodal input (downscale if very large)
+    # Encode combined image for multimodal input.
+    # IMPORTANT: very tall stitched screenshots must NOT be scaled by max(h,w) alone —
+    # that crushes width to ~100px and Gemini cannot read text (hallucinations / wrong topic).
     image_b64 = None
     if combined_img is not None:
         try:
             import base64 as _b64
-            img_to_encode = combined_img
-            h, w = img_to_encode.shape[:2]
-            max_side = 1600
-            if max(h, w) > max_side:
-                scale = max_side / max(h, w)
-                img_to_encode = cv2.resize(
-                    img_to_encode,
-                    (int(w * scale), int(h * scale)),
-                    interpolation=cv2.INTER_AREA,
-                )
+            img_to_encode = _resize_image_for_gemini_vision(combined_img)
             _, buf = cv2.imencode(".jpg", img_to_encode,
-                                  [cv2.IMWRITE_JPEG_QUALITY, 85])
+                                  [cv2.IMWRITE_JPEG_QUALITY, 90])
             image_b64 = _b64.b64encode(buf.tobytes()).decode("utf-8")
-            print(f"[GEMINI] Image attached: "
-                  f"{img_to_encode.shape[1]}x{img_to_encode.shape[0]}px "
+            _gw = img_to_encode.shape[1]
+            _gh = img_to_encode.shape[0]
+            print(f"[GEMINI] Image attached: {_gw}x{_gh}px "
                   f"({len(image_b64)//1024}KB base64)")
+            if _gw < 600:
+                print(
+                    "[GEMINI] WARN: image width is very small — bubble text may be unreadable; "
+                    "check combined_ocr_input.png and consider fewer pages per run."
+                )
         except Exception as e:
             print(f"[GEMINI] Could not encode image, falling back to text-only: {e}")
             image_b64 = None
 
-    # Determine display names for the two speakers
+    # Display / contact name (may be junk from status-bar OCR)
     person_a_label = contact_name.strip() if contact_name.strip() else "Person A"
     person_b_label = "Person B (you)"
 
-    # Build slots — chat bubbles AND timestamps; skip only links and UI artifacts
+    has_image = image_b64 is not None
+    prompt_a_label = _prompt_person_a_side_label(person_a_label, has_image)
+
+    # Build slots — chat bubbles AND timestamps.  When an image is attached, include
+    # every bubble even if OCR left text_th empty (Gemini reads from the image).
     slots = []
     for i, obj in enumerate(objects):
         th = (obj.get("text_th") or "").strip()
         obj_type = (obj.get("type") or "receiver").lower()
-        if not th or _looks_like_link_text(th):
+        if obj_type in {"status_bar", "bottom_artifact", "bottom_bar", "keyboard"}:
             continue
-        if obj_type in {"status_bar", "bottom_artifact"}:
+        if obj_type == "timestamp":
             continue
+        if not has_image:
+            if not th or _looks_like_link_text(th):
+                continue
         if obj_type == "timestamp":
             role = "Timestamp"
         elif obj_type == "sender":
             role = person_b_label
         else:
-            role = person_a_label
+            role = prompt_a_label
         slots.append((i, role, th))
 
     if not slots:
         return False, ""
 
+    # Keep slot order = CRAFT → grouping → classify order (do NOT re-sort by bbox:
+    # center-y sorts scramble left/right turns that sit on similar y).
+
+    # Scaffold: do not inject noisy OCR text into the prompt (it anchors the model wrong).
+    # With image, each line only names the role; Gemini reads content from pixels.
+    _scaffold_hint = (
+        "Read the matching bubble or timestamp row in the image; translate all visible text "
+        "to natural English."
+    )
     dialogue = "\n".join(
-        f"{idx+1}. [{role}]: {th}"
+        f"{idx + 1}. [{role}]: {_scaffold_hint if has_image else th}"
         for idx, (_, role, th) in enumerate(slots)
     )
 
     lang_name = _source_lang_name
-    person_a_desc = (
-        f"Person A is '{person_a_label}' (the other person in this chat)."
-        if person_a_label != "Person A"
-        else "Person A is the other person."
+    if has_image and _contact_ocr_unreliable_for_prompt(person_a_label):
+        person_a_desc = (
+            "Person A is the other participant. In the screenshot their bubbles are on the "
+            "LEFT (usually grey); yours (Person B) are on the RIGHT (usually pink). "
+            "Read Person A's real name from the chat header for the NAME: line.\n"
+        )
+    else:
+        person_a_desc = (
+            f"Person A is '{person_a_label}' (the other person in this chat)."
+            if person_a_label != "Person A"
+            else "Person A is the other person."
+        )
+
+    primary_block = (
+        "PRIMARY SOURCE — the attached chat screenshot.\n"
+        "Read every bubble directly from the image. "
+        f"Left-aligned bubbles are {prompt_a_label}; "
+        "right-aligned bubbles are Person B (you). "
+        "The image is the authority for spelling of names, hotels, addresses, and URLs.\n\n"
+        if has_image else
+        "No image attached — translate the source text in the structured list below.\n\n"
     )
-    image_instruction = (
-        f"I am also attaching the actual screenshot of the chat so you can "
-        f"see the bubble layout, alignment (left = {person_a_label}, right = Person B/you), "
-        "and any text the OCR may have misread — use the image as ground truth "
-        "when the extracted text is ambiguous.\n\n"
-        if image_b64 else ""
+
+    numbering_block = (
+        "NUMBERING: Entries 1..N are in PIPELINE ORDER (the same order rows were detected, "
+        "roughly top-to-bottom). Line N corresponds to the N-th chat row in that sequence — "
+        "translate that bubble only. The speaker label is a hint; if it conflicts with left/right "
+        "alignment for that row, trust the image alignment.\n\n"
+        if has_image else ""
+    )
+
+    secondary_block = (
+        numbering_block
+        + f"SCAFFOLD — conversation structure only ({len(slots)} entries).\n"
+        "Each line gives the speaker role and entry number. "
+        + (
+            "It does NOT include the message text — read each bubble from the image.\n\n"
+            if has_image else
+            "The text after each colon is the OCR extract to translate.\n\n"
+        )
+        + f"ENTRIES ({lang_name}, {len(slots)} lines):\n"
+        + f"{dialogue}\n"
+    )
+
+    _step2a = (
+        "Read the corresponding bubble or timestamp from the image "
+        "(use the scaffold only for numbering and speaker side).\n"
+        if has_image else
+        "Use the source text after the colon on that scaffold line.\n"
+    )
+    _step3 = (
+        "STEP 3 — Before you finish, scan the image top-to-bottom once more: "
+        "if any bubble still has visible wording not reflected in your English line, "
+        "revise that line. (A second automated pass may follow — be thorough.)\n\n"
+        if has_image else
+        "STEP 3 — Re-read your lines: ensure you did not drop names, numbers, or URLs "
+        "from the source text.\n\n"
     )
     prompt = (
-        f"Below is a real two-person chat conversation in {lang_name}, "
-        f"extracted by OCR (some characters may be misread).\n"
-        f"{image_instruction}"
+        f"You are translating a real {lang_name} two-person chat conversation to English.\n"
         f"{person_a_desc} Person B is the phone owner (you).\n\n"
         "WORK THROUGH THESE STEPS IN ORDER:\n\n"
-        "STEP 1 — Read the entire conversation (and examine the image if provided).\n"
+        "STEP 1 — Examine the screenshot only (not guesses from memory).\n"
         "Write these two lines:\n"
-        "NAME: [Person A's real name in English/romanized — infer from context or the image; "
-        "if truly unknown write 'Person A']\n"
-        "CONTEXT: [one sentence describing the topic, tone, and relationship]\n\n"
+        "NAME: [Person A's display name as shown in the chat header or bubbles — English/romanized; "
+        "if unreadable write 'Person A']\n"
+        "CONTEXT: [ONE sentence summarizing ONLY topics and facts that actually appear in THIS image — "
+        "places, people, and plans visible in the bubbles. Do NOT invent a different trip, city, or "
+        "names that are not readable in the screenshot.]\n\n"
         "STEP 2 — For each numbered entry:\n"
-        "  a) Translate it in isolation.\n"
-        "  b) Cross-check against the CONTEXT, image, and surrounding messages — "
-        "revise if needed so the whole conversation flows naturally.\n"
-        "  c) Output only the final, validated English translation.\n\n"
-        "RULES:\n"
-        f"- Output ONLY English. Zero {lang_name} characters anywhere.\n"
-        "- NAME and CONTEXT lines must come first, before the numbered entries.\n"
-        "- Preserve speaker labels and numbering exactly as given in the conversation below.\n"
-        "- [Timestamp] lines: readable English (e.g. 'Sun. 11:50 AM').\n"
-        "- No asterisks, footnotes, or extra blank lines.\n\n"
-        "OUTPUT FORMAT:\n"
-        "NAME: Phee Klaew\n"
-        "CONTEXT: brief summary here\n"
-        f"1. [{person_a_label}]: natural English text\n"
-        "2. [Person B (you)]: natural English text\n"
-        "3. [Timestamp]: Sun. 11:50 AM\n\n"
-        f"CONVERSATION ({lang_name}, {len(slots)} entries):\n"
-        f"{dialogue}"
+        "  a) "
+        + _step2a
+        + "  b) Translate ONLY the text visible in that bubble/timestamp — facts (names, hotels, boats, "
+        "cities, URLs, numbers) must match what you see there.\n"
+        + "  c) CONTEXT is for tone only; it must NOT override or replace what a bubble actually says. "
+        "If CONTEXT conflicts with a bubble, ignore CONTEXT for that line.\n"
+        + "  d) You may smooth grammar lightly, but do not substitute a different location, person, or "
+        "story than the image shows.\n"
+        + "  e) Output only the final English line for that number.\n\n"
+        + _step3
+        + "RULES:\n"
+        + f"- Output ONLY English. Zero {lang_name} characters anywhere.\n"
+        + "- NAME and CONTEXT lines must come first, before the numbered entries.\n"
+        + "- Preserve speaker labels and entry numbers exactly as in the scaffold.\n"
+        + "- [Timestamp] lines: readable English (e.g. 'Sun. 11:50 AM').\n"
+        + "- Every entry must appear — do not skip or merge lines.\n"
+        + "- No asterisks, footnotes, or extra blank lines.\n\n"
+        + "OUTPUT FORMAT:\n"
+        + "NAME: Phee Klaew\n"
+        + "CONTEXT: brief summary here\n"
+        + f"1. [{prompt_a_label}]: natural English text\n"
+        + "2. [Person B (you)]: natural English text\n"
+        + "3. [Timestamp]: Sun. 11:50 AM\n\n"
+        + primary_block
+        + secondary_block
     )
 
     # Write debug input file before the API call so it's always available
     _write_gemini_debug(prompt, None, slots)
 
-    print(f"[GEMINI] Sending {len(slots)} items (messages + timestamps) for OCR fix + translation...")
+    if image_b64:
+        print(
+            f"[GEMINI] Call 1: {len(slots)} scaffold rows — speaker role + order only "
+            f"(no OCR text in prompt); bubble content read from image"
+        )
+    else:
+        print(
+            f"[GEMINI] Sending {len(slots)} scaffold rows with OCR text per line (no image)"
+        )
     t_gemini_start = time.time()
 
     for attempt in range(3):
         try:
             t_attempt = time.time()
-            raw = _gemini_generate(prompt, image_b64=image_b64)
+            gres = _gemini_generate(prompt, image_b64=image_b64)
+            raw = (gres.text if gres else "") or ""
             if not raw:
                 raise ValueError("Empty response")
             raw = raw.strip()
             elapsed = time.time() - t_attempt
             print(f"[GEMINI] Response received in {elapsed:.1f}s  ({len(raw)} chars)")
 
-            # Extract NAME and CONTEXT header lines
-            gemini_name = ""
-            context_line = ""
-            for _cl in raw.splitlines():
-                cl = _cl.strip()
-                if not gemini_name and cl.upper().startswith("NAME:"):
-                    gemini_name = cl[len("NAME:"):].strip()
-                if not context_line and cl.upper().startswith("CONTEXT:"):
-                    context_line = cl[len("CONTEXT:"):].strip()
-                if gemini_name and context_line:
-                    break
+            gemini_name, context_line, parsed = _parse_gemini_slots_response(raw)
             if gemini_name:
                 print(f"[GEMINI] Contact name identified: {gemini_name}")
             if context_line:
@@ -313,52 +2321,49 @@ def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""
 
             print(f"[GEMINI] Response preview:\n{raw[:500]}")
 
-            parsed = {}   # slot_num → (is_timestamp, text)
-            lines = raw.splitlines()
-            for line_idx, line in enumerate(lines):
-                line = line.strip()
-                m = re.match(r"^(\d+)\.\s*\[(.*?)\]:\s*(.+)$", line)
-                if not m:
-                    continue
-                slot_num = int(m.group(1)) - 1
-                label    = m.group(2).strip().lower()
-                captured = m.group(3).strip()
-                is_ts    = "timestamp" in label
-
-                # If Gemini returned source-language text, recover the English
-                if not is_ts and _is_non_latin(captured):
-                    eng_match = re.search(
-                        r"(?:\*\s*English\s*:|→|->|=>)\s*([A-Za-z].+)$",
-                        captured, re.IGNORECASE
-                    )
-                    if eng_match:
-                        captured = eng_match.group(1).strip()
-                    elif line_idx + 1 < len(lines):
-                        next_line = lines[line_idx + 1].strip()
-                        eng_next = re.match(
-                            r"^\*?\s*(?:English|Translation)\s*:\s*(.+)$",
-                            next_line, re.IGNORECASE
-                        )
-                        if eng_next:
-                            captured = eng_next.group(1).strip()
-                        elif not _is_non_latin(next_line) and next_line:
-                            captured = next_line
-                        else:
-                            continue
-
-                if captured and (is_ts or not _is_non_latin(captured)):
-                    parsed[slot_num] = (is_ts, captured)
-
             if not parsed:
                 raise ValueError(f"Could not parse any lines from response:\n{raw[:400]}")
 
-            for slot_idx, (orig_idx, _, _th) in enumerate(slots):
-                result = parsed.get(slot_idx)
-                if result:
-                    is_ts, en = result
-                    objects[orig_idx]["text_en"] = en
-                    if is_ts:
-                        objects[orig_idx]["type"] = "timestamp"
+            # Second multimodal pass: compare draft to pixels to restore omitted detail.
+            # Disable with GEMINI_RECOVERY_PASS=0
+            _recovery_on = (
+                image_b64
+                and os.environ.get("GEMINI_RECOVERY_PASS", "1").lower()
+                not in ("0", "false", "no", "off")
+            )
+            if _recovery_on:
+                print("[GEMINI] Recovery pass: comparing draft to image...")
+                t_rec = time.time()
+                rec_raw, recovery_prompt_text = _gemini_recovery_pass(
+                    image_b64, raw, len(slots), person_a_label
+                )
+                if rec_raw and rec_raw.strip():
+                    r2 = rec_raw.strip()
+                    gn2, ctx2, parsed2 = _parse_gemini_slots_response(r2)
+                    if len(parsed2) >= len(parsed):
+                        raw = r2
+                        gemini_name = gn2 or gemini_name
+                        context_line = ctx2 or context_line
+                        parsed = parsed2
+                        print(
+                            f"[GEMINI] Recovery pass applied in {time.time()-t_rec:.1f}s "
+                            f"({len(parsed2)} slots)"
+                        )
+                    else:
+                        print(
+                            f"[GEMINI] Recovery pass skipped "
+                            f"(draft {len(parsed)} slots vs recovery {len(parsed2)})"
+                        )
+                    _append_gemini_debug_recovery_section(
+                        recovery_prompt_text, rec_raw or ""
+                    )
+                else:
+                    print("[GEMINI] Recovery pass returned empty — keeping draft")
+                    _append_gemini_debug_recovery_section(
+                        recovery_prompt_text, "(empty response)"
+                    )
+
+            _apply_gemini_parsed_to_objects(objects, slots, parsed)
 
             print(f"[GEMINI] Parsed {len(parsed)}/{len(slots)} items  "
                   f"(total Gemini time: {time.time()-t_gemini_start:.1f}s)")
@@ -1312,8 +3317,14 @@ def _upscale_for_ocr(img, scale=_OCR_UPSCALE):
 
 
 def ocr_and_translate_full_image(objects, img, progress_label="OCR"):
+    """Run OCR on *img*, assign text to each object, and return (objects, raw_spans).
+
+    *raw_spans* is the full list of Vision-detected text segments sorted top-to-bottom,
+    regardless of whether they were matched to a CRAFT object.  Callers can pass this
+    to Gemini so it has access to every word the OCR found, not just the grouped ones.
+    """
     if img is None or getattr(img, "size", 0) == 0:
-        return objects
+        return objects, []
 
     from config import ocr_engine as _engine
     is_vision_api = hasattr(_engine, "__class__") and _engine.__class__.__name__ == "GoogleVisionOCR"
@@ -1370,7 +3381,10 @@ def ocr_and_translate_full_image(objects, img, progress_label="OCR"):
         obj["ocr_reasons"] = assessment["reasons"]
         obj["translation_blocked"] = False
 
-    return objects
+    # Return all OCR spans sorted top-to-bottom so the caller can pass them to
+    # Gemini as a supplementary dump of everything the Vision API found.
+    raw_spans = sorted(predictions, key=lambda p: (p["bbox"][1], p["bbox"][0]))
+    return objects, raw_spans
 
 # --------------------------------------------------
 # OCR + TRANSLATION LOOP (ONLY PLACE WE ADD LOGIC)

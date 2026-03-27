@@ -1,0 +1,86 @@
+[
+  {
+    "message_index": 0,
+    "role": "contact",
+    "text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2",
+    "text_en_debug": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2"
+  },
+  {
+    "message_index": 1,
+    "role": "contact",
+    "text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as",
+    "text_en_debug": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as"
+  },
+  {
+    "message_index": 2,
+    "role": "contact",
+    "text_src": "ไป",
+    "text_en_debug": "go"
+  },
+  {
+    "message_index": 3,
+    "role": "contact",
+    "text_src": "มา",
+    "text_en_debug": "come"
+  },
+  {
+    "message_index": 4,
+    "role": "contact",
+    "text_src": "ที่",
+    "text_en_debug": "at"
+  },
+  {
+    "message_index": 5,
+    "role": "user",
+    "text_src": "งั้นก้อปล่อยให้มันประสาทในสมองดิบตายเถอะ",
+    "text_en_debug": "So just let the nerves in your brain die."
+  },
+  {
+    "message_index": 6,
+    "role": "contact",
+    "text_src": "กุ",
+    "text_en_debug": "I"
+  },
+  {
+    "message_index": 7,
+    "role": "user",
+    "text_src": "แค่เห็นไง",
+    "text_en_debug": "Just saw it."
+  },
+  {
+    "message_index": 8,
+    "role": "contact",
+    "text_src": "ยกไหน",
+    "text_en_debug": "Which round?"
+  },
+  {
+    "message_index": 9,
+    "role": "user",
+    "text_src": "มึงไม่ต้องถาม",
+    "text_en_debug": "You don't have to ask."
+  },
+  {
+    "message_index": 10,
+    "role": "contact",
+    "text_src": "ก็เจ็บ",
+    "text_en_debug": "It hurts."
+  },
+  {
+    "message_index": 11,
+    "role": "contact",
+    "text_src": "ดู",
+    "text_en_debug": "watch"
+  },
+  {
+    "message_index": 12,
+    "role": "contact",
+    "text_src": "เจ็บ",
+    "text_en_debug": "hurt"
+  },
+  {
+    "message_index": 13,
+    "role": "user",
+    "text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ",
+    "text_en_debug": "If there's anything, you don't have to talk to my husband for help."
+  }
+]

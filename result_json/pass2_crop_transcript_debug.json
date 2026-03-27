@@ -1,0 +1,254 @@
+[
+  {
+    "message_index": 0,
+    "page_index": 0,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      403,
+      465,
+      927,
+      628
+    ],
+    "final_crop_bbox_page": [
+      385,
+      443,
+      945,
+      650
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\000_contact.png"
+  },
+  {
+    "message_index": 1,
+    "page_index": 0,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      255,
+      684,
+      927,
+      850
+    ],
+    "final_crop_bbox_page": [
+      237,
+      662,
+      945,
+      872
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\001_contact.png"
+  },
+  {
+    "message_index": 2,
+    "page_index": 1,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      156,
+      304,
+      280,
+      363
+    ],
+    "final_crop_bbox_page": [
+      138,
+      282,
+      298,
+      385
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\002_contact.png"
+  },
+  {
+    "message_index": 3,
+    "page_index": 1,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      156,
+      384,
+      250,
+      441
+    ],
+    "final_crop_bbox_page": [
+      138,
+      362,
+      268,
+      463
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\003_contact.png"
+  },
+  {
+    "message_index": 4,
+    "page_index": 1,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      156,
+      464,
+      231,
+      521
+    ],
+    "final_crop_bbox_page": [
+      138,
+      442,
+      249,
+      543
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\004_contact.png"
+  },
+  {
+    "message_index": 5,
+    "page_index": 1,
+    "role_hint": "user",
+    "gemini_bbox_page": [
+      183,
+      543,
+      927,
+      681
+    ],
+    "final_crop_bbox_page": [
+      165,
+      521,
+      945,
+      703
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\005_user.png"
+  },
+  {
+    "message_index": 6,
+    "page_index": 1,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      156,
+      703,
+      231,
+      760
+    ],
+    "final_crop_bbox_page": [
+      138,
+      681,
+      249,
+      782
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\006_contact.png"
+  },
+  {
+    "message_index": 7,
+    "page_index": 1,
+    "role_hint": "user",
+    "gemini_bbox_page": [
+      583,
+      784,
+      927,
+      861
+    ],
+    "final_crop_bbox_page": [
+      565,
+      762,
+      945,
+      883
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\007_user.png"
+  },
+  {
+    "message_index": 8,
+    "page_index": 2,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      156,
+      304,
+      350,
+      381
+    ],
+    "final_crop_bbox_page": [
+      138,
+      282,
+      368,
+      403
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\008_contact.png"
+  },
+  {
+    "message_index": 9,
+    "page_index": 2,
+    "role_hint": "user",
+    "gemini_bbox_page": [
+      503,
+      404,
+      927,
+      481
+    ],
+    "final_crop_bbox_page": [
+      485,
+      382,
+      945,
+      503
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\009_user.png"
+  },
+  {
+    "message_index": 10,
+    "page_index": 2,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      156,
+      504,
+      300,
+      561
+    ],
+    "final_crop_bbox_page": [
+      138,
+      482,
+      318,
+      583
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\010_contact.png"
+  },
+  {
+    "message_index": 11,
+    "page_index": 2,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      156,
+      584,
+      281,
+      641
+    ],
+    "final_crop_bbox_page": [
+      138,
+      562,
+      299,
+      663
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\011_contact.png"
+  },
+  {
+    "message_index": 12,
+    "page_index": 2,
+    "role_hint": "contact",
+    "gemini_bbox_page": [
+      156,
+      664,
+      281,
+      721
+    ],
+    "final_crop_bbox_page": [
+      138,
+      642,
+      299,
+      743
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\012_contact.png"
+  },
+  {
+    "message_index": 13,
+    "page_index": 2,
+    "role_hint": "user",
+    "gemini_bbox_page": [
+      203,
+      744,
+      927,
+      861
+    ],
+    "final_crop_bbox_page": [
+      185,
+      722,
+      945,
+      883
+    ],
+    "crop_file": "C:\\Users\\gilak\\Music\\image_ocr_project\\translate_chat\\result\\pass2_message_crops\\013_user.png"
+  }
+]

@@ -62,20 +62,16 @@ def load_craft():
 
 GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_VISION_API_KEY", "").strip()
 
-if not GOOGLE_VISION_API_KEY:
-    raise RuntimeError(
-        "\n\n[CONFIG] GOOGLE_VISION_API_KEY is not set.\n"
-        "  1. Go to https://console.cloud.google.com\n"
-        "  2. Create a project → enable 'Cloud Vision API'\n"
-        "  3. Credentials → Create API key\n"
-        "  4. Set the environment variable:\n"
-        "       $env:GOOGLE_VISION_API_KEY = 'YOUR_KEY_HERE'\n"
-        "     then re-run the project.\n"
+_VISION_URL = None
+if GOOGLE_VISION_API_KEY:
+    _VISION_URL = (
+        f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
     )
-
-_VISION_URL = (
-    f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
-)
+else:
+    print(
+        "[CONFIG] GOOGLE_VISION_API_KEY not set — Cloud Vision OCR is disabled.\n"
+        "         Gemini-only translation still works if GEMINI_API_KEY is set."
+    )
 
 
 # Maps BCP-47 language codes → human-readable names used in prompts
@@ -99,6 +95,12 @@ class GoogleVisionOCR:
 
     def predict(self, img):
         import cv2
+
+        if not GOOGLE_VISION_API_KEY or not _VISION_URL:
+            raise RuntimeError(
+                "Google Cloud Vision is not configured. Set GOOGLE_VISION_API_KEY "
+                "or use Gemini-only mode (no OCR)."
+            )
 
         _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 95])
         img_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
@@ -162,8 +164,109 @@ class GoogleVisionOCR:
 
         return detections
 
+    def document_plain_text(self, img):
+        """Full page text from DOCUMENT_TEXT_DETECTION (Vision's reading order).
 
-print("[INIT] Google Cloud Vision OCR ready")
+        Lighter than *predict()* when you only need a transcript hint for another model.
+        """
+        import cv2
+
+        if not GOOGLE_VISION_API_KEY or not _VISION_URL:
+            return ""
+
+        _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        img_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+        payload = {
+            "requests": [
+                {
+                    "image": {"content": img_b64},
+                    "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
+                }
+            ]
+        }
+
+        resp = _requests.post(_VISION_URL, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        responses = data.get("responses", [{}])
+        full_text_ann = responses[0].get("fullTextAnnotation") if responses else None
+        if not full_text_ann:
+            return ""
+        return (full_text_ann.get("text") or "").strip()
+
+    def document_paragraph_boxes(self, img):
+        """Paragraph-level text + union bbox, sorted top → bottom (then left → right).
+
+        Used to infer **chat side** from horizontal position (contact left / user right).
+        """
+        import cv2
+
+        if not GOOGLE_VISION_API_KEY or not _VISION_URL:
+            return []
+
+        _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        img_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+        payload = {
+            "requests": [
+                {
+                    "image": {"content": img_b64},
+                    "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
+                }
+            ]
+        }
+
+        resp = _requests.post(_VISION_URL, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        responses = data.get("responses", [{}])
+        full_text_ann = responses[0].get("fullTextAnnotation") if responses else None
+        if not full_text_ann:
+            return []
+
+        out = []
+        for page in full_text_ann.get("pages", []):
+            for block in page.get("blocks", []):
+                for para in block.get("paragraphs", []):
+                    words_text = []
+                    word_boxes = []
+                    for word in para.get("words", []):
+                        symbols = word.get("symbols", [])
+                        if not symbols:
+                            continue
+                        chunk = "".join(s.get("text", "") for s in symbols)
+                        verts = word.get("boundingBox", {}).get("vertices", [])
+                        if len(verts) < 4:
+                            continue
+                        xs = [v.get("x", 0) for v in verts]
+                        ys = [v.get("y", 0) for v in verts]
+                        word_boxes.append((min(xs), min(ys), max(xs), max(ys)))
+                        words_text.append(chunk)
+                    if not words_text:
+                        continue
+                    combined = "".join(words_text).strip()
+                    if len(combined) < 1:
+                        continue
+                    x1 = min(b[0] for b in word_boxes)
+                    y1 = min(b[1] for b in word_boxes)
+                    x2 = max(b[2] for b in word_boxes)
+                    y2 = max(b[3] for b in word_boxes)
+                    out.append({"text": combined, "bbox": (x1, y1, x2, y2)})
+
+        out.sort(
+            key=lambda d: (
+                (d["bbox"][1] + d["bbox"][3]) / 2.0,
+                (d["bbox"][0] + d["bbox"][2]) / 2.0,
+            )
+        )
+        return out
+
+
+if GOOGLE_VISION_API_KEY:
+    print("[INIT] Google Cloud Vision OCR ready")
+else:
+    print("[INIT] Google Cloud Vision OCR not loaded (no API key)")
 ocr_engine = GoogleVisionOCR()
 
 

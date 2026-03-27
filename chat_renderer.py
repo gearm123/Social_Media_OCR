@@ -1,5 +1,23 @@
+import os
+
 import cv2
 import numpy as np
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+
+
+_PIL_FONT_CACHE = {}
+_UNICODE_FONT_CANDIDATES = [
+    r"C:\Windows\Fonts\tahoma.ttf",
+    r"C:\Windows\Fonts\LeelawUI.ttf",
+    r"C:\Windows\Fonts\segoeui.ttf",
+    r"C:\Windows\Fonts\arial.ttf",
+]
 
 # --------------------------------------------------
 # SORT OBJECTS (TOP → BOTTOM)
@@ -8,14 +26,64 @@ import numpy as np
 def sort_objects(objects):
     # Use explicit conversation order when present (multi-page combined render).
     # Fall back to bbox y-coordinate for single-page renders.
-    if objects and "order" in objects[0]:
-        return sorted(objects, key=lambda o: o.get("order", 0))
+    if not objects:
+        return objects
+    if any("order" in o for o in objects):
+        # int() avoids string sort bugs ("10" before "2") if order ever stringifies.
+        return sorted(objects, key=lambda o: int(o.get("order", 0) or 0))
     return sorted(objects, key=lambda o: o["bbox"][1])
 
 
 # --------------------------------------------------
 # DRAW HELPERS
 # --------------------------------------------------
+
+def _contains_non_latin(text):
+    return any(ord(c) > 0x024F for c in (text or "") if not c.isspace())
+
+
+def _load_unicode_font(size):
+    if ImageFont is None:
+        return None
+    size = max(12, int(size))
+    if size in _PIL_FONT_CACHE:
+        return _PIL_FONT_CACHE[size]
+    for fp in _UNICODE_FONT_CANDIDATES:
+        if os.path.exists(fp):
+            try:
+                _PIL_FONT_CACHE[size] = ImageFont.truetype(fp, size=size)
+                return _PIL_FONT_CACHE[size]
+            except Exception:
+                continue
+    try:
+        _PIL_FONT_CACHE[size] = ImageFont.load_default()
+        return _PIL_FONT_CACHE[size]
+    except Exception:
+        return None
+
+
+def _measure_text(text, font, scale, thickness):
+    if _contains_non_latin(text):
+        pil_font = _load_unicode_font(22 if scale >= 0.55 else 18)
+        if pil_font is not None:
+            bbox = pil_font.getbbox(text or " ")
+            return max(1, bbox[2] - bbox[0]), max(1, bbox[3] - bbox[1]), pil_font
+    (w, h), _ = cv2.getTextSize(text or " ", font, scale, thickness)
+    return max(1, w), max(1, h), None
+
+
+def _draw_text(img, text, x, y_top, font, scale, thickness, color):
+    w, h, pil_font = _measure_text(text, font, scale, thickness)
+    if pil_font is not None and Image is not None and ImageDraw is not None:
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(pil_img)
+        draw.text((x, y_top), text, font=pil_font, fill=(int(color[2]), int(color[1]), int(color[0])))
+        img[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        return h
+    cv2.putText(img, text, (x, y_top + h), font, scale, color, thickness, cv2.LINE_AA)
+    return h
+
 
 def wrap_text(text, font, scale, thickness, max_width):
     words = text.split()
@@ -24,7 +92,7 @@ def wrap_text(text, font, scale, thickness, max_width):
 
     for word in words:
         test = current + " " + word if current else word
-        (w, _), _ = cv2.getTextSize(test, font, scale, thickness)
+        w, _h, _pil_font = _measure_text(test, font, scale, thickness)
         if w <= max_width:
             current = test
         else:
@@ -118,9 +186,9 @@ def draw_speaker_title(img, text, width, y):
     scale = 0.62
     thickness = 1
     color = (45, 45, 45)
-    (text_w, text_h), _ = cv2.getTextSize(text, font, scale, thickness)
+    text_w, text_h, _ = _measure_text(text, font, scale, thickness)
     x = max(18, (width - text_w) // 2)
-    cv2.putText(img, text, (x, y + text_h), font, scale, color, thickness, cv2.LINE_AA)
+    _draw_text(img, text, x, y, font, scale, thickness, color)
     return y + text_h + 12
 
 
@@ -141,11 +209,10 @@ def draw_chat_header(img, contact_name, width):
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.72
     thickness = 2
-    (tw, th), _ = cv2.getTextSize(contact_name, font, scale, thickness)
+    tw, th, _ = _measure_text(contact_name, font, scale, thickness)
     tx = av_cx + 26
-    ty = (header_h + th) // 2
-    cv2.putText(img, contact_name, (tx, ty), font, scale,
-                (255, 255, 255), thickness, cv2.LINE_AA)
+    ty = max(6, (header_h - th) // 2)
+    _draw_text(img, contact_name, tx, ty, font, scale, thickness, (255, 255, 255))
     return header_h
 
 
@@ -155,8 +222,8 @@ def draw_name_label(img, name, x, y):
     scale = 0.40
     thickness = 1
     color = (90, 90, 90)
-    (tw, th), _ = cv2.getTextSize(name, font, scale, thickness)
-    cv2.putText(img, name, (x, y + th), font, scale, color, thickness, cv2.LINE_AA)
+    tw, th, _ = _measure_text(name, font, scale, thickness)
+    _draw_text(img, name, x, y, font, scale, thickness, color)
     return y + th + 4
 
 
@@ -166,9 +233,9 @@ def draw_timestamp(img, text, width, y):
     thickness = 1
     color = (120, 120, 120)
 
-    (text_w, text_h), _ = cv2.getTextSize(text, font, scale, thickness)
+    text_w, text_h, _ = _measure_text(text, font, scale, thickness)
     x = (width - text_w) // 2
-    cv2.putText(img, text, (x, y + text_h), font, scale, color, thickness, cv2.LINE_AA)
+    _draw_text(img, text, x, y, font, scale, thickness, color)
     return y + text_h + 18
 
 
@@ -178,15 +245,18 @@ def draw_bubble(img, text, x, y, max_width, align="left", bubble_color=(200, 200
     thickness = 1
     padding_x = 16
     padding_y = 12
-    line_height = 22
+    line_gap = 6
     radius = 18
     avatar_size = 34
     avatar_space = 0
 
     lines = wrap_text(text, font, scale, thickness, max_width - padding_x * 2)
-    line_widths = [cv2.getTextSize(line, font, scale, thickness)[0][0] for line in lines]
+    line_sizes = [_measure_text(line, font, scale, thickness) for line in lines]
+    line_widths = [s[0] for s in line_sizes]
+    line_heights = [s[1] for s in line_sizes]
     box_w = max(line_widths) + padding_x * 2
-    box_h = len(lines) * line_height + padding_y * 2
+    text_h_total = sum(line_heights) + max(0, len(lines) - 1) * line_gap
+    box_h = text_h_total + padding_y * 2
 
     if align == "left":
         avatar_size = min(52, max(40, box_h - 10))
@@ -201,18 +271,19 @@ def draw_bubble(img, text, x, y, max_width, align="left", bubble_color=(200, 200
 
     draw_rounded_rect(img, x, y, x + box_w, y + box_h, bubble_color, radius)
 
+    text_cursor_y = y + padding_y
     for i, line in enumerate(lines):
-        text_y = y + padding_y + (i + 1) * line_height - 6
-        cv2.putText(
+        lh = _draw_text(
             img,
             line,
-            (x + padding_x, text_y),
+            x + padding_x,
+            text_cursor_y,
             font,
             scale,
-            text_color,
             thickness,
-            cv2.LINE_AA
+            text_color,
         )
+        text_cursor_y += lh + line_gap
 
     if align == "left":
         avatar_x = x - 8 - (avatar_size // 2)

@@ -1,4 +1,6 @@
 import cv2
+import os
+import re
 import time
 from pathlib import Path
 
@@ -14,6 +16,8 @@ from grouping import (
     group_rows,
     group_objects,
     classify_object_type,
+    classify_sender_receiver,
+    side_hint,
 )
 from ocr_translate import ocr_and_translate, run_ocr_on_region, translate_th_to_en
 from timestamp_detection import parse_timestamp_text
@@ -71,53 +75,95 @@ def prepare_image_crop_info(path):
 
 
 def run_craft_and_group_on_combined(combined_img, craft_net, page_ranges):
-    """Run CRAFT text detection + grouping on an already-concatenated image.
+    """Run CRAFT text detection + grouping on the combined image.
 
-    *page_ranges* is a list of (start_y, end_y, page_index, crop_top, status_bar_info,
-    bottom_artifact_info) tuples describing each image slice inside combined_img.
+    CRAFT degrades badly on very tall images (rescales too aggressively).
+    To avoid this, we run CRAFT on each page slice individually and then
+    re-map every detected box back to combined-image coordinates.
 
-    Returns a flat list of objects with "page_index" and "bbox" in combined coords,
-    plus per-page artifact splits for rendering.
+    *page_ranges* is a list of (start_y, end_y, page_index, crop_top,
+    status_bar_info, bottom_artifact_info) tuples.
+
+    Returns a flat list of objects with "page_index" and "bbox" in combined coords.
     """
-    print("\n[STEP] Running CRAFT text detection on combined image...")
-    raw_boxes = detect_text(combined_img, craft_net)
-    print(f"[CRAFT] Detected {len(raw_boxes)} text boxes in combined image")
+    _craft_verbose = os.environ.get("CRAFT_VERBOSE", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if _craft_verbose:
+        print("\n[STEP] Running CRAFT text detection per page slice...")
 
-    all_rects = [box_to_rect(b) for b in raw_boxes]
+    # CRAFT max height — images taller than this cause detail loss
+    CRAFT_MAX_HEIGHT = 2000
+    img_h, img_w = combined_img.shape[:2]
 
-    # Split rects per page using y-ranges, apply artifact removal per page
-    per_page_rects = [[] for _ in page_ranges]
-    for rect in all_rects:
-        cy = (rect[1] + rect[3]) / 2
-        for idx, (start_y, end_y, page_idx, crop_top, _, _) in enumerate(page_ranges):
-            if start_y <= cy < end_y:
-                per_page_rects[idx].append(rect)
-                break
+    all_conversation_rects = []   # in combined-image coordinates
+    total_boxes = 0
 
-    all_conversation_rects = []
-    for idx, (start_y, end_y, page_idx, crop_top, status_bar_info, bottom_artifact_info) in enumerate(page_ranges):
-        rects = per_page_rects[idx]
+    for idx, (start_y, end_y, page_idx, crop_top,
+              status_bar_info, bottom_artifact_info) in enumerate(page_ranges):
 
-        # Shift rects to page-local coordinates for artifact detection
-        local_rects = [(x1, y1 - start_y + crop_top, x2, y2 - start_y + crop_top)
-                       for (x1, y1, x2, y2) in rects]
+        # Crop out this page's slice from the combined image
+        slice_img = combined_img[start_y:end_y, :]
+
+        slice_h = slice_img.shape[0]
+        if slice_h == 0:
+            continue
+
+        # If the slice is still too tall, downscale for CRAFT then map back
+        scale = 1.0
+        if slice_h > CRAFT_MAX_HEIGHT:
+            scale = CRAFT_MAX_HEIGHT / slice_h
+            slice_for_craft = cv2.resize(
+                slice_img,
+                (int(img_w * scale), CRAFT_MAX_HEIGHT),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            slice_for_craft = slice_img
+
+        raw_boxes = detect_text(slice_for_craft, craft_net)
+        total_boxes += len(raw_boxes)
+
+        # Convert CRAFT polygons → axis-aligned rects, rescale if needed
+        local_rects = []
+        for b in raw_boxes:
+            x1, y1, x2, y2 = box_to_rect(b)
+            if scale != 1.0:
+                x1 = int(x1 / scale)
+                y1 = int(y1 / scale)
+                x2 = int(x2 / scale)
+                y2 = int(y2 / scale)
+            # These are in slice-local coords; shift to crop_top-relative for
+            # artifact detection (matches how status_bar_info bbox was measured)
+            local_rects.append((x1, y1 + crop_top, x2, y2 + crop_top))
 
         conv_rects, top_art, bot_art = split_artifacts_from_conversation(
             local_rects, status_bar_info, bottom_artifact_info
         )
-        if status_bar_info:
+        if _craft_verbose:
             print(
-                f"[ARTIFACT] Page {page_idx}: preserving {len(top_art)} artifact boxes, "
-                f"{len(conv_rects)} conversation boxes"
+                f"[CRAFT] Page {page_idx}: {len(raw_boxes)} boxes → "
+                f"{len(conv_rects)} conversation, {len(top_art)} top artifacts"
             )
 
-        # Shift back to combined coords
-        for r in conv_rects:
-            x1, y1, x2, y2 = r
-            all_conversation_rects.append((x1, y1 + start_y - crop_top, x2, y2 + start_y - crop_top))
+        # Shift conversation rects to combined-image coordinates
+        for x1, y1, x2, y2 in conv_rects:
+            # y is currently crop_top-relative; remove crop_top offset, add start_y
+            all_conversation_rects.append((
+                x1,
+                y1 - crop_top + start_y,
+                x2,
+                y2 - crop_top + start_y,
+            ))
 
-    rows = group_rows(all_conversation_rects, combined_img.shape[1], combined_img)
-    objects = group_objects(rows, combined_img.shape[1], combined_img)
+    if _craft_verbose:
+        print(f"[CRAFT] Total: {total_boxes} boxes detected across {len(page_ranges)} pages")
+
+    rows = group_rows(all_conversation_rects, img_w, combined_img)
+    objects = group_objects(rows, img_w, combined_img)
 
     # Tag each object with its page_index
     for obj in objects:
@@ -128,8 +174,94 @@ def run_craft_and_group_on_combined(combined_img, craft_net, page_ranges):
                 obj["page_index"] = page_idx
                 break
 
-    print(f"[GROUP] Created {len(objects)} chat objects in combined image")
+    if _craft_verbose:
+        print(f"[GROUP] Created {len(objects)} chat objects in combined image")
     return objects
+
+
+def filter_timestamp_chat_objects(objects, image_width, img=None):
+    """Remove real date/time rows; fix messages wrongly classified as *timestamp*.
+
+    - Drops objects that are genuinely timestamps (or time-only OCR on bubbles).
+    - If type is *timestamp* but OCR text does not look like a date/time, re-classify
+      using bubble colour (sender/receiver) so real messages are not lost.
+
+    Returns ``(kept_list, num_dropped)``.
+    """
+    from timestamp_detection import is_timestamp
+
+    if not objects:
+        return [], 0
+
+    kept = []
+    dropped = 0
+    for obj in objects:
+        th = (obj.get("text_th") or "").strip()
+        typ = (obj.get("type") or "receiver").lower()
+        bbox = obj.get("bbox")
+
+        if typ == "timestamp":
+            # Message mis-tagged as timestamp — use bubble colour only (avoid timestamp heuristics)
+            if th and not is_timestamp(th) and len(th) > 8 and img is not None and bbox:
+                obj["type"] = classify_sender_receiver(img, bbox)
+            if (obj.get("type") or "receiver").lower() == "timestamp":
+                dropped += 1
+                continue
+
+        if th and is_timestamp(th):
+            side = side_hint(bbox, image_width) if bbox and image_width else "unknown"
+            if side == "center":
+                dropped += 1
+                continue
+            if len(th) <= 40:
+                dropped += 1
+                continue
+
+        kept.append(obj)
+
+    return kept, dropped
+
+
+_GAMBLING_ASCII = re.compile(
+    r"(78win|vg98|win\s*98|pg\s*slot|slot\s*online|bet\s*flix|ufa\d+|lsm\d+)",
+    re.I,
+)
+
+
+def _is_gambling_spam_ocr(text_th, text_en):
+    """True if OCR text looks like an in-screen gambling/ad overlay, not chat."""
+    th = (text_th or "").strip()
+    en = (text_en or "").strip()
+    blob = f"{th} {en}"
+    blob_l = blob.lower()
+    if _GAMBLING_ASCII.search(blob_l):
+        return True
+    # Thai promos: "เครดิต … ฟรี" with promo digits / short banner
+    if "เครดิต" in th and "ฟรี" in th:
+        if len(th) <= 120 and (
+            re.search(r"\d", th)
+            or th.strip().startswith("(")
+            or re.search(r"เครดิต\s*ฟรี", th)
+        ):
+            return True
+    return False
+
+
+def filter_gambling_overlay_objects(objects):
+    """Remove objects whose OCR matches known gambling/ad overlay strings.
+
+    Returns ``(kept_list, num_dropped)``.
+    """
+    if not objects:
+        return [], 0
+    kept = []
+    dropped = 0
+    for obj in objects:
+        if _is_gambling_spam_ocr(obj.get("text_th"), obj.get("text_en")):
+            dropped += 1
+            continue
+        kept.append(obj)
+    return kept, dropped
 
 
 def prepare_image_layout(path, craft_net, keep_status_bar_context=True):
