@@ -1713,9 +1713,18 @@ def _gemini_ocr_hints_refine_pass(
     }
     payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
     expected_n = len(pass1_messages)
-    hints = (ocr_page_text or "").strip()
+    hints_full = (ocr_page_text or "").strip()
+    max_hint_chars = int(os.environ.get("GEMINI_PASS2_OCR_MAX_CHARS", "24000"))
+    retry_hint_chars = int(os.environ.get("GEMINI_PASS2_OCR_RETRY_MAX_CHARS", "12000"))
 
-    prompt = f"""You are PASS 2 of 2.
+    def _truncate_hints(text: str, limit: int) -> str:
+        text = (text or "").strip()
+        if not text or len(text) <= limit:
+            return text
+        return text[:limit].rstrip() + "\n\n[... OCR hints truncated ...]"
+
+    def _build_prompt(hints_text: str, retry_note: str = "") -> str:
+        return f"""You are PASS 2 of 2.
 
 You receive:
 1. A conversation transcript from Pass 1.
@@ -1725,7 +1734,7 @@ Input JSON:
 {payload_json}
 
 OCR hints from the cleaned images:
-{hints if hints else "(no OCR hints available)"}
+{hints_text if hints_text else "(no OCR hints available)"}
 
 Task:
 - Rewrite the conversation using the OCR hints only as soft supporting evidence.
@@ -1736,10 +1745,13 @@ Task:
 - Do not add, remove, merge, or split messages.
 - Ignore OCR fragments that look like UI noise or make the message worse.
 - Return English in `text_en`.
+{retry_note}
 
 Output JSON only:
 {{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<final source reading>","text_en":"<final English line>"}}]}}"""
 
+    hints = _truncate_hints(hints_full, max_hint_chars)
+    prompt = _build_prompt(hints)
     _write_gemini_prompt_file("gemini_prompt_pass2.txt", "Pass 2 (OCR-guided rewrite)", prompt)
     try:
         gres = _gemini_generate(prompt, timeout=timeout)
@@ -1750,9 +1762,24 @@ Output JSON only:
         return pass1_messages, contact_name
 
     if not raw.strip():
-        print("[GEMINI] Pass 2 empty — keeping Pass 1 transcript")
-        _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
-        return pass1_messages, contact_name
+        print("[GEMINI] Pass 2 empty — retrying once with shorter OCR hints")
+        retry_hints = _truncate_hints(hints_full, retry_hint_chars)
+        retry_prompt = _build_prompt(
+            retry_hints,
+            retry_note="- If OCR support is weak, keep the original wording and only fix lines where the OCR clearly helps.",
+        )
+        try:
+            gres = _gemini_generate(retry_prompt, timeout=timeout)
+            raw = (gres.text if gres else "") or ""
+            prompt = retry_prompt
+        except Exception as e:
+            print(f"[GEMINI] Pass 2 retry failed: {e}")
+            _append_gemini_debug_pass2(retry_prompt, f"ERROR: {e}", "PASS 2 — OCR-guided rewrite retry")
+            return pass1_messages, contact_name
+        if not raw.strip():
+            print("[GEMINI] Pass 2 empty after retry — keeping Pass 1 transcript")
+            _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite retry")
+            return pass1_messages, contact_name
 
     try:
         name2, msgs2, _ledger2 = _parse_gemini_full_vision_json(raw)
@@ -1810,6 +1837,142 @@ Output JSON only:
     if not role_drift_indices:
         _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
     return merged, final_name
+
+
+def _parse_gemini_status_bar_json(raw: str) -> dict:
+    payload_text = _extract_json_object(raw or "") or (raw or "").strip()
+    payload = json.loads(payload_text)
+    if not isinstance(payload, dict):
+        return {}
+
+    name = str(
+        payload.get("contact_name")
+        or payload.get("speaker_name")
+        or payload.get("name")
+        or ""
+    ).strip()
+    status_text = str(
+        payload.get("status_text")
+        or payload.get("speaker_status")
+        or payload.get("status")
+        or ""
+    ).strip()
+
+    avatar_image_index = payload.get("avatar_image_index")
+    try:
+        avatar_image_index = int(avatar_image_index)
+    except (TypeError, ValueError):
+        avatar_image_index = 0
+
+    avatar_bbox = payload.get("avatar_bbox")
+    if not (isinstance(avatar_bbox, list) and len(avatar_bbox) >= 4):
+        avatar_bbox = None
+    else:
+        cleaned = []
+        for value in avatar_bbox[:4]:
+            try:
+                cleaned.append(int(value))
+            except (TypeError, ValueError):
+                cleaned.append(0)
+        avatar_bbox = cleaned
+
+    return {
+        "contact_name": name,
+        "status_text": status_text,
+        "avatar_image_index": avatar_image_index,
+        "avatar_bbox": avatar_bbox,
+    }
+
+
+def _gemini_status_bar_pass(
+    status_bar_images,
+    contact_hint: str,
+    timeout: int,
+):
+    """Pass 3: extract final header information from status-bar crops."""
+    if not status_bar_images:
+        return {
+            "contact_name": (contact_hint or "").strip(),
+            "status_text": "",
+            "avatar_image_index": 0,
+            "avatar_bbox": None,
+        }
+
+    img_b64_list = []
+    for img in list(status_bar_images or []):
+        if img is None or getattr(img, "size", 0) == 0:
+            continue
+        b64 = _jpeg_b64_from_bgr(img, quality=92)
+        if b64:
+            img_b64_list.append(b64)
+
+    if not img_b64_list:
+        return {
+            "contact_name": (contact_hint or "").strip(),
+            "status_text": "",
+            "avatar_image_index": 0,
+            "avatar_bbox": None,
+        }
+
+    prompt = f"""You are PASS 3 of 3.
+
+These images are the top Messenger header/status-bar crops from the same conversation, in chronological order.
+
+Task:
+- Infer the best contact name shown in the header.
+- Infer the short status text if visible, such as Active now, Online, last active text, or similar.
+- Choose the image with the clearest profile icon and return its 0-based image index.
+- Return the approximate avatar bounding box within that chosen crop as [x1, y1, x2, y2].
+
+Guidelines:
+- Prefer text actually visible in the status-bar crops.
+- Use "{(contact_hint or '').strip()}" only as a weak fallback hint for the name.
+- If the status text is not readable, return an empty string.
+- If the avatar is unclear, still choose the best image and return your best approximate bounding box around the visible avatar circle.
+
+Return JSON only:
+{{"contact_name":"<string>","status_text":"<string>","avatar_image_index":0,"avatar_bbox":[x1,y1,x2,y2]}}"""
+
+    _write_gemini_prompt_file("gemini_prompt_pass3_statusbar.txt", "Pass 3 status bar", prompt)
+
+    try:
+        gres = _gemini_generate(prompt, image_b64_list=img_b64_list, timeout=timeout)
+        raw = (gres.text if gres else "") or ""
+    except Exception as e:
+        print(f"[GEMINI] Pass 3 status-bar failed: {e}")
+        _append_gemini_debug_pass2(prompt, f"ERROR: {e}", "PASS 3 — Status bar extraction")
+        return {
+            "contact_name": (contact_hint or "").strip(),
+            "status_text": "",
+            "avatar_image_index": 0,
+            "avatar_bbox": None,
+        }
+
+    if not raw.strip():
+        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Status bar extraction")
+        return {
+            "contact_name": (contact_hint or "").strip(),
+            "status_text": "",
+            "avatar_image_index": 0,
+            "avatar_bbox": None,
+        }
+
+    try:
+        info = _parse_gemini_status_bar_json(raw)
+    except json.JSONDecodeError as e:
+        print(f"[GEMINI] Pass 3 status-bar JSON parse failed: {e}")
+        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Status bar extraction")
+        return {
+            "contact_name": (contact_hint or "").strip(),
+            "status_text": "",
+            "avatar_image_index": 0,
+            "avatar_bbox": None,
+        }
+
+    if not info.get("contact_name"):
+        info["contact_name"] = (contact_hint or "").strip()
+    _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Status bar extraction")
+    return info
 
 
 def _append_gemini_debug_pass2(prompt: str, response: str, label: str = "PASS 3 — FINAL ENGLISH TRANSLATION (text-only)"):

@@ -16,6 +16,7 @@ from ocr_translate import (
     translate_to_en,
     translate_conversation_gemini_multimodal,
     _gemini_ocr_hints_refine_pass,
+    _gemini_status_bar_pass,
     _meta_from_gemini_messages,
     _set_source_language,
 )
@@ -23,12 +24,7 @@ from pipeline import prepare_image_crop_info
 from chat_renderer import render_chat
 
 PAGE_GAP_PX = 48
-
-_HARDCODED_PASS1_BUBBLE_INPUT = [
-    {"count": 2, "order": ["sender", "receiver"]},
-    {"count": 6, "order": ["receiver", "receiver", "receiver", "sender", "receiver", "sender"]},
-    {"count": 6, "order": ["receiver", "sender", "receiver", "receiver", "receiver", "sender"]},
-]
+PASS1_BUBBLE_INPUT_PATH = Path(__file__).resolve().parent / "pass1_bubble_input.txt"
 
 # UI strings that appear in phone status bars but are NOT contact names
 _STATUS_BAR_NOISE = {
@@ -151,33 +147,96 @@ def extract_page_segment_images(crop_infos):
     return out
 
 
+def extract_status_bar_images(crop_infos):
+    """Extract the status/header bar region from every input image."""
+    out = []
+    for info in crop_infos or []:
+        img = info.get("img")
+        sb = (info.get("status_bar_info") or {}).get("bbox")
+        if img is None or sb is None or len(sb) < 4:
+            continue
+        h, w = img.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in sb[:4]]
+        x1 = max(0, min(w - 1, x1))
+        x2 = max(x1 + 1, min(w, x2))
+        y1 = max(0, min(h - 1, y1))
+        y2 = max(y1 + 1, min(h, y2))
+        crop = img[y1:y2, x1:x2].copy()
+        if crop.size:
+            out.append(crop)
+    return out
+
+
+def crop_avatar_from_status_bar(crop_infos, status_bar_images, status_info):
+    """Crop the chosen avatar region, preferring detected avatar geometry."""
+    if not status_bar_images:
+        return None
+    image_index = status_info.get("avatar_image_index")
+    bbox = status_info.get("avatar_bbox")
+    try:
+        image_index = int(image_index)
+    except (TypeError, ValueError):
+        image_index = 0
+    if not (0 <= image_index < len(status_bar_images)):
+        image_index = 0
+    img = status_bar_images[image_index]
+    if img is None or getattr(img, "size", 0) == 0:
+        return None
+    h, w = img.shape[:2]
+
+    rect = None
+    info = crop_infos[image_index] if 0 <= image_index < len(crop_infos or []) else None
+    status_meta = (info or {}).get("status_bar_info") or {}
+    detected_avatar_rect = status_meta.get("avatar_rect")
+    status_bbox = status_meta.get("bbox")
+
+    if isinstance(detected_avatar_rect, (list, tuple)) and len(detected_avatar_rect) >= 4:
+        try:
+            ax1, ay1, ax2, ay2 = [int(v) for v in detected_avatar_rect[:4]]
+            if isinstance(status_bbox, (list, tuple)) and len(status_bbox) >= 4:
+                sx1, sy1, _sx2, _sy2 = [int(v) for v in status_bbox[:4]]
+                rect = [ax1 - sx1, ay1 - sy1, ax2 - sx1, ay2 - sy1]
+            else:
+                rect = [ax1, ay1, ax2, ay2]
+        except (TypeError, ValueError):
+            rect = None
+
+    if rect is None and isinstance(bbox, list) and len(bbox) >= 4:
+        try:
+            x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+        except (TypeError, ValueError):
+            return None
+        # Gemini may return full-image coordinates; convert them to status-crop-local coords.
+        if (x2 > w or y2 > h) and isinstance(status_bbox, (list, tuple)) and len(status_bbox) >= 4:
+            sx1, sy1, _sx2, _sy2 = [int(v) for v in status_bbox[:4]]
+            x1, y1, x2, y2 = x1 - sx1, y1 - sy1, x2 - sx1, y2 - sy1
+        rect = [x1, y1, x2, y2]
+
+    if rect is None:
+        return None
+
+    x1, y1, x2, y2 = rect
+    pad = 6
+    x1 = max(0, min(w - 1, x1 - pad))
+    x2 = max(x1 + 1, min(w, x2 + pad))
+    y1 = max(0, min(h - 1, y1 - pad))
+    y2 = max(y1 + 1, min(h, y2 + pad))
+    avatar = img[y1:y2, x1:x2].copy()
+    return avatar if avatar.size else None
+
+
 def prompt_manual_bubble_summary(num_images: int):
     """Ask the user for bubble counts and sender/receiver order per cleaned image."""
     if num_images <= 0:
         return "", 0, []
 
-    if num_images == len(_HARDCODED_PASS1_BUBBLE_INPUT):
-        print("\n[STEP 1a] Using hardcoded Pass 1 bubble summary for current input…")
-        lines = []
-        total_bubbles = 0
-        page_specs = []
-        for i, spec in enumerate(_HARDCODED_PASS1_BUBBLE_INPUT):
-            count = int(spec["count"])
-            order = list(spec["order"])
-            total_bubbles += count
-            page_specs.append({
-                "page_index": i,
-                "count": count,
-                "order": list(order),
-            })
-            lines.append(f"in image {i + 1}")
-            lines.append(f"i count {count} message bubbles")
-            lines.extend(order if order else ["none"])
-            if i < num_images - 1:
-                lines.append("")
-        return "\n".join(lines), total_bubbles, page_specs
+    file_summary = _load_pass1_bubble_summary_file(num_images)
+    if file_summary is not None:
+        print(f"\n[STEP 1a] Using Pass 1 bubble summary from {PASS1_BUBBLE_INPUT_PATH.name}…")
+        return file_summary
 
     print("\n[STEP 1a] Manual bubble summary for Pass 1…")
+    print(f"[INPUT] You can also prefill {PASS1_BUBBLE_INPUT_PATH.name} to skip prompts.")
     print("[INPUT] Enter the number of actual text bubbles for each cleaned image.")
     print("[INPUT] Then enter their order using sender/receiver or s/r, comma-separated.")
     print("[INPUT] Do not count timestamps, call notices, reactions, headers, or other UI artifacts.")
@@ -236,6 +295,94 @@ def prompt_manual_bubble_summary(num_images: int):
             lines.append("")
 
     return "\n".join(lines), total_bubbles, page_specs
+
+
+def _map_bubble_role_token(token: str):
+    tok = str(token or "").strip().lower()
+    if tok in ("s", "sender"):
+        return "sender"
+    if tok in ("r", "receiver", "recevier", "reciever"):
+        return "receiver"
+    return None
+
+
+def _build_bubble_summary_from_specs(specs):
+    lines = []
+    total_bubbles = 0
+    page_specs = []
+    for i, spec in enumerate(specs):
+        order = list(spec.get("order") or [])
+        count = int(spec.get("count") or len(order))
+        total_bubbles += count
+        page_specs.append({
+            "page_index": i,
+            "count": count,
+            "order": list(order),
+        })
+        lines.append(f"in image {i + 1}")
+        lines.append(f"i count {count} message bubbles")
+        lines.extend(order if order else ["none"])
+        if i < len(specs) - 1:
+            lines.append("")
+    return "\n".join(lines), total_bubbles, page_specs
+
+
+def _load_pass1_bubble_summary_file(num_images: int):
+    path = PASS1_BUBBLE_INPUT_PATH
+    if not path.exists():
+        return None
+    try:
+        raw_lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+    except Exception as e:
+        print(f"[INPUT] Could not read {path.name}: {e}")
+        return None
+
+    lines = [line for line in raw_lines if line]
+    if not lines:
+        return None
+    if len(lines) % 2 != 0:
+        print(f"[INPUT] {path.name} is invalid: expected count/order line pairs.")
+        return None
+
+    specs = []
+    for i in range(0, len(lines), 2):
+        count_line = lines[i]
+        order_line = lines[i + 1]
+        try:
+            count = int(count_line)
+        except ValueError:
+            print(f"[INPUT] {path.name} has an invalid count line: '{count_line}'")
+            return None
+
+        if "," in order_line:
+            tokens = [p.strip() for p in order_line.replace(";", ",").split(",") if p.strip()]
+        else:
+            tokens = [p.strip() for p in order_line.split() if p.strip()]
+
+        mapped = []
+        for tok in tokens:
+            role = _map_bubble_role_token(tok)
+            if role is None:
+                print(f"[INPUT] {path.name} has an invalid role token: '{tok}'")
+                return None
+            mapped.append(role)
+
+        if count != len(mapped):
+            print(
+                f"[INPUT] {path.name}: count {count} does not match order length {len(mapped)} "
+                f"for image {(i // 2) + 1}; using order length."
+            )
+            count = len(mapped)
+
+        specs.append({"count": count, "order": mapped})
+
+    if len(specs) != num_images:
+        print(
+            f"[INPUT] {path.name} has {len(specs)} image specs but current input has {num_images} images."
+        )
+        return None
+
+    return _build_bubble_summary_from_specs(specs)
 
 
 def _merge_text_spans(spans, gap_px=24):
@@ -659,6 +806,7 @@ def main():
 
     t2 = time.time()
     page_images = extract_page_segment_images(crop_infos)
+    status_bar_images = extract_status_bar_images(crop_infos)
     combined_img, page_ranges = build_combined_image(
         crop_infos, global_first_page_index=0
     )
@@ -671,6 +819,7 @@ def main():
         f"{len(page_ranges)} page band(s)"
     )
     print(f"[COMBINE] {len(page_images)} page crop(s) for OCR / internal use")
+    print(f"[STATUS] {len(status_bar_images)} status-bar crop(s) ready for Pass 3")
     print(f"[TIMER] Stitch done in {time.time()-t2:.1f}s")
 
     ocr_hints = None
@@ -722,7 +871,6 @@ def main():
 
     contact_name = (g_contact or contact_name or "Person A").strip() or "Person A"
     pass1_meta = list(all_meta or [])
-    render_contact_name = _render_safe_contact_name(contact_name)
     for i, item in enumerate(pre_ocr_meta or []):
         item["order"] = i
     for i, item in enumerate(pass1_meta):
@@ -740,11 +888,30 @@ def main():
     )
     if contact_name2:
         contact_name = contact_name2
-        render_contact_name = _render_safe_contact_name(contact_name)
     all_meta = _meta_from_gemini_messages(final_messages)
     for i, item in enumerate(all_meta or []):
         item["order"] = i
     print(f"[TIMER] Pass 2 Gemini rewrite in {time.time()-t_pass2:.1f}s")
+
+    t_pass3 = time.time()
+    print("\n[STEP 3] Gemini status-bar pass…")
+    status_bar_info = _gemini_status_bar_pass(
+        status_bar_images,
+        contact_hint=contact_name,
+        timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
+    )
+    final_contact_name_src = (status_bar_info.get("contact_name") or contact_name or "Person A").strip() or "Person A"
+    final_status_text_src = (status_bar_info.get("status_text") or "").strip()
+    final_contact_name = (translate_to_en(final_contact_name_src) or final_contact_name_src).strip() or "Person A"
+    final_status_text = (translate_to_en(final_status_text_src) or final_status_text_src).strip()
+    # The detected Messenger avatar is too small/noisy to preserve reliably, so keep the generic header avatar.
+    profile_image = None
+    contact_name = final_contact_name
+    print(
+        f"[STATUS] Final header: name='{final_contact_name}'"
+        + (f", status='{final_status_text}'" if final_status_text else "")
+    )
+    print(f"[TIMER] Pass 3 status bar in {time.time()-t_pass3:.1f}s")
 
     pass1_source_debug_path = os.path.join(JSON_DIR, "pass1_transcript_debug.json")
 
@@ -762,16 +929,16 @@ def main():
     print(f"[OUTPUT] Pass 1 transcript debug → {pass1_source_debug_path}")
 
     t4 = time.time()
-    print("\n[STEP 3] Saving JSON + rendered chat...")
+    print("\n[STEP 4] Saving JSON + rendered chat...")
     combined_json_path = os.path.join(JSON_DIR, "translated_conversation.json")
     with open(combined_json_path, "w", encoding="utf-8") as f:
         json.dump(all_meta, f, indent=2, ensure_ascii=False)
 
-    pass1_chat = render_chat(pass1_meta, contact_name=render_contact_name)
+    pass1_chat = render_chat(pass1_meta)
     pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
     cv2.imwrite(pass1_path, pass1_chat)
 
-    pass2_img = render_chat(all_meta, contact_name=render_contact_name)
+    pass2_img = render_chat(all_meta)
     pass2_path = os.path.join(RENDER_DIR, "translated_conversation_pass2.png")
     cv2.imwrite(pass2_path, pass2_img)
 
@@ -785,7 +952,13 @@ def main():
     cv2.imwrite(compare_path, compare_img)
 
     combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
-    cv2.imwrite(combined_path, pass1_chat)
+    final_chat = render_chat(
+        all_meta,
+        profile_image=profile_image,
+        contact_name=final_contact_name,
+        header_status=final_status_text,
+    )
+    cv2.imwrite(combined_path, final_chat)
     print(f"[OUTPUT] JSON → {combined_json_path}")
     print(f"[OUTPUT] Image → {combined_path}")
     print(f"[OUTPUT] Pass 1 image → {pass1_path}")

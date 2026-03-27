@@ -1,6 +1,6 @@
 [
   {
-    "type": "receiver",
+    "type": "sender",
     "bbox": [
       0,
       0,
@@ -8,7 +8,7 @@
       35
     ],
     "text_th": "",
-    "text_en": "You have two hundred.\nWho are you with in Koh Samui?",
+    "text_en": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2",
     "order": 0,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -18,7 +18,7 @@
     "ocr_reasons": []
   },
   {
-    "type": "sender",
+    "type": "receiver",
     "bbox": [
       0,
       40,
@@ -26,7 +26,7 @@
       75
     ],
     "text_th": "",
-    "text_en": "I'm with a katoey mother who used to work in Rawai.\nI'll take you there.\nI'll pay for the boat.",
+    "text_en": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0671a79dd426822ff3ac236",
     "order": 1,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -44,7 +44,7 @@
       115
     ],
     "text_th": "",
-    "text_en": "Transferred.",
+    "text_en": "Go",
     "order": 2,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -54,7 +54,7 @@
     "ocr_reasons": []
   },
   {
-    "type": "sender",
+    "type": "receiver",
     "bbox": [
       0,
       120,
@@ -62,7 +62,7 @@
       155
     ],
     "text_th": "",
-    "text_en": "Mommy.\nMom.",
+    "text_en": "Come",
     "order": 3,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -72,7 +72,7 @@
     "ocr_reasons": []
   },
   {
-    "type": "sender",
+    "type": "receiver",
     "bbox": [
       0,
       160,
@@ -80,7 +80,7 @@
       195
     ],
     "text_th": "",
-    "text_en": "For the ticket to Surat Thani, Mom. The boat isn't leaving tomorrow. 🗣️ There's a storm, the boat isn't running.",
+    "text_en": "Where",
     "order": 4,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -98,7 +98,7 @@
       235
     ],
     "text_th": "",
-    "text_en": "I'm about to go to the pier.",
+    "text_en": "Then just let the nerves in your brain die.",
     "order": 5,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -108,7 +108,7 @@
     "ocr_reasons": []
   },
   {
-    "type": "sender",
+    "type": "receiver",
     "bbox": [
       0,
       240,
@@ -116,7 +116,7 @@
       275
     ],
     "text_th": "",
-    "text_en": "I'll get to the pier first.\nThen I'll take a picture and show you.",
+    "text_en": "I",
     "order": 6,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -126,7 +126,7 @@
     "ocr_reasons": []
   },
   {
-    "type": "receiver",
+    "type": "sender",
     "bbox": [
       0,
       280,
@@ -134,7 +134,7 @@
       315
     ],
     "text_th": "",
-    "text_en": "Do you have the boat fare yet?\nSo I can take you.",
+    "text_en": "I just feel sorry for you.",
     "order": 7,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -144,7 +144,7 @@
     "ocr_reasons": []
   },
   {
-    "type": "sender",
+    "type": "receiver",
     "bbox": [
       0,
       320,
@@ -152,8 +152,26 @@
       355
     ],
     "text_th": "",
-    "text_en": "I don't have a single baht yet.\nMom, please transfer some to me.",
+    "text_en": "Where are you going?",
     "order": 8,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      360,
+      400,
+      395
+    ],
+    "text_th": "",
+    "text_en": "You don't have to ask.",
+    "order": 9,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
@@ -165,30 +183,12 @@
     "type": "receiver",
     "bbox": [
       0,
-      360,
-      400,
-      395
-    ],
-    "text_th": "",
-    "text_en": "Tell me the total amount.\nI'll find it for you.\nThis time, after you go, you must call me every day.",
-    "order": 9,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "sender",
-    "bbox": [
-      0,
       400,
       400,
       435
     ],
     "text_th": "",
-    "text_en": "Thank you very much.",
+    "text_en": "Then sink.",
     "order": 10,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -198,7 +198,7 @@
     "ocr_reasons": []
   },
   {
-    "type": "sender",
+    "type": "receiver",
     "bbox": [
       0,
       440,
@@ -206,7 +206,7 @@
       475
     ],
     "text_th": "",
-    "text_en": "The boat fare is 350 baht, Mom.",
+    "text_en": "Looking down on me.",
     "order": 11,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -224,7 +224,7 @@
       515
     ],
     "text_th": "",
-    "text_en": "I'll risk it one more time.\nCall back.\nCall me back, I have something to discuss.\nI'll transfer it first.",
+    "text_en": "Sink.",
     "order": 12,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -242,7 +242,7 @@
       555
     ],
     "text_th": "",
-    "text_en": "Okay.\nTransfer it and I'll go shower and get dressed, Mom.",
+    "text_en": "If you need anything, don't message my husband for help again.",
     "order": 13,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,

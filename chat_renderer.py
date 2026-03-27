@@ -192,9 +192,9 @@ def draw_speaker_title(img, text, width, y):
     return y + text_h + 12
 
 
-def draw_chat_header(img, contact_name, width):
-    """Draw a Messenger-style header bar with the contact name at the top."""
-    header_h = 56
+def draw_chat_header(img, contact_name, width, status_text="", avatar_image=None):
+    """Draw a Messenger-style header bar with name, status, and avatar."""
+    header_h = 72 if status_text else 56
     header_bg  = (75, 90, 200)   # deep blue-indigo (BGR)
     avatar_bg  = (210, 190, 170)
     avatar_acc = (120, 90, 70)
@@ -203,7 +203,10 @@ def draw_chat_header(img, contact_name, width):
 
     # Avatar circle on the left
     av_cx, av_cy = 36, header_h // 2
-    draw_avatar(img, av_cx, av_cy, avatar_bg, avatar_acc)
+    if avatar_image is not None and getattr(avatar_image, "size", 0) != 0:
+        draw_avatar_image(img, avatar_image, av_cx, av_cy, size=34)
+    else:
+        draw_avatar(img, av_cx, av_cy, avatar_bg, avatar_acc)
 
     # Contact name
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -211,8 +214,10 @@ def draw_chat_header(img, contact_name, width):
     thickness = 2
     tw, th, _ = _measure_text(contact_name, font, scale, thickness)
     tx = av_cx + 26
-    ty = max(6, (header_h - th) // 2)
+    ty = 8 if status_text else max(6, (header_h - th) // 2)
     _draw_text(img, contact_name, tx, ty, font, scale, thickness, (255, 255, 255))
+    if status_text:
+        _draw_text(img, status_text, tx, ty + th + 4, font, 0.42, 1, (230, 235, 255))
     return header_h
 
 
@@ -316,11 +321,11 @@ def estimate_canvas_height(objects):
 # --------------------------------------------------
 
 def render_chat(objects, width=600, speaker_text="", profile_image=None,
-                contact_name=""):
+                contact_name="", header_status=""):
     objects = sort_objects(objects)
 
     # Reserve space for Messenger-style header if we have a contact name
-    header_h = 56 if contact_name else 0
+    header_h = (72 if header_status else 56) if contact_name else 0
     speaker_title_height = 26 if speaker_text else 0
     top_gap = 12 if speaker_text else 0
     canvas_height = (
@@ -336,7 +341,7 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
     # Draw the header bar (returns header height so we start content below it)
     y = 0
     if contact_name:
-        y = draw_chat_header(canvas, contact_name, width)
+        y = draw_chat_header(canvas, contact_name, width, status_text=header_status, avatar_image=profile_image)
         y += 12  # breathing room below header
 
     if speaker_text:
