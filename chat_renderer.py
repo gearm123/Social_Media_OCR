@@ -19,6 +19,31 @@ _UNICODE_FONT_CANDIDATES = [
     r"C:\Windows\Fonts\arial.ttf",
 ]
 
+_CHAT_THEMES = {
+    "messenger_light": {
+        "canvas_bg": (255, 255, 255),
+        "header_bg": (255, 255, 255),
+        "header_divider": (233, 236, 239),
+        "header_title": (36, 36, 36),
+        "header_subtitle": (116, 116, 120),
+        "header_icon": (250, 48, 168),  # purple-blue accent in BGR family
+        "receiver_bubble": (240, 242, 245),
+        "receiver_text": (28, 30, 33),
+        "sender_text": (255, 255, 255),
+        "sender_gradient_left": (247, 57, 173),
+        "sender_gradient_right": (255, 112, 34),
+        "timestamp_text": (108, 112, 118),
+        "avatar_fill": (224, 230, 238),
+        "avatar_accent": (102, 118, 145),
+        "presence_active": (58, 192, 98),
+        "presence_ring": (255, 255, 255),
+    },
+}
+
+
+def _get_chat_theme(theme_name="messenger_light"):
+    return dict(_CHAT_THEMES.get(theme_name, _CHAT_THEMES["messenger_light"]))
+
 # --------------------------------------------------
 # SORT OBJECTS (TOP → BOTTOM)
 # --------------------------------------------------
@@ -117,7 +142,32 @@ def draw_rounded_rect(img, x1, y1, x2, y2, color, radius):
     cv2.circle(img, (x2 - radius, y2 - radius), radius, color, -1)
 
 
-def draw_avatar(img, center_x, center_y, fill_color, accent_color):
+def _rounded_rect_mask(height, width, radius):
+    mask = np.zeros((height, width), dtype=np.uint8)
+    draw_rounded_rect(mask, 0, 0, width, height, 255, radius)
+    return mask
+
+
+def draw_gradient_rounded_rect(img, x1, y1, x2, y2, color_left, color_right, radius):
+    width = max(1, x2 - x1)
+    height = max(1, y2 - y1)
+    grad = np.zeros((height, width, 3), dtype=np.uint8)
+    left = np.array(color_left, dtype=np.float32)
+    right = np.array(color_right, dtype=np.float32)
+    if width == 1:
+        grad[:, 0] = left.astype(np.uint8)
+    else:
+        for xi in range(width):
+            alpha = xi / float(width - 1)
+            grad[:, xi] = (left * (1.0 - alpha) + right * alpha).astype(np.uint8)
+    mask = _rounded_rect_mask(height, width, radius)
+    roi = img[y1:y2, x1:x2]
+    bg = cv2.bitwise_and(roi, roi, mask=cv2.bitwise_not(mask))
+    fg = cv2.bitwise_and(grad, grad, mask=mask)
+    img[y1:y2, x1:x2] = cv2.add(bg, fg)
+
+
+def draw_avatar(img, center_x, center_y, fill_color, accent_color, presence_color=None):
     cv2.circle(img, (center_x, center_y), 16, fill_color, -1)
     cv2.circle(img, (center_x, center_y - 4), 6, accent_color, -1)
     cv2.ellipse(
@@ -130,11 +180,29 @@ def draw_avatar(img, center_x, center_y, fill_color, accent_color):
         accent_color,
         -1
     )
+    if presence_color is not None:
+        cv2.circle(img, (center_x + 11, center_y + 11), 6, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(img, (center_x + 11, center_y + 11), 4, presence_color, -1, cv2.LINE_AA)
+
+
+def _draw_header_icon(img, center_x, center_y, kind="phone", color=(10, 124, 255)):
+    if kind == "phone":
+        cv2.circle(img, (center_x, center_y), 14, color, 2, cv2.LINE_AA)
+        cv2.ellipse(img, (center_x, center_y), (6, 8), 35, 210, 330, color, 2, cv2.LINE_AA)
+    elif kind == "video":
+        cv2.circle(img, (center_x, center_y), 14, color, 2, cv2.LINE_AA)
+        cv2.rectangle(img, (center_x - 6, center_y - 4), (center_x + 3, center_y + 4), color, 2)
+        pts = np.array([[center_x + 4, center_y - 4], [center_x + 10, center_y - 7], [center_x + 10, center_y + 7], [center_x + 4, center_y + 4]], dtype=np.int32)
+        cv2.polylines(img, [pts], True, color, 2, cv2.LINE_AA)
+    else:
+        cv2.circle(img, (center_x, center_y), 14, color, 2, cv2.LINE_AA)
+        for dy in (-5, 0, 5):
+            cv2.circle(img, (center_x, center_y + dy), 1, color, -1, cv2.LINE_AA)
 
 
 def draw_avatar_image(img, avatar_image, center_x, center_y, size=32):
     if avatar_image is None or getattr(avatar_image, "size", 0) == 0:
-        draw_avatar(img, center_x, center_y, (210, 190, 170), (120, 90, 70))
+        draw_avatar(img, center_x, center_y, (224, 230, 238), (102, 118, 145))
         return
 
     src_h, src_w = avatar_image.shape[:2]
@@ -178,81 +246,92 @@ def draw_avatar_image(img, avatar_image, center_x, center_y, size=32):
     img[top:bottom, left:right] = cv2.add(bg, fg)
 
 
-def draw_speaker_title(img, text, width, y):
+def draw_speaker_title(img, text, width, y, theme):
     if not text:
         return y
 
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.62
     thickness = 1
-    color = (45, 45, 45)
+    color = theme["header_title"]
     text_w, text_h, _ = _measure_text(text, font, scale, thickness)
     x = max(18, (width - text_w) // 2)
     _draw_text(img, text, x, y, font, scale, thickness, color)
     return y + text_h + 12
 
 
-def draw_chat_header(img, contact_name, width, status_text="", avatar_image=None):
-    """Draw a Messenger-style header bar with name, status, and avatar."""
-    header_h = 72 if status_text else 56
-    header_bg  = (75, 90, 200)   # deep blue-indigo (BGR)
-    avatar_bg  = (210, 190, 170)
-    avatar_acc = (120, 90, 70)
+def draw_chat_header(img, contact_name, width, status_text="", avatar_image=None, theme=None):
+    """Draw a chat header with theme styling."""
+    theme = theme or _get_chat_theme()
+    header_h = 78 if status_text else 64
+    header_bg = theme["header_bg"]
+    avatar_bg = theme["avatar_fill"]
+    avatar_acc = theme["avatar_accent"]
+    accent = theme["header_icon"]
+    divider = theme["header_divider"]
 
     cv2.rectangle(img, (0, 0), (width, header_h), header_bg, -1)
+    cv2.line(img, (0, header_h - 1), (width, header_h - 1), divider, 1, cv2.LINE_AA)
 
     # Avatar circle on the left
-    av_cx, av_cy = 36, header_h // 2
+    av_cx, av_cy = 40, header_h // 2
     if avatar_image is not None and getattr(avatar_image, "size", 0) != 0:
-        draw_avatar_image(img, avatar_image, av_cx, av_cy, size=34)
+        draw_avatar_image(img, avatar_image, av_cx, av_cy, size=38)
     else:
-        draw_avatar(img, av_cx, av_cy, avatar_bg, avatar_acc)
+        presence_color = theme["presence_active"] if "active" in (status_text or "").lower() else None
+        draw_avatar(img, av_cx, av_cy, avatar_bg, avatar_acc, presence_color=presence_color)
 
     # Contact name
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.72
+    scale = 0.68
     thickness = 2
     tw, th, _ = _measure_text(contact_name, font, scale, thickness)
-    tx = av_cx + 26
-    ty = 8 if status_text else max(6, (header_h - th) // 2)
-    _draw_text(img, contact_name, tx, ty, font, scale, thickness, (255, 255, 255))
+    tx = av_cx + 30
+    ty = 10 if status_text else max(10, (header_h - th) // 2)
+    _draw_text(img, contact_name, tx, ty, font, scale, thickness, theme["header_title"])
     if status_text:
-        _draw_text(img, status_text, tx, ty + th + 4, font, 0.42, 1, (230, 235, 255))
+        _draw_text(img, status_text, tx, ty + th + 5, font, 0.42, 1, theme["header_subtitle"])
+
+    icon_y = header_h // 2
+    _draw_header_icon(img, width - 116, icon_y, "phone", accent)
+    _draw_header_icon(img, width - 74, icon_y, "video", accent)
+    _draw_header_icon(img, width - 32, icon_y, "info", accent)
     return header_h
 
 
-def draw_name_label(img, name, x, y):
+def draw_name_label(img, name, x, y, theme):
     """Draw a small name label just above a receiver bubble."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.40
     thickness = 1
-    color = (90, 90, 90)
+    color = theme["header_subtitle"]
     tw, th, _ = _measure_text(name, font, scale, thickness)
     _draw_text(img, name, x, y, font, scale, thickness, color)
     return y + th + 4
 
 
-def draw_timestamp(img, text, width, y):
+def draw_timestamp(img, text, width, y, theme):
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.47
+    scale = 0.43
     thickness = 1
-    color = (120, 120, 120)
+    color = theme["timestamp_text"]
 
     text_w, text_h, _ = _measure_text(text, font, scale, thickness)
     x = (width - text_w) // 2
     _draw_text(img, text, x, y, font, scale, thickness, color)
-    return y + text_h + 18
+    return y + text_h + 20
 
 
-def draw_bubble(img, text, x, y, max_width, align="left", bubble_color=(200, 200, 200), profile_image=None):
+def draw_bubble(img, text, x, y, max_width, align="left", bubble_color=(200, 200, 200), profile_image=None, theme=None):
+    theme = theme or _get_chat_theme()
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.58
+    scale = 0.57
     thickness = 1
-    padding_x = 16
-    padding_y = 12
-    line_gap = 6
-    radius = 18
-    avatar_size = 34
+    padding_x = 15
+    padding_y = 11
+    line_gap = 5
+    radius = 20
+    avatar_size = 32
     avatar_space = 0
 
     lines = wrap_text(text, font, scale, thickness, max_width - padding_x * 2)
@@ -264,17 +343,29 @@ def draw_bubble(img, text, x, y, max_width, align="left", bubble_color=(200, 200
     box_h = text_h_total + padding_y * 2
 
     if align == "left":
-        avatar_size = min(52, max(40, box_h - 10))
-        avatar_space = avatar_size + 12
+        avatar_size = min(44, max(34, box_h - 12))
+        avatar_space = avatar_size + 10
 
     if align == "right":
-        x = img.shape[1] - box_w - 18
-        text_color = (255, 255, 255)
+        x = img.shape[1] - box_w - 16
+        text_color = theme["sender_text"]
     else:
         x = x + avatar_space
-        text_color = (25, 25, 25)
+        text_color = theme["receiver_text"]
 
-    draw_rounded_rect(img, x, y, x + box_w, y + box_h, bubble_color, radius)
+    if align == "right":
+        draw_gradient_rounded_rect(
+            img,
+            x,
+            y,
+            x + box_w,
+            y + box_h,
+            theme["sender_gradient_left"],
+            theme["sender_gradient_right"],
+            radius,
+        )
+    else:
+        draw_rounded_rect(img, x, y, x + box_w, y + box_h, bubble_color, radius)
 
     text_cursor_y = y + padding_y
     for i, line in enumerate(lines):
@@ -291,11 +382,11 @@ def draw_bubble(img, text, x, y, max_width, align="left", bubble_color=(200, 200
         text_cursor_y += lh + line_gap
 
     if align == "left":
-        avatar_x = x - 8 - (avatar_size // 2)
+        avatar_x = x - 6 - (avatar_size // 2)
         avatar_y = y + box_h - (avatar_size // 2) - 2
         draw_avatar_image(img, profile_image, avatar_x, avatar_y, size=avatar_size)
 
-    return y + box_h + 10
+    return y + box_h + 12
 
 
 def estimate_canvas_height(objects):
@@ -321,11 +412,12 @@ def estimate_canvas_height(objects):
 # --------------------------------------------------
 
 def render_chat(objects, width=600, speaker_text="", profile_image=None,
-                contact_name="", header_status=""):
+                contact_name="", header_status="", theme_name="messenger_light"):
     objects = sort_objects(objects)
+    theme = _get_chat_theme(theme_name)
 
     # Reserve space for Messenger-style header if we have a contact name
-    header_h = (72 if header_status else 56) if contact_name else 0
+    header_h = (78 if header_status else 64) if contact_name else 0
     speaker_title_height = 26 if speaker_text else 0
     top_gap = 12 if speaker_text else 0
     canvas_height = (
@@ -336,16 +428,16 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
         + 60  # extra padding for name labels above receiver bubbles
     )
 
-    canvas = np.ones((canvas_height, width, 3), dtype=np.uint8) * 248
+    canvas = np.full((canvas_height, width, 3), theme["canvas_bg"], dtype=np.uint8)
 
     # Draw the header bar (returns header height so we start content below it)
     y = 0
     if contact_name:
-        y = draw_chat_header(canvas, contact_name, width, status_text=header_status, avatar_image=profile_image)
-        y += 12  # breathing room below header
+        y = draw_chat_header(canvas, contact_name, width, status_text=header_status, avatar_image=profile_image, theme=theme)
+        y += 12
 
     if speaker_text:
-        y = draw_speaker_title(canvas, speaker_text, width, y)
+        y = draw_speaker_title(canvas, speaker_text, width, y, theme)
 
     rendered_count = 0
     prev_type = None  # track previous bubble type to show name label only on first receiver run
@@ -369,7 +461,7 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
         rendered_count += 1
 
         if obj_type == "timestamp":
-            y = draw_timestamp(canvas, text, width, y)
+            y = draw_timestamp(canvas, text, width, y, theme)
             prev_type = "timestamp"
 
         elif obj_type == "sender":
@@ -380,16 +472,12 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
                 y=y,
                 max_width=int(width * 0.64),
                 align="right",
-                bubble_color=(240, 73, 255)
+                bubble_color=theme["sender_gradient_right"],
+                theme=theme,
             )
             prev_type = "sender"
 
         else:  # receiver
-            # Show name label above the first bubble in each consecutive receiver run
-            if contact_name and prev_type != "receiver":
-                avatar_space = 52 + 12  # matches draw_bubble left indent
-                y = draw_name_label(canvas, contact_name, 20 + avatar_space, y)
-
             y = draw_bubble(
                 canvas,
                 text,
@@ -397,8 +485,9 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
                 y=y,
                 max_width=int(width * 0.62),
                 align="left",
-                bubble_color=(235, 235, 235),
+                bubble_color=theme["receiver_bubble"],
                 profile_image=profile_image,
+                theme=theme,
             )
             prev_type = "receiver"
 

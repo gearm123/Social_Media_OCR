@@ -6,40 +6,39 @@ these are images representing a conversation on facebook messenger between two s
 transcribe the conversation in the original language
 the first image is the oldest
 
-i count 24 message bubbles in total
+i count 23 message bubbles in total
 
 in image 1
-i count 10 message bubbles
+i count 11 message bubbles
+receiver
+receiver
+receiver
+receiver
+receiver
+sender
 receiver
 receiver
 sender
-sender
 receiver
-sender
-sender
-sender
-sender
 receiver
 
 in image 2
-i count 11 message bubbles
-receiver
-sender
-sender
-receiver
-receiver
-sender
+i count 5 message bubbles
 receiver
 receiver
 receiver
-sender
-sender
+receiver
+receiver
 
 in image 3
-i count 3 message bubbles
+i count 7 message bubbles
 receiver
-sender
-sender
+receiver
+receiver
+receiver
+receiver
+receiver
+receiver
 
 transcribe what you see
 the added information above is guidance about the actual text bubbles only
@@ -55,7 +54,7 @@ output json only.
 
 === RAW RESPONSE ===
 ```json
-{"contact_name":"ทิพย์สุวรรณ...","messages":[{"role":"contact","text_src":"นายมีสองร้อย"},{"role":"contact","text_src":"จะกับไปเกาะสมุย"},{"role":"user","text_src":"อยู่กับแม่กะเทยที่เคยทำงานรานี"},{"role":"user","text_src":"โทรคุยได้มั้ยจ๊ะ"},{"role":"contact","text_src":"มีผัวฝรั่ง"},{"role":"user","text_src":"เดี๋ยวจ่ายค่าเรือ"},{"role":"contact","text_src":"โอนไปแล้ว"},{"role":"system","text_src":"อ. เวลา 07:33"},{"role":"user","text_src":"แม่จ๋า"},{"role":"user","text_src":"แม่"},{"role":"user","text_src":"ค่าตั๋วไปสุราษฎร์ธานีนะแม่ มือถือเรือปออีก ⛴️พายุลงเรือแล่น"},{"role":"user","text_src":"กำลังสิไปท่าเรือยุ"},{"role":"user","text_src":"ไปถึงท่าเรือก่อน"},{"role":"user","text_src":"สิถ่ายไปให้เบิ่งอีกบาด"},{"role":"contact","text_src":"มีค่าเรือแล้วบ่"},{"role":"contact","text_src":"ไลไปส่ง"},{"role":"user","text_src":"บ่มีจ๊ะแม่ และโอนมาให้แหน่"},{"role":"contact","text_src":"ยอดแล้วไหรบอก"},{"role":"contact","text_src":"สิหาให้"},{"role":"contact","text_src":"รอบนี้ไปแล้วต้องดูโทรหาทุกวัน"},{"role":"user","text_src":"ขอบคุณหลายๆ"},{"role":"system","text_src":"อ. เวลา 08:04"},{"role":"user","text_src":"ค่าเรือ350บาทแม่"},{"role":"contact","text_src":"สิโอนเสร็จมีอีกเบื่อ"},{"role":"system","text_src":"การโทรด้วยเสียงที่ไม่ได้รับ\n08:08"},{"role":"contact","text_src":"โทรกลับ"},{"role":"user","text_src":"ครับ"},{"role":"user","text_src":"โอนมาแล้วอ่านำเด้อแม่"},{"role":"system","text_src":"โอนเงินสำเร็จ\n21 ธ.ค. 68 | 08:15 น.\nน.ส.ทิพย์สุวรรณ\nธ.กสิกรไทย\nxxx-x-xx485-x\nนายจิณ กุมุทรัตน์\nxxx-x-xxxxxx-6394"}]}
+{"contact_name":"Ammy Hoto...","messages":[{"role":"contact","text_src":"โทรหา"},{"role":"contact","text_src":"มีฟ้าคิดฮอด"},{"role":"contact","text_src":"ว่า"},{"role":"contact","text_src":"ทำไร"},{"role":"contact","text_src":"หายไปเลยนะ"},{"role":"user","text_src":"ก็แฟน"},{"role":"contact","text_src":"ดีละ"},{"role":"contact","text_src":"ไหนฝากของให้100สิวะถึงอย่าได้รีบแฟนกลับก่อนยึดได้มาได้ตลอดหะคะเถอะ"},{"role":"user","text_src":"อีก 3 วัน แฟนฉันจะมา"},{"role":"contact","text_src":"ใคร"},{"role":"contact","text_src":"👍"},{"role":"system","text_src":"16 ธ.ค. เวลา 13:12"},{"role":"contact","text_src":"แพท"},{"role":"system","text_src":"17 ธ.ค. เวลา"},{"role":"system","text_src":"วิดีโอคอลที่ไม่ได้รับสาย\n05"},{"role":"contact","text_src":"โทรกลับ"},{"role":"contact","text_src":"แพทไอ...จะคุยด้วย"},{"role":"system","text_src":"17 ธ.ค. เวลา 14:39"},{"role":"contact","text_src":"https://gift.truemoney.com/campaign/?v=019b2b3d02ea7166a659121bc6348699200"},{"role":"system","text_src":"ส. เวลา 15:09"},{"role":"contact","text_src":"👍"},{"role":"system","text_src":"อ. เวลา 14:55"},{"role":"contact","text_src":"😭😭😭😭😭😭"},{"role":"system","text_src":"27 ธ.ค. เวลา 08:08"},{"role":"contact","text_src":"ไม่มาแน่"},{"role":"contact","text_src":"ถ้ามามากนัก"},{"role":"contact","text_src":"ก็กลับมาดิ"},{"role":"system","text_src":"ส. เวลา"},{"role":"contact","text_src":"😭😭😭"},{"role":"system","text_src":"27 ก.พ. เวลา 08:46"},{"role":"contact","text_src":"ไอ้แพท"},{"role":"contact","text_src":"อยู่ไหน"}]}
 ```
 
 === GEMINI API (parsed JSON) ===
@@ -65,7 +64,7 @@ output json only.
       "content": {
         "parts": [
           {
-            "text": "```json\n{\"contact_name\":\"ทิพย์สุวรรณ...\",\"messages\":[{\"role\":\"contact\",\"text_src\":\"นายมีสองร้อย\"},{\"role\":\"contact\",\"text_src\":\"จะกับไปเกาะสมุย\"},{\"role\":\"user\",\"text_src\":\"อยู่กับแม่กะเทยที่เคยทำงานรานี\"},{\"role\":\"user\",\"text_src\":\"โทรคุยได้มั้ยจ๊ะ\"},{\"role\":\"contact\",\"text_src\":\"มีผัวฝรั่ง\"},{\"role\":\"user\",\"text_src\":\"เดี๋ยวจ่ายค่าเรือ\"},{\"role\":\"contact\",\"text_src\":\"โอนไปแล้ว\"},{\"role\":\"system\",\"text_src\":\"อ. เวลา 07:33\"},{\"role\":\"user\",\"text_src\":\"แม่จ๋า\"},{\"role\":\"user\",\"text_src\":\"แม่\"},{\"role\":\"user\",\"text_src\":\"ค่าตั๋วไปสุราษฎร์ธานีนะแม่ มือถือเรือปออีก ⛴️พายุลงเรือแล่น\"},{\"role\":\"user\",\"text_src\":\"กำลังสิไปท่าเรือยุ\"},{\"role\":\"user\",\"text_src\":\"ไปถึงท่าเรือก่อน\"},{\"role\":\"user\",\"text_src\":\"สิถ่ายไปให้เบิ่งอีกบาด\"},{\"role\":\"contact\",\"text_src\":\"มีค่าเรือแล้วบ่\"},{\"role\":\"contact\",\"text_src\":\"ไลไปส่ง\"},{\"role\":\"user\",\"text_src\":\"บ่มีจ๊ะแม่ และโอนมาให้แหน่\"},{\"role\":\"contact\",\"text_src\":\"ยอดแล้วไหรบอก\"},{\"role\":\"contact\",\"text_src\":\"สิหาให้\"},{\"role\":\"contact\",\"text_src\":\"รอบนี้ไปแล้วต้องดูโทรหาทุกวัน\"},{\"role\":\"user\",\"text_src\":\"ขอบคุณหลายๆ\"},{\"role\":\"system\",\"text_src\":\"อ. เวลา 08:04\"},{\"role\":\"user\",\"text_src\":\"ค่าเรือ350บาทแม่\"},{\"role\":\"contact\",\"text_src\":\"สิโอนเสร็จมีอีกเบื่อ\"},{\"role\":\"system\",\"text_src\":\"การโทรด้วยเสียงที่ไม่ได้รับ\\n08:08\"},{\"role\":\"contact\",\"text_src\":\"โทรกลับ\"},{\"role\":\"user\",\"text_src\":\"ครับ\"},{\"role\":\"user\",\"text_src\":\"โอนมาแล้วอ่านำเด้อแม่\"},{\"role\":\"system\",\"text_src\":\"โอนเงินสำเร็จ\\n21 ธ.ค. 68 | 08:15 น.\\nน.ส.ทิพย์สุวรรณ\\nธ.กสิกรไทย\\nxxx-x-xx485-x\\nนายจิณ กุมุทรัตน์\\nxxx-x-xxxxxx-6394\"}]}\n```"
+            "text": "```json\n{\"contact_name\":\"Ammy Hoto...\",\"messages\":[{\"role\":\"contact\",\"text_src\":\"โทรหา\"},{\"role\":\"contact\",\"text_src\":\"มีฟ้าคิดฮอด\"},{\"role\":\"contact\",\"text_src\":\"ว่า\"},{\"role\":\"contact\",\"text_src\":\"ทำไร\"},{\"role\":\"contact\",\"text_src\":\"หายไปเลยนะ\"},{\"role\":\"user\",\"text_src\":\"ก็แฟน\"},{\"role\":\"contact\",\"text_src\":\"ดีละ\"},{\"role\":\"contact\",\"text_src\":\"ไหนฝากของให้100สิวะถึงอย่าได้รีบแฟนกลับก่อนยึดได้มาได้ตลอดหะคะเถอะ\"},{\"role\":\"user\",\"text_src\":\"อีก 3 วัน แฟนฉันจะมา\"},{\"role\":\"contact\",\"text_src\":\"ใคร\"},{\"role\":\"contact\",\"text_src\":\"👍\"},{\"role\":\"system\",\"text_src\":\"16 ธ.ค. เวลา 13:12\"},{\"role\":\"contact\",\"text_src\":\"แพท\"},{\"role\":\"system\",\"text_src\":\"17 ธ.ค. เวลา\"},{\"role\":\"system\",\"text_src\":\"วิดีโอคอลที่ไม่ได้รับสาย\\n05\"},{\"role\":\"contact\",\"text_src\":\"โทรกลับ\"},{\"role\":\"contact\",\"text_src\":\"แพทไอ...จะคุยด้วย\"},{\"role\":\"system\",\"text_src\":\"17 ธ.ค. เวลา 14:39\"},{\"role\":\"contact\",\"text_src\":\"https://gift.truemoney.com/campaign/?v=019b2b3d02ea7166a659121bc6348699200\"},{\"role\":\"system\",\"text_src\":\"ส. เวลา 15:09\"},{\"role\":\"contact\",\"text_src\":\"👍\"},{\"role\":\"system\",\"text_src\":\"อ. เวลา 14:55\"},{\"role\":\"contact\",\"text_src\":\"😭😭😭😭😭😭\"},{\"role\":\"system\",\"text_src\":\"27 ธ.ค. เวลา 08:08\"},{\"role\":\"contact\",\"text_src\":\"ไม่มาแน่\"},{\"role\":\"contact\",\"text_src\":\"ถ้ามามากนัก\"},{\"role\":\"contact\",\"text_src\":\"ก็กลับมาดิ\"},{\"role\":\"system\",\"text_src\":\"ส. เวลา\"},{\"role\":\"contact\",\"text_src\":\"😭😭😭\"},{\"role\":\"system\",\"text_src\":\"27 ก.พ. เวลา 08:46\"},{\"role\":\"contact\",\"text_src\":\"ไอ้แพท\"},{\"role\":\"contact\",\"text_src\":\"อยู่ไหน\"}]}\n```"
           }
         ],
         "role": "model"
@@ -93,31 +92,31 @@ output json only.
     }
   ],
   "usageMetadata": {
-    "promptTokenCount": 1044,
-    "candidatesTokenCount": 569,
-    "totalTokenCount": 8637,
+    "promptTokenCount": 1041,
+    "candidatesTokenCount": 545,
+    "totalTokenCount": 6045,
     "promptTokensDetails": [
       {
         "modality": "TEXT",
-        "tokenCount": 270
+        "tokenCount": 267
       },
       {
         "modality": "IMAGE",
         "tokenCount": 774
       }
     ],
-    "thoughtsTokenCount": 7024
+    "thoughtsTokenCount": 4459
   },
   "modelVersion": "gemini-2.5-pro",
-  "responseId": "TAbHaZnENaCdnsEP9IXHuA4"
+  "responseId": "UhDHaeyyDZG8xN8PtOaNqQc"
 }
 
 === NOTE ===
 {
-  "contact_name": "ทิพย์สุวรรณ...",
-  "n_messages": 29,
-  "bubble_messages": 25,
-  "system_messages": 4,
+  "contact_name": "Ammy Hoto...",
+  "n_messages": 30,
+  "bubble_messages": 23,
+  "system_messages": 7,
   "ambiguity_ledger": [],
   "has_ref_placeholders": false
 }
@@ -135,132 +134,122 @@ You receive:
 
 Input JSON:
 {
-  "contact_name": "ทิพย์สุวรรณ...",
+  "contact_name": "Ammy Hoto...",
   "messages": [
     {
       "message_index": 0,
       "role": "contact",
-      "pass1_text_src": "นายมีสองร้อย"
+      "pass1_text_src": "โทรหา"
     },
     {
       "message_index": 1,
       "role": "contact",
-      "pass1_text_src": "จะกับไปเกาะสมุย"
+      "pass1_text_src": "มีฟ้าคิดฮอด"
     },
     {
       "message_index": 2,
-      "role": "user",
-      "pass1_text_src": "อยู่กับแม่กะเทยที่เคยทำงานรานี"
+      "role": "contact",
+      "pass1_text_src": "ว่า"
     },
     {
       "message_index": 3,
-      "role": "user",
-      "pass1_text_src": "โทรคุยได้มั้ยจ๊ะ"
+      "role": "contact",
+      "pass1_text_src": "ทำไร"
     },
     {
       "message_index": 4,
       "role": "contact",
-      "pass1_text_src": "มีผัวฝรั่ง"
+      "pass1_text_src": "หายไปเลยนะ"
     },
     {
       "message_index": 5,
       "role": "user",
-      "pass1_text_src": "เดี๋ยวจ่ายค่าเรือ"
+      "pass1_text_src": "ก็แฟน"
     },
     {
       "message_index": 6,
       "role": "contact",
-      "pass1_text_src": "โอนไปแล้ว"
+      "pass1_text_src": "ดีละ"
     },
     {
       "message_index": 7,
-      "role": "user",
-      "pass1_text_src": "แม่จ๋า"
+      "role": "contact",
+      "pass1_text_src": "ไหนฝากของให้100สิวะถึงอย่าได้รีบแฟนกลับก่อนยึดได้มาได้ตลอดหะคะเถอะ"
     },
     {
       "message_index": 8,
       "role": "user",
-      "pass1_text_src": "แม่"
+      "pass1_text_src": "อีก 3 วัน แฟนฉันจะมา"
     },
     {
       "message_index": 9,
-      "role": "user",
-      "pass1_text_src": "ค่าตั๋วไปสุราษฎร์ธานีนะแม่ มือถือเรือปออีก ⛴️พายุลงเรือแล่น"
+      "role": "contact",
+      "pass1_text_src": "ใคร"
     },
     {
       "message_index": 10,
-      "role": "user",
-      "pass1_text_src": "กำลังสิไปท่าเรือยุ"
+      "role": "contact",
+      "pass1_text_src": "👍"
     },
     {
       "message_index": 11,
-      "role": "user",
-      "pass1_text_src": "ไปถึงท่าเรือก่อน"
+      "role": "contact",
+      "pass1_text_src": "แพท"
     },
     {
       "message_index": 12,
-      "role": "user",
-      "pass1_text_src": "สิถ่ายไปให้เบิ่งอีกบาด"
-    },
-    {
-      "message_index": 13,
-      "role": "contact",
-      "pass1_text_src": "มีค่าเรือแล้วบ่"
-    },
-    {
-      "message_index": 14,
-      "role": "contact",
-      "pass1_text_src": "ไลไปส่ง"
-    },
-    {
-      "message_index": 15,
-      "role": "user",
-      "pass1_text_src": "บ่มีจ๊ะแม่ และโอนมาให้แหน่"
-    },
-    {
-      "message_index": 16,
-      "role": "contact",
-      "pass1_text_src": "ยอดแล้วไหรบอก"
-    },
-    {
-      "message_index": 17,
-      "role": "contact",
-      "pass1_text_src": "สิหาให้"
-    },
-    {
-      "message_index": 18,
-      "role": "contact",
-      "pass1_text_src": "รอบนี้ไปแล้วต้องดูโทรหาทุกวัน"
-    },
-    {
-      "message_index": 19,
-      "role": "user",
-      "pass1_text_src": "ขอบคุณหลายๆ"
-    },
-    {
-      "message_index": 20,
-      "role": "user",
-      "pass1_text_src": "ค่าเรือ350บาทแม่"
-    },
-    {
-      "message_index": 21,
-      "role": "contact",
-      "pass1_text_src": "สิโอนเสร็จมีอีกเบื่อ"
-    },
-    {
-      "message_index": 22,
       "role": "contact",
       "pass1_text_src": "โทรกลับ"
     },
     {
-      "message_index": 23,
-      "role": "user",
-      "pass1_text_src": "ครับ"
+      "message_index": 13,
+      "role": "contact",
+      "pass1_text_src": "แพทไอ...จะคุยด้วย"
     },
     {
-      "message_index": 24,
-      "role": "user",
-      "pass1_text_src": "โอนมาแล้วอ่านำเด้อแม่"
+      "message_index": 14,
+      "role": "contact",
+      "pass1_text_src": "https://gift.truemoney.com/campaign/?v=019b2b3d02ea7166a659121bc6348699200"
+    },
+    {
+      "message_index": 15,
+      "role": "contact",
+      "pass1_text_src": "👍"
+    },
+    {
+      "message_index": 16,
+      "role": "contact",
+      "pass1_text_src": "😭😭😭😭😭😭"
+    },
+    {
+      "message_index": 17,
+      "role": "contact",
+      "pass1_text_src": "ไม่มาแน่"
+    },
+    {
+      "message_index": 18,
+      "role": "contact",
+      "pass1_text_src": "ถ้ามามากนัก"
+    },
+    {
+      "message_index": 19,
+      "role": "contact",
+      "pass1_text_src": "ก็กลับมาดิ"
+    },
+    {
+      "message_index": 20,
+      "role": "contact",
+      "pass1_text_src": "😭😭😭"
+    },
+    {
+      "message_index": 21,
+      "role": "contact",
+      "pass1_text_src": "ไอ้แพท"
+    },
+    {
+      "message_index": 22,
+      "role": "contact",
+      "pass1_text_src": "อยู่ไหน"
     }
   ]
 }
@@ -268,123 +257,80 @@ Input JSON:
 OCR hints from the cleaned images:
 image 1
 min_confidence 0.94
-- conf=0.946 bbox=[357, 12, 434, 66] text="ทิพย์"
-- conf=0.996 bbox=[437, 18, 480, 68] text="ลา"
-- conf=0.995 bbox=[484, 20, 558, 73] text="วรรณ"
-- conf=0.942 bbox=[463, 68, 479, 112] text="อ"
-- conf=0.974 bbox=[512, 69, 581, 116] text="ชั่วโมง"
-- conf=0.955 bbox=[617, 144, 643, 173] text="การ"
-- conf=0.978 bbox=[643, 146, 658, 175] text="ใช้"
-- conf=0.986 bbox=[659, 146, 690, 177] text="จ่าย"
-- conf=0.984 bbox=[693, 148, 725, 179] text="ดูแล"
-- conf=0.998 bbox=[727, 151, 761, 181] text="ความ"
-- conf=0.995 bbox=[763, 152, 828, 185] text="ปลอดภัย"
-- conf=0.989 bbox=[829, 157, 856, 186] text="โดย"
-- conf=0.976 bbox=[244, 237, 287, 281] text="มา"
-- conf=0.987 bbox=[289, 238, 309, 281] text="ย"
-- conf=0.982 bbox=[316, 240, 336, 283] text="มี"
-- conf=0.996 bbox=[341, 241, 404, 286] text="สอง"
-- conf=0.968 bbox=[410, 243, 475, 289] text="ร้อย"
-- conf=0.940 bbox=[245, 327, 285, 379] text="อยู่"
-- conf=0.989 bbox=[291, 330, 337, 381] text="กับ"
-- conf=0.989 bbox=[345, 333, 377, 383] text="ไผ"
-- conf=0.982 bbox=[383, 334, 535, 392] text="เกาะสมุย"
-- conf=0.986 bbox=[355, 459, 375, 522] text="อ"
-- conf=0.984 bbox=[377, 460, 397, 523] text="ยุ่"
-- conf=0.974 bbox=[401, 461, 446, 525] text="กับ"
-- conf=0.979 bbox=[449, 463, 494, 527] text="แม่"
-- conf=0.995 bbox=[497, 465, 602, 533] text="กะเทย"
-- conf=0.991 bbox=[604, 470, 627, 533] text="ที่"
-- conf=0.995 bbox=[636, 472, 693, 537] text="เคย"
-- conf=0.990 bbox=[679, 592, 734, 636] text="กลับ"
-- conf=0.990 bbox=[866, 603, 881, 645] text="ร"
-- conf=0.990 bbox=[746, 673, 767, 719] text="มี"
-- conf=0.992 bbox=[773, 674, 835, 721] text="สอง"
-- conf=0.978 bbox=[212, 849, 275, 936] text="โอน"
-- conf=0.994 bbox=[282, 854, 322, 939] text="ไป"
-- conf=0.991 bbox=[323, 857, 391, 945] text="แล้ว"
-- conf=0.973 bbox=[406, 986, 431, 1014] text="อา"
-- conf=0.987 bbox=[435, 986, 442, 1014] text="."
-- conf=0.997 bbox=[455, 986, 506, 1016] text="เวลา"
-- conf=0.997 bbox=[518, 987, 591, 1017] text="07.33"
-- conf=0.963 bbox=[790, 1093, 827, 1140] text="แม"
-- conf=0.973 bbox=[343, 1285, 380, 1341] text="ค่า"
-- conf=0.976 bbox=[434, 1290, 471, 1345] text="ไป"
-- conf=0.990 bbox=[475, 1292, 675, 1355] text="สุราษฎร์ธานี"
-- conf=0.962 bbox=[680, 1302, 717, 1357] text="นะ"
-- conf=0.989 bbox=[716, 1304, 767, 1359] text="แม่"
-- conf=0.985 bbox=[778, 1307, 822, 1362] text="มือ"
-- conf=0.991 bbox=[826, 1309, 870, 1364] text="อื่น"
-- conf=0.980 bbox=[341, 1344, 393, 1393] text="เรือ"
-- conf=0.981 bbox=[392, 1347, 417, 1393] text="บ่"
-- conf=0.995 bbox=[420, 1349, 487, 1398] text="ออก"
-- conf=0.991 bbox=[505, 1354, 610, 1405] text="พายุ"
-- conf=0.997 bbox=[613, 1360, 654, 1407] text="ลง"
-- conf=0.996 bbox=[657, 1363, 707, 1411] text="เรือ"
-- conf=0.992 bbox=[730, 1366, 807, 1416] text="แล่น"
-- conf=0.975 bbox=[587, 1452, 668, 1496] text="กำลัง"
-- conf=0.961 bbox=[695, 1455, 731, 1498] text="ไป"
-- conf=0.991 bbox=[738, 1457, 832, 1501] text="ท่าเรือ"
+- conf=0.973 bbox=[194, 81, 271, 118] text="TRUE"
+- conf=0.983 bbox=[273, 81, 285, 116] text="-"
+- conf=0.995 bbox=[287, 81, 306, 116] text="H"
+- conf=0.986 bbox=[508, 175, 589, 219] text="Hoto"
+- conf=0.968 bbox=[386, 177, 497, 221] text="Ammy"
+- conf=0.953 bbox=[287, 311, 393, 360] text="โทร"
+- conf=0.996 bbox=[392, 317, 432, 362] text="หา"
+- conf=0.990 bbox=[418, 402, 512, 447] text="ฮอด"
+- conf=0.979 bbox=[371, 403, 414, 447] text="คิด"
+- conf=0.978 bbox=[335, 584, 388, 624] text="ไร"
+- conf=0.994 bbox=[449, 672, 490, 714] text="นะ"
+- conf=0.981 bbox=[290, 673, 346, 716] text="หาย"
+- conf=0.996 bbox=[359, 673, 386, 715] text="ไป"
+- conf=0.950 bbox=[394, 673, 420, 715] text="เส่"
+- conf=0.966 bbox=[813, 803, 858, 835] text="กับ"
+- conf=0.987 bbox=[861, 803, 931, 835] text="แฟน"
+- conf=0.982 bbox=[352, 1001, 411, 1046] text="ฝาก"
+- conf=0.970 bbox=[418, 1003, 478, 1048] text="ซอง"
+- conf=0.995 bbox=[525, 1006, 576, 1051] text="100"
+- conf=0.954 bbox=[614, 1008, 666, 1053] text="ว่าง"
+- conf=0.941 bbox=[294, 1051, 316, 1094] text="ได้"
+- conf=0.976 bbox=[354, 1052, 420, 1097] text="แฟน"
+- conf=0.991 bbox=[424, 1053, 487, 1098] text="กลับ"
+- conf=0.981 bbox=[495, 1055, 533, 1100] text="ก้อ"
+- conf=0.986 bbox=[541, 1056, 577, 1101] text="มา"
+- conf=0.965 bbox=[378, 1119, 439, 1152] text="หละ"
+- conf=0.988 bbox=[478, 1121, 520, 1153] text="ยะ"
+- conf=0.994 bbox=[589, 1235, 630, 1276] text="อีก"
+- conf=0.996 bbox=[645, 1237, 664, 1276] text="3"
+- conf=0.997 bbox=[675, 1238, 718, 1278] text="วัน"
+- conf=0.982 bbox=[799, 1240, 839, 1281] text="ฉัน"
+- conf=0.997 bbox=[848, 1242, 882, 1283] text="จะ"
 
 image 2
 min_confidence 0.94
-- conf=0.964 bbox=[625, 47, 657, 92] text="ไป"
-- conf=0.975 bbox=[706, 50, 793, 97] text="ท่าเรือ"
-- conf=0.992 bbox=[798, 53, 868, 98] text="ก่อน"
-- conf=0.944 bbox=[739, 136, 751, 193] text="ง"
-- conf=0.976 bbox=[281, 327, 316, 384] text="ไป"
-- conf=0.992 bbox=[317, 330, 362, 388] text="ส่ง"
-- conf=0.964 bbox=[293, 615, 354, 664] text="แล้ว"
-- conf=0.972 bbox=[359, 617, 408, 665] text="โทร"
-- conf=0.996 bbox=[412, 618, 468, 667] text="บอก"
-- conf=0.948 bbox=[285, 689, 336, 795] text="ให้"
-- conf=0.977 bbox=[379, 792, 416, 855] text="กะ"
-- conf=0.994 bbox=[436, 795, 498, 861] text="ต้อง"
-- conf=0.989 bbox=[498, 800, 559, 865] text="โทร"
-- conf=0.988 bbox=[594, 938, 701, 982] text="ขอบคุณ"
-- conf=0.992 bbox=[713, 948, 799, 991] text="หลาย"
-- conf=0.982 bbox=[802, 956, 822, 992] text="ๆ"
-- conf=0.972 bbox=[644, 1104, 705, 1152] text="350"
-- conf=0.979 bbox=[706, 1110, 763, 1158] text="บาท"
+- conf=0.950 bbox=[237, 31, 324, 72] text="ใคร"
+- conf=0.948 bbox=[555, 228, 631, 254] text="13:12"
+- conf=0.977 bbox=[239, 323, 277, 347] text="แพ"
+- conf=0.975 bbox=[495, 416, 514, 444] text="เว"
+- conf=0.978 bbox=[517, 416, 548, 444] text="ล"
+- conf=0.968 bbox=[325, 492, 408, 544] text="วิดีโอ"
+- conf=0.988 bbox=[412, 495, 448, 545] text="คอ"
+- conf=0.978 bbox=[454, 496, 471, 545] text="ล"
+- conf=0.966 bbox=[498, 497, 529, 547] text="ไม่"
+- conf=0.994 bbox=[536, 498, 566, 548] text="ได้"
+- conf=0.986 bbox=[571, 498, 605, 549] text="รับ"
+- conf=0.948 bbox=[471, 627, 536, 666] text="กลับ"
+- conf=0.973 bbox=[244, 766, 278, 819] text="แพ"
+- conf=0.985 bbox=[282, 768, 305, 820] text="ท"
+- conf=0.989 bbox=[314, 769, 346, 821] text="ไอ"
+- conf=0.978 bbox=[411, 773, 440, 825] text="จะ"
+- conf=0.990 bbox=[442, 774, 487, 827] text="คุย"
+- conf=0.996 bbox=[491, 776, 559, 831] text="ด้วย"
+- conf=0.979 bbox=[237, 951, 324, 993] text="https"
+- conf=0.987 bbox=[240, 995, 598, 1046] text="giftstruemoney.com"
+- conf=0.948 bbox=[237, 1044, 429, 1077] text="campaigny"
 
 image 3
 min_confidence 0.94
-- conf=0.985 bbox=[295, 20, 333, 58] text="งาน"
-- conf=0.949 bbox=[392, 20, 400, 58] text="1"
-- conf=0.986 bbox=[409, 20, 480, 59] text="ชั่วโมง"
-- conf=0.946 bbox=[256, 135, 306, 179] text="เสื่อ"
-- conf=0.948 bbox=[349, 137, 391, 181] text="อีก"
-- conf=0.996 bbox=[270, 234, 320, 279] text="การ"
-- conf=0.972 bbox=[373, 235, 422, 280] text="ด้วย"
-- conf=0.993 bbox=[430, 235, 495, 281] text="เสียง"
-- conf=0.998 bbox=[497, 236, 514, 280] text="ที่"
-- conf=0.998 bbox=[523, 236, 549, 281] text="ไม่"
-- conf=0.990 bbox=[556, 237, 588, 281] text="ได้"
-- conf=0.993 bbox=[269, 282, 343, 309] text="08:08"
-- conf=0.989 bbox=[343, 358, 401, 402] text="โทร"
-- conf=0.984 bbox=[400, 362, 460, 405] text="กลับ"
-- conf=0.991 bbox=[379, 759, 435, 806] text="โอน"
-- conf=0.997 bbox=[440, 761, 477, 807] text="มา"
-- conf=0.994 bbox=[479, 762, 543, 808] text="แล้ว"
-- conf=0.972 bbox=[171, 879, 213, 913] text="โอน"
-- conf=0.974 bbox=[217, 879, 258, 913] text="เงิน"
-- conf=0.984 bbox=[292, 880, 312, 914] text="เร็"
-- conf=0.992 bbox=[317, 880, 331, 914] text="จ"
-- conf=0.969 bbox=[557, 895, 619, 946] text="K"
-- conf=0.954 bbox=[171, 928, 192, 952] text="21"
-- conf=0.981 bbox=[326, 930, 347, 954] text="15"
-- conf=0.987 bbox=[351, 931, 362, 955] text="น"
-- conf=0.945 bbox=[326, 1008, 371, 1041] text="ทิพย์"
-- conf=0.960 bbox=[374, 1009, 399, 1041] text="ลา"
-- conf=0.941 bbox=[418, 1094, 427, 1116] text="-"
-- conf=0.959 bbox=[272, 1198, 316, 1238] text="นภา"
-- conf=0.975 bbox=[318, 1200, 360, 1240] text="รัตน์"
-- conf=0.949 bbox=[367, 1203, 408, 1243] text="กมุท"
-- conf=0.949 bbox=[410, 1205, 451, 1245] text="รัตน์"
+- conf=0.962 bbox=[324, 304, 359, 345] text="มา"
+- conf=0.978 bbox=[362, 306, 379, 346] text="น"
+- conf=0.958 bbox=[386, 307, 406, 347] text="นี้"
+- conf=0.948 bbox=[413, 393, 470, 436] text="มาก"
+- conf=0.966 bbox=[476, 395, 518, 437] text="นัก"
+- conf=0.995 bbox=[320, 477, 383, 526] text="กลับ"
+- conf=0.957 bbox=[544, 813, 612, 848] text="08-46"
+- conf=0.964 bbox=[269, 884, 301, 930] text="ไอ"
+- conf=0.975 bbox=[286, 963, 352, 1039] text="ไหน"
+- conf=0.988 bbox=[352, 1070, 375, 1123] text="ไม่"
+- conf=0.992 bbox=[381, 1071, 420, 1123] text="มา"
 
 Task:
 - Rewrite the conversation using the OCR hints only as soft supporting evidence.
-- Keep the same number of messages: 25.
+- Keep the same number of messages: 23.
 - Keep the same order.
 - Keep the same role for each message.
 - Improve words, names, URLs, numbers, and short phrases when the OCR clearly supports a better reading.
@@ -399,157 +345,145 @@ Output JSON only:
 === RAW RESPONSE ===
 ```json
 {
-  "contact_name": "ทิพย์ลาวรรณ",
+  "contact_name": "Ammy Hoto...",
   "messages": [
     {
       "message_index": 0,
       "role": "contact",
-      "text_src": "มายมีสองร้อย",
-      "text_en": "May has two hundred."
+      "text_src": "โทรหา",
+      "text_en": "Calling"
     },
     {
       "message_index": 1,
       "role": "contact",
-      "text_src": "อยู่กับไผ เกาะสมุย",
-      "text_en": "Who are you with in Koh Samui?"
+      "text_src": "คิดฮอด",
+      "text_en": "Miss you"
     },
     {
       "message_index": 2,
-      "role": "user",
-      "text_src": "อยู่กับแม่กะเทยที่เคยทำงานรานี",
-      "text_en": "I'm with a ladyboy mother who used to work at Rani."
+      "role": "contact",
+      "text_src": "ว่า",
+      "text_en": "What?"
     },
     {
       "message_index": 3,
-      "role": "user",
-      "text_src": "โทรคุยได้มั้ยจ๊ะ",
-      "text_en": "Can we talk on the phone?"
+      "role": "contact",
+      "text_src": "ทำไร",
+      "text_en": "What are you doing?"
     },
     {
       "message_index": 4,
       "role": "contact",
-      "text_src": "มีผัวฝรั่ง",
-      "text_en": "She has a foreign husband."
+      "text_src": "หายไปเลยนะ",
+      "text_en": "You've disappeared."
     },
     {
       "message_index": 5,
       "role": "user",
-      "text_src": "เดี๋ยวจ่ายค่าเรือ",
-      "text_en": "I'll pay for the boat fare."
+      "text_src": "กับแฟน",
+      "text_en": "With my boyfriend/girlfriend"
     },
     {
       "message_index": 6,
       "role": "contact",
-      "text_src": "โอนไปแล้ว",
-      "text_en": "Transferred already."
+      "text_src": "ดีละ",
+      "text_en": "That's good"
     },
     {
       "message_index": 7,
-      "role": "user",
-      "text_src": "แม่จ๋า",
-      "text_en": "Mommy."
+      "role": "contact",
+      "text_src": "ฝากซอง 100 บ้าง พอได้แฟนกลับก็มาหละนะ",
+      "text_en": "Send a 100 envelope or something. Once you got your boyfriend/girlfriend back, you show up, huh?"
     },
     {
       "message_index": 8,
       "role": "user",
-      "text_src": "แม่",
-      "text_en": "Mom."
+      "text_src": "อีก 3 วัน แฟนฉันจะมา",
+      "text_en": "In 3 days, my boyfriend/girlfriend will come."
     },
     {
       "message_index": 9,
-      "role": "user",
-      "text_src": "ค่าตั๋วไปสุราษฎร์ธานีนะแม่ มื้ออื่นเรือบ่ออก ⛴️พายุลงเรือแล่น",
-      "text_en": "The ticket to Surat Thani, mom. The boat won't leave tomorrow. ⛴️ The storm is coming, the boat is sailing."
+      "role": "contact",
+      "text_src": "ใคร",
+      "text_en": "Who?"
     },
     {
       "message_index": 10,
-      "role": "user",
-      "text_src": "กำลังสิไปท่าเรือยุ",
-      "text_en": "I'm on my way to the pier."
+      "role": "contact",
+      "text_src": "👍",
+      "text_en": "👍"
     },
     {
       "message_index": 11,
-      "role": "user",
-      "text_src": "ไปถึงท่าเรือก่อน",
-      "text_en": "I'll get to the pier first."
+      "role": "contact",
+      "text_src": "แพท",
+      "text_en": "Pat"
     },
     {
       "message_index": 12,
-      "role": "user",
-      "text_src": "สิถ่ายไปให้เบิ่งอีกบาด",
-      "text_en": "I'll take a picture and show you again."
+      "role": "contact",
+      "text_src": "โทรกลับ",
+      "text_en": "Call back"
     },
     {
       "message_index": 13,
       "role": "contact",
-      "text_src": "มีค่าเรือแล้วบ่",
-      "text_en": "Do you have the boat fare yet?"
+      "text_src": "แพทไอ...จะคุยด้วย",
+      "text_en": "Pat... wants to talk to you."
     },
     {
       "message_index": 14,
       "role": "contact",
-      "text_src": "ไผไปส่ง",
-      "text_en": "Who is taking you?"
+      "text_src": "https://gift.truemoney.com/campaign/?v=019b2b3d02ea7166a659121bc6348699200",
+      "text_en": "https://gift.truemoney.com/campaign/?v=019b2b3d02ea7166a659121bc6348699200"
     },
     {
       "message_index": 15,
-      "role": "user",
-      "text_src": "บ่มีจ๊ะแม่ แม่โอนมาให้แหน่",
-      "text_en": "I don't have it, mom. Mom, please transfer it to me."
+      "role": "contact",
+      "text_src": "👍",
+      "text_en": "👍"
     },
     {
       "message_index": 16,
       "role": "contact",
-      "text_src": "ได้ยอดแล้วโทรบอก",
-      "text_en": "Once you have the total, call and tell me."
+      "text_src": "😭😭😭😭😭😭",
+      "text_en": "😭😭😭😭😭😭"
     },
     {
       "message_index": 17,
       "role": "contact",
-      "text_src": "สิหาให้",
-      "text_en": "I'll find it for you."
+      "text_src": "ไม่มาแน่",
+      "text_en": "He's definitely not coming."
     },
     {
       "message_index": 18,
       "role": "contact",
-      "text_src": "รอบนี้ไปแล้วต้องโทรหาทุกวัน",
-      "text_en": "This time, after you go, you must call every day."
+      "text_src": "ถ้ามามากนัก",
+      "text_en": "If you want to come so badly"
     },
     {
       "message_index": 19,
-      "role": "user",
-      "text_src": "ขอบคุณหลายๆ",
-      "text_en": "Thank you very much."
+      "role": "contact",
+      "text_src": "ก็กลับมาดิ",
+      "text_en": "Then just come back."
     },
     {
       "message_index": 20,
-      "role": "user",
-      "text_src": "ค่าเรือ350บาทแม่",
-      "text_en": "The boat fare is 350 baht, mom."
+      "role": "contact",
+      "text_src": "😭😭😭",
+      "text_en": "😭😭😭"
     },
     {
       "message_index": 21,
       "role": "contact",
-      "text_src": "เดี๋ยวสิโอนให้ มีอีกบ่",
-      "text_en": "I'll transfer it in a moment. Is there anything else?"
+      "text_src": "ไอ้แพท",
+      "text_en": "Hey Pat"
     },
     {
       "message_index": 22,
       "role": "contact",
-      "text_src": "โทรกลับ",
-      "text_en": "Call back."
-    },
-    {
-      "message_index": 23,
-      "role": "user",
-      "text_src": "ครับ",
-      "text_en": "Yes."
-    },
-    {
-      "message_index": 24,
-      "role": "user",
-      "text_src": "โอนมาแล้วอ่านำเด้อแม่",
-      "text_en": "When you've transferred it, please read it too, mom."
+      "text_src": "อยู่ไหน",
+      "text_en": "Where are you?"
     }
   ]
 }
@@ -572,7 +506,7 @@ Task:
 
 Guidelines:
 - Prefer text actually visible in the status-bar crops.
-- Use "ทิพย์ลาวรรณ" only as a weak fallback hint for the name.
+- Use "Ammy Hoto..." only as a weak fallback hint for the name.
 - If the status text is not readable, return an empty string.
 - If the avatar is unclear, still choose the best image and return your best approximate bounding box around the visible avatar circle.
 
@@ -581,5 +515,15 @@ Return JSON only:
 
 === RAW RESPONSE ===
 ```json
-{"contact_name":"ทิพย์ลาวรรณ","status_text":"ใช้งานเมื่อ 1 ชั่วโมง...","avatar_image_index":0,"avatar_bbox":[68,103,230,268]}
+{
+  "contact_name": "Ammy Hoto",
+  "status_text": "",
+  "avatar_image_index": 0,
+  "avatar_bbox": [
+    163,
+    263,
+    309,
+    409
+  ]
+}
 ```
