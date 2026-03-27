@@ -15,6 +15,8 @@ from config import INPUT_DIR, OUTPUT_DIR, JSON_DIR, RENDER_DIR, ocr_engine
 from ocr_translate import (
     translate_to_en,
     translate_conversation_gemini_multimodal,
+    _gemini_ocr_hints_refine_pass,
+    _meta_from_gemini_messages,
     _set_source_language,
 )
 from pipeline import prepare_image_crop_info
@@ -393,7 +395,7 @@ def collect_page_ocr_debug(page_images):
     """Run OCR on each cleaned page image and collect text/confidence debug output."""
     lines = []
     entries = []
-    min_conf = 0.86
+    min_conf = 0.94
 
     for page_idx, page_img in enumerate(page_images or []):
         lines.append(f"image {page_idx + 1}")
@@ -563,6 +565,46 @@ def _compose_labeled_chat_comparison(left_img, right_img, left_label, right_labe
     return canvas
 
 
+def _wrap_text_lines(text, max_chars=44):
+    words = str(text or "").split()
+    if not words:
+        return [""]
+    lines = []
+    cur = words[0]
+    for w in words[1:]:
+        if len(cur) + 1 + len(w) <= max_chars:
+            cur += " " + w
+        else:
+            lines.append(cur)
+            cur = w
+    lines.append(cur)
+    return lines
+
+
+def _render_text_report_image(title, sections, width=900):
+    """Render a simple readable text report image."""
+    bg = np.full((2000, width, 3), 248, dtype=np.uint8)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    color = (45, 45, 45)
+    y = 40
+
+    def _put(line, scale=0.62, thickness=1):
+        nonlocal y
+        cv2.putText(bg, line, (24, y), font, scale, color, thickness, cv2.LINE_AA)
+        y += int(28 * max(scale / 0.62, 1.0))
+
+    _put(title, scale=0.8, thickness=2)
+    y += 10
+    for heading, lines in sections:
+        _put(heading, scale=0.68, thickness=2)
+        for line in lines:
+            for wrapped in _wrap_text_lines(line, max_chars=52):
+                _put(wrapped, scale=0.58, thickness=1)
+        y += 12
+
+    return bg[: min(y + 20, bg.shape[0]), :, :]
+
+
 def _render_safe_contact_name(name: str) -> str:
     n = (name or "").strip()
     if not n:
@@ -624,11 +666,9 @@ def main():
         print("[ERROR] Empty combined image.")
         return
 
-    combined_path_debug = os.path.join(OUTPUT_DIR, "combined_chat_stitch.png")
-    cv2.imwrite(combined_path_debug, combined_img)
     print(
         f"[COMBINE] {combined_img.shape[1]}×{combined_img.shape[0]} px, "
-        f"{len(page_ranges)} page band(s) → {combined_path_debug}"
+        f"{len(page_ranges)} page band(s)"
     )
     print(f"[COMBINE] {len(page_images)} page crop(s) for OCR / internal use")
     print(f"[TIMER] Stitch done in {time.time()-t2:.1f}s")
@@ -677,87 +717,36 @@ def main():
     pass2_ocr_debug_path = os.path.join(OUTPUT_DIR, "pass2_ocr_debug.txt")
     with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
         f.write(pass2_ocr_text)
-    pass2_ocr_debug_json_path = os.path.join(JSON_DIR, "pass2_ocr_debug.json")
-    with open(pass2_ocr_debug_json_path, "w", encoding="utf-8") as f:
-        json.dump(pass2_ocr_entries, f, indent=2, ensure_ascii=False)
     print(f"[OUTPUT] Pass 2 OCR debug → {pass2_ocr_debug_path}")
-    print(f"[OUTPUT] Pass 2 OCR JSON → {pass2_ocr_debug_json_path}")
     print(f"[TIMER] Pass 2 OCR in {time.time()-t_ocr2:.1f}s")
 
     contact_name = (g_contact or contact_name or "Person A").strip() or "Person A"
+    pass1_meta = list(all_meta or [])
     render_contact_name = _render_safe_contact_name(contact_name)
     for i, item in enumerate(pre_ocr_meta or []):
         item["order"] = i
-    for i, item in enumerate(all_meta):
+    for i, item in enumerate(pass1_meta):
         item["order"] = i
-
-    # Easy audit: compare index + side + text to screenshots (LEFT=contact, RIGHT=user)
-    trace_path = os.path.join(OUTPUT_DIR, "gemini_speaker_trace.json")
-    trace = []
-    for i, x in enumerate(all_meta):
-        typ = x.get("type", "")
-        if typ == "receiver":
-            side = "LEFT (contact / other person)"
-        elif typ == "sender":
-            side = "RIGHT (user / you)"
-        else:
-            side = "CENTER (system)"
-        trace.append({
-            "index": i,
-            "render_side": side,
-            "type": typ,
-            "text_preview": (x.get("text_en") or "")[:200],
-        })
-    with open(trace_path, "w", encoding="utf-8") as f:
-        json.dump(trace, f, indent=2, ensure_ascii=False)
-    print(f"[OUTPUT] Speaker trace (compare to stitch) → {trace_path}")
-
-    index_debug_path = os.path.join(OUTPUT_DIR, "message_index_debug.json")
-    ocr_hint_message_count = (
-        str(ocr_pass2_by_message or "").count("### message_index ")
-        if ocr_pass2_by_message
-        else 0
-    )
     pass1_output_count = int((pass_debug or {}).get("pass1_count") or 0)
-    pass2_output_count = int((pass_debug or {}).get("pass2_count") or 0)
-    pass2_effective_count = int((pass_debug or {}).get("pass2_effective_count") or 0)
-    pass3_output_count = int((pass_debug or {}).get("pass3_count") or 0)
-    third_pass_skipped = bool((pass_debug or {}).get("third_pass_skipped"))
-    index_debug = {
-        "manual_expected_message_count": craft_expected_n,
-        "crop_count": 0,
-        "pass1_output_count": pass1_output_count,
-        "pass2_output_count": pass2_output_count,
-        "pass2_effective_count": pass2_effective_count,
-        "ocr_hint_message_count": ocr_hint_message_count,
-        "pass3_output_count": pass3_output_count,
-        "third_pass_skipped": third_pass_skipped,
-        "ocr_by_message_present": bool(ocr_pass2_by_message),
-        "pass2_ocr_page_count": len(pass2_ocr_entries),
-        "pass_debug": pass_debug or {},
-        "index_alignment": {
-            "manual_expected_vs_pass1_match": pass1_output_count == craft_expected_n if craft_expected_n is not None else False,
-            "manual_expected_vs_pre_ocr_match": len(pre_ocr_meta or []) == craft_expected_n if craft_expected_n is not None else False,
-            "pass1_vs_pass2_match": pass2_output_count == pass1_output_count,
-            "pass2_vs_ocr_hints_match": (ocr_hint_message_count == 0 or ocr_hint_message_count == pass2_effective_count),
-            "pass2_effective_vs_pass3_match": True if third_pass_skipped else (pass3_output_count == pass2_effective_count),
-            "pre_ocr_vs_final_match": len(pre_ocr_meta or []) == len(all_meta or []),
-        },
-        "rows": [],
-    }
-    with open(index_debug_path, "w", encoding="utf-8") as f:
-        json.dump(index_debug, f, indent=2, ensure_ascii=False)
-    print(f"[OUTPUT] Message-index debug → {index_debug_path}")
-    print(
-        f"[ALIGN] Counts: manual_expected={craft_expected_n} crops=0 "
-        f"pass1={pass1_output_count} pass2={pass2_output_count} "
-        f"pass2_effective={pass2_effective_count} ocr_hints={ocr_hint_message_count} "
-        f"pass3={'skipped' if third_pass_skipped else pass3_output_count}"
+    print(f"[ALIGN] Counts: manual_expected={craft_expected_n} pass1={pass1_output_count}")
+
+    t_pass2 = time.time()
+    print("\n[STEP 2c] Gemini rewrite with OCR hints…")
+    final_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
+        contact_name,
+        (pass_debug or {}).get("pass1_messages") or [],
+        pass2_ocr_text,
+        timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
     )
+    if contact_name2:
+        contact_name = contact_name2
+        render_contact_name = _render_safe_contact_name(contact_name)
+    all_meta = _meta_from_gemini_messages(final_messages)
+    for i, item in enumerate(all_meta or []):
+        item["order"] = i
+    print(f"[TIMER] Pass 2 Gemini rewrite in {time.time()-t_pass2:.1f}s")
 
     pass1_source_debug_path = os.path.join(JSON_DIR, "pass1_transcript_debug.json")
-    pass3_debug_path = os.path.join(JSON_DIR, "pass3_final_debug.json")
-    first_pass_only = bool((pass_debug or {}).get("first_pass_only"))
 
     pass1_source_debug = []
     for i, m in enumerate((pass_debug or {}).get("pass1_messages") or []):
@@ -768,55 +757,40 @@ def main():
             "text_en_debug": translate_to_en(m.get("text_src") or "") or "",
         })
 
-    pass3_debug = []
-    for i, m in enumerate((pass_debug or {}).get("pass3_messages") or []):
-        pass3_debug.append({
-            "message_index": i,
-            "role": m.get("role"),
-            "text_src": m.get("text_src") or "",
-            "text_en": m.get("text_en") or "",
-        })
-
     with open(pass1_source_debug_path, "w", encoding="utf-8") as f:
         json.dump(pass1_source_debug, f, indent=2, ensure_ascii=False)
-    with open(pass3_debug_path, "w", encoding="utf-8") as f:
-        json.dump(pass3_debug, f, indent=2, ensure_ascii=False)
     print(f"[OUTPUT] Pass 1 transcript debug → {pass1_source_debug_path}")
-    if not first_pass_only:
-        if not third_pass_skipped:
-            print(f"[OUTPUT] Pass 3 final debug → {pass3_debug_path}")
 
     t4 = time.time()
     print("\n[STEP 3] Saving JSON + rendered chat...")
-    pass1_json_path = os.path.join(JSON_DIR, "translated_conversation_pre_ocr.json")
     combined_json_path = os.path.join(JSON_DIR, "translated_conversation.json")
-    with open(pass1_json_path, "w", encoding="utf-8") as f:
-        json.dump(pre_ocr_meta or [], f, indent=2, ensure_ascii=False)
     with open(combined_json_path, "w", encoding="utf-8") as f:
         json.dump(all_meta, f, indent=2, ensure_ascii=False)
 
-    pass1_chat = render_chat(pre_ocr_meta or [], contact_name=render_contact_name)
-    pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pre_ocr.png")
+    pass1_chat = render_chat(pass1_meta, contact_name=render_contact_name)
+    pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
     cv2.imwrite(pass1_path, pass1_chat)
 
-    combined_chat = render_chat(all_meta, contact_name=render_contact_name)
-    combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
-    cv2.imwrite(combined_path, combined_chat)
+    pass2_img = render_chat(all_meta, contact_name=render_contact_name)
+    pass2_path = os.path.join(RENDER_DIR, "translated_conversation_pass2.png")
+    cv2.imwrite(pass2_path, pass2_img)
+
+    compare_img = _compose_labeled_chat_comparison(
+        pass1_chat,
+        pass2_img,
+        "Pass 1 Translation",
+        "Pass 2 With OCR Hints",
+    )
     compare_path = os.path.join(RENDER_DIR, "translated_conversation_compare.png")
-    if not first_pass_only and not third_pass_skipped:
-        compare_chat = _compose_labeled_chat_comparison(
-            pass1_chat,
-            combined_chat,
-            "Pass 1 English",
-            "Pass 2 crop-guided English",
-        )
-        cv2.imwrite(compare_path, compare_chat)
-    print(f"[OUTPUT] Pass 1 JSON → {pass1_json_path}")
+    cv2.imwrite(compare_path, compare_img)
+
+    combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
+    cv2.imwrite(combined_path, pass1_chat)
     print(f"[OUTPUT] JSON → {combined_json_path}")
-    print(f"[OUTPUT] Pass 1 image → {pass1_path}")
     print(f"[OUTPUT] Image → {combined_path}")
-    if not first_pass_only and not third_pass_skipped:
-        print(f"[OUTPUT] Compare image → {compare_path}")
+    print(f"[OUTPUT] Pass 1 image → {pass1_path}")
+    print(f"[OUTPUT] Pass 2 image → {pass2_path}")
+    print(f"[OUTPUT] Compare image → {compare_path}")
     print(f"[TIMER] Render done in {time.time()-t4:.1f}s")
 
     total_runtime = time.time() - pipeline_start

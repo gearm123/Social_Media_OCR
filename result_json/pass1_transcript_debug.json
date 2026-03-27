@@ -2,85 +2,85 @@
   {
     "message_index": 0,
     "role": "contact",
-    "text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2",
-    "text_en_debug": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2"
+    "text_src": "นายมีสองร้อย\nจะกับไปเกาะสมุย",
+    "text_en_debug": "You have two hundred.\nWill go to Koh Samui."
   },
   {
     "message_index": 1,
-    "role": "contact",
-    "text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as",
-    "text_en_debug": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as"
+    "role": "user",
+    "text_src": "อยู่กับแม่กะเทยที่เคยทำงานราไวย์\nเดี๋ยวพี่ไปส่ง\nเดี๋ยวจ่ายค่าเรือ",
+    "text_en_debug": "Living with a ladyboy mother who used to work in Rawai\nI'll send it right away.\nJust pay for the boat."
   },
   {
     "message_index": 2,
     "role": "contact",
-    "text_src": "ไป",
-    "text_en_debug": "go"
+    "text_src": "โอนไปแล้ว",
+    "text_en_debug": "Already transferred"
   },
   {
     "message_index": 3,
-    "role": "contact",
-    "text_src": "มา",
-    "text_en_debug": "come"
+    "role": "user",
+    "text_src": "แม่จ๋า\nแม่",
+    "text_en_debug": "Mom\nMother"
   },
   {
     "message_index": 4,
-    "role": "contact",
-    "text_src": "ที่",
-    "text_en_debug": "at"
+    "role": "user",
+    "text_src": "ค่าตั๋วไปสุราษฎร์ธานีนะแม่ มื้ออื่นเรือปอออก 🗣️พายุลงเรือบ่แล่น",
+    "text_en_debug": "Ticket price to Surat Thani, Mom. For another meal, the boat leaves. 🗣️The storm hit the boat and it didn't sail."
   },
   {
     "message_index": 5,
     "role": "user",
-    "text_src": "งั้นก้อปล่อยให้มันประสาทในสมองดิบตายเถอะ",
-    "text_en_debug": "So just let the nerves in your brain die."
+    "text_src": "กำลังสิไปท่าเรือยุ",
+    "text_en_debug": "I'm going to the pier."
   },
   {
     "message_index": 6,
-    "role": "contact",
-    "text_src": "กุ",
-    "text_en_debug": "I"
+    "role": "user",
+    "text_src": "ไปถึงท่าเรือก่อน\nสิถ่ายไปให้เบิ่งอีกบาด",
+    "text_en_debug": "Go to the pier first.\nI took a photo and sent it for another spin."
   },
   {
     "message_index": 7,
-    "role": "user",
-    "text_src": "แค่เห็นไง",
-    "text_en_debug": "Just saw it."
+    "role": "contact",
+    "text_src": "มีค่าเรือแล้วบ่อ\nได้ไปส่ง",
+    "text_en_debug": "There is a boat fee already.\ngot to send"
   },
   {
     "message_index": 8,
-    "role": "contact",
-    "text_src": "ยกไหน",
-    "text_en_debug": "Which round?"
+    "role": "user",
+    "text_src": "บ่ทันมีจั๊กบาท\nแม่โอนมาให้แน่",
+    "text_en_debug": "I don't have a chance to get it.\nMother will definitely transfer it to you."
   },
   {
     "message_index": 9,
-    "role": "user",
-    "text_src": "มึงไม่ต้องถาม",
-    "text_en_debug": "You don't have to ask."
+    "role": "contact",
+    "text_src": "ยอดแล้วไหรบอก\nสิหาให้\nรอบนี้ไปแล้วต้องโทรหาทุกวัน",
+    "text_en_debug": "Tell me how much is it?\nI'll give it to you.\nThis time around I had to call every day."
   },
   {
     "message_index": 10,
-    "role": "contact",
-    "text_src": "ก็เจ็บ",
-    "text_en_debug": "It hurts."
+    "role": "user",
+    "text_src": "ขอบคุณหลายๆ",
+    "text_en_debug": "Many thanks"
   },
   {
     "message_index": 11,
-    "role": "contact",
-    "text_src": "ดู",
-    "text_en_debug": "watch"
+    "role": "user",
+    "text_src": "ค่าเรือ350บาทแม่",
+    "text_en_debug": "Boat fee is 350 baht."
   },
   {
     "message_index": 12,
     "role": "contact",
-    "text_src": "เจ็บ",
-    "text_en_debug": "hurt"
+    "text_src": "สิลองเสี่ยงอีกเทื่อ\nโทรกลับ\nโทรกลับมาสิคุยธุระนำ\nสิโอนให้ก่อน",
+    "text_en_debug": "Let's take another risk.\ncall back\nCall me back and talk about business.\nPlease transfer it to me first."
   },
   {
     "message_index": 13,
     "role": "user",
-    "text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ",
-    "text_en_debug": "If there's anything, you don't have to talk to my husband for help."
+    "text_src": "คร๊าบ\nโอนมาแล้วอาบน้ำแต่งตัวแม่",
+    "text_en_debug": "Yes.\nAfter transferring, take a shower and dress your mother."
   }
 ]

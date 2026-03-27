@@ -1690,12 +1690,134 @@ def _gemini_ocr_context_refine_pass(
     return merged, final_name, ledger_out
 
 
-def _append_gemini_debug_pass2(prompt: str, response: str):
+def _gemini_ocr_hints_refine_pass(
+    contact_name: str,
+    pass1_messages: list,
+    ocr_page_text: str,
+    timeout: int,
+):
+    """Pass 2: rewrite Pass 1 transcript using OCR page hints."""
+    if not pass1_messages:
+        return pass1_messages, contact_name
+
+    payload = {
+        "contact_name": contact_name,
+        "messages": [
+            {
+                "message_index": i,
+                "role": m.get("role"),
+                "pass1_text_src": (m.get("text_src") or m.get("text_en") or "").strip(),
+            }
+            for i, m in enumerate(pass1_messages)
+        ],
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
+    expected_n = len(pass1_messages)
+    hints = (ocr_page_text or "").strip()
+
+    prompt = f"""You are PASS 2 of 2.
+
+You receive:
+1. A conversation transcript from Pass 1.
+2. High-confidence OCR hints grouped by image, in chronological order.
+
+Input JSON:
+{payload_json}
+
+OCR hints from the cleaned images:
+{hints if hints else "(no OCR hints available)"}
+
+Task:
+- Rewrite the conversation using the OCR hints only as soft supporting evidence.
+- Keep the same number of messages: {expected_n}.
+- Keep the same order.
+- Keep the same role for each message.
+- Improve words, names, URLs, numbers, and short phrases when the OCR clearly supports a better reading.
+- Do not add, remove, merge, or split messages.
+- Ignore OCR fragments that look like UI noise or make the message worse.
+- Return English in `text_en`.
+
+Output JSON only:
+{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<final source reading>","text_en":"<final English line>"}}]}}"""
+
+    _write_gemini_prompt_file("gemini_prompt_pass2.txt", "Pass 2 (OCR-guided rewrite)", prompt)
+    try:
+        gres = _gemini_generate(prompt, timeout=timeout)
+        raw = (gres.text if gres else "") or ""
+    except Exception as e:
+        print(f"[GEMINI] Pass 2 failed: {e}")
+        _append_gemini_debug_pass2(prompt, f"ERROR: {e}", "PASS 2 — OCR-guided rewrite")
+        return pass1_messages, contact_name
+
+    if not raw.strip():
+        print("[GEMINI] Pass 2 empty — keeping Pass 1 transcript")
+        _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
+        return pass1_messages, contact_name
+
+    try:
+        name2, msgs2, _ledger2 = _parse_gemini_full_vision_json(raw)
+    except json.JSONDecodeError as e:
+        print(f"[GEMINI] Pass 2 JSON parse failed: {e}")
+        _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
+        return pass1_messages, contact_name
+
+    if not msgs2 or len(msgs2) != len(pass1_messages):
+        print(
+            f"[GEMINI] Pass 2 message count mismatch ({len(msgs2)} vs {len(pass1_messages)}) — "
+            "keeping Pass 1 transcript"
+        )
+        _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
+        return pass1_messages, contact_name
+
+    role_drift_indices = []
+    for i, m in enumerate(msgs2):
+        r2 = _canonicalize_gemini_role(m.get("role") or "")
+        if r2 not in ("contact", "user", "system"):
+            r2 = "system"
+        if r2 != pass1_messages[i]["role"]:
+            role_drift_indices.append(i)
+
+    if role_drift_indices:
+        _append_gemini_debug_pass2(
+            prompt,
+            raw + f"\n[ROLE DRIFT IGNORED: {role_drift_indices}]\n",
+            "PASS 2 — OCR-guided rewrite",
+        )
+        print(
+            f"[GEMINI] Pass 2 role drift at indices {role_drift_indices[:8]} "
+            f"(keeping Pass 1 roles, using Pass 2 text)"
+        )
+
+    merged = [
+        {
+            "role": pass1_messages[i]["role"],
+            "text_src": (
+                msgs2[i].get("text_src")
+                or pass1_messages[i].get("text_src")
+                or pass1_messages[i].get("text_en")
+                or ""
+            ).strip(),
+            "text_en": "",
+        }
+        for i in range(len(pass1_messages))
+    ]
+    for i, mm in enumerate(merged):
+        src = (mm.get("text_src") or "").strip()
+        en_raw = (msgs2[i].get("text_en") or "").strip()
+        mm["text_en"] = _prefer_english_surface(en_raw, translate_to_en(src) or src)
+
+    final_name = (name2 or contact_name or "").strip() or contact_name
+    if not role_drift_indices:
+        _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
+    return merged, final_name
+
+
+def _append_gemini_debug_pass2(prompt: str, response: str, label: str = "PASS 3 — FINAL ENGLISH TRANSLATION (text-only)"):
     path = os.path.join(OUTPUT_DIR, "gemini_debug.txt")
     try:
         with open(path, "a", encoding="utf-8") as f:
             f.write("\n\n" + "=" * 60 + "\n")
-            f.write("PASS 3 — FINAL ENGLISH TRANSLATION (text-only)\n")
+            f.write(label + "\n")
             f.write("=" * 60 + "\n\n")
             f.write("=== PROMPT ===\n")
             f.write(prompt)
