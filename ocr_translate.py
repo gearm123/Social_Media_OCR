@@ -1063,6 +1063,66 @@ def _canonicalize_gemini_role(role_raw: str) -> str:
     return r
 
 
+def _looks_like_real_system_row(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    tl = t.lower()
+
+    blocked_fragments = (
+        "gift.truemoney.com",
+        "campaign/?",
+        "https://",
+        "http://",
+        "การหลอกลวง",
+        "ขอให้คุณ",
+        "โอนเงินหรือบอกรหัส",
+        "ใช้งานเมื่อ",
+    )
+    if any(fragment in t or fragment in tl for fragment in blocked_fragments):
+        return False
+
+    if re.search(r"\b\d{1,2}[:.]\d{2}\b", t):
+        return True
+
+    allowed_fragments = (
+        "โทรอีกครั้ง",
+        "โทรกลับ",
+        "การโทร",
+        "ด้วยเสียง",
+        "วิดีโอคอล",
+        "สายที่ไม่ได้รับ",
+        "ไม่รับสาย",
+        "missed call",
+        "audio call",
+        "video call",
+        "called",
+        "call again",
+    )
+    if any(fragment in t or fragment in tl for fragment in allowed_fragments):
+        return True
+
+    if re.search(r"(จ\.|อ\.|พ\.|พฤ\.|ศ\.|ส\.|อา\.)\s*เวลา\s*\d{1,2}[:.]\d{2}", t):
+        return True
+
+    return False
+
+
+def _filter_pass1_messages(messages):
+    out = []
+    for m in list(messages or []):
+        role = _canonicalize_gemini_role(m.get("role") or "")
+        text_src = (m.get("text_src") or m.get("text_en") or "").strip()
+        if not text_src:
+            continue
+        if role == "system" and not _looks_like_real_system_row(text_src):
+            continue
+        mm = dict(m)
+        mm["role"] = role
+        out.append(mm)
+    return out
+
+
 def _write_gemini_prompt_file(filename: str, label: str, prompt: str):
     path = os.path.join(OUTPUT_DIR, filename)
     try:
@@ -2110,10 +2170,14 @@ transcribe the conversation in the original language
 the first image is the oldest
 
 {craft_section}{bubble_section}transcribe what you see
-the added information above is guidance about the actual text bubbles
+the added information above is guidance about the actual text bubbles only
+for actual chat bubbles, map receiver -> role "contact" and sender -> role "user"
+keep the actual chat bubbles in that same top-to-bottom order
+if you clearly see timestamps, missed calls, transfer notices, or other centered/system conversation rows, include them too as role "system"
+those system rows are metadata only and must not change the receiver/sender bubble order above
 
 return json in this structure:
-{{"contact_name":"<header or empty>","messages":[{{"role":"contact|user","text_src":"<original-language transcription>"}}]}}
+{{"contact_name":"<header or empty>","messages":[{{"role":"contact|user|system","text_src":"<original-language transcription>"}}]}}
 
 output json only."""
 
@@ -2159,13 +2223,40 @@ output json only."""
         )
         return False, hint or "", [], [], {}
 
-    if _n_exp > 0 and len(gmsgs) != _n_exp:
+    gmsgs = _filter_pass1_messages(gmsgs)
+    pass1_system_msgs = []
+    pass1_chat_msgs = []
+    chat_seen = 0
+    for m in gmsgs:
+        role = _canonicalize_gemini_role(m.get("role") or "")
+        text_src = (m.get("text_src") or m.get("text_en") or "").strip()
+        if not text_src:
+            continue
+        if role == "system":
+            pass1_system_msgs.append({
+                "role": "system",
+                "text_src": text_src,
+                "insert_before_chat_index": chat_seen,
+            })
+            continue
+        mm = dict(m)
+        mm["role"] = role
+        pass1_chat_msgs.append(mm)
+        chat_seen += 1
+
+    non_system_count = len(pass1_chat_msgs)
+    system_count = len(pass1_system_msgs)
+
+    if _n_exp > 0 and non_system_count != _n_exp:
         print(
-            f"[GEMINI] Pass 1 count mismatch: expected {_n_exp}, got {len(gmsgs)}."
+            f"[GEMINI] Pass 1 bubble count mismatch: expected {_n_exp}, got {non_system_count} "
+            f"(plus {system_count} system row(s))."
         )
+    elif _n_exp > 0:
+        print(f"[GEMINI] Pass 1 bubble count OK: {_n_exp} bubbles, {system_count} system row(s).")
 
     contact_name = gname or hint or ""
-    if not gmsgs:
+    if not pass1_chat_msgs:
         print("[GEMINI] Parsed JSON but no messages")
         _write_gemini_debug_vision_only(prompt, raw, "NO MESSAGES PARSED", api_payload=api_payload)
         return False, contact_name, [], [], {}
@@ -2174,15 +2265,17 @@ output json only."""
         {
             "contact_name": contact_name,
             "n_messages": len(gmsgs),
+            "bubble_messages": non_system_count,
+            "system_messages": system_count,
             "ambiguity_ledger": amb_ledger,
-            "has_ref_placeholders": _conversation_has_ref_placeholders(gmsgs),
+            "has_ref_placeholders": _conversation_has_ref_placeholders(pass1_chat_msgs),
         },
         indent=2,
         ensure_ascii=False,
     )
     _write_gemini_debug_vision_only(prompt, raw, pass1_footer, api_payload=api_payload)
 
-    print(f"[GEMINI] Pass 1 (vision): {len(gmsgs)} messages")
+    print(f"[GEMINI] Pass 1 (vision): {len(gmsgs)} rows total")
     print(f"[TIMER] Pass 1 Gemini in {time.time()-pass1_started:.1f}s")
     pass1_source_msgs = [
         {
@@ -2190,7 +2283,7 @@ output json only."""
             "text_en": ((m.get("text_src") or m.get("text_en") or "").strip()),
             "text_src": (m.get("text_src") or m.get("text_en") or "").strip(),
         }
-        for m in gmsgs
+        for m in pass1_chat_msgs
     ]
     pre_ocr_meta = _meta_from_gemini_messages(
         [
@@ -2203,7 +2296,6 @@ output json only."""
             for m in pass1_source_msgs
         ]
     )
-    print("[GEMINI] Pass 2 disabled here: OCR hints only.")
     pass2_effective_msgs = []
     pass2_effective_count = 0
     pass2_meta = {
@@ -2214,8 +2306,6 @@ output json only."""
         "input_crops": 0,
         "output_messages": 0,
     }
-    print("[GEMINI] Pass 3 disabled: keeping Pass 1 output as final result.")
-
     final_msgs = [
         {
             "role": m.get("role"),
@@ -2232,6 +2322,8 @@ output json only."""
     if not meta:
         return False, contact_name, [], pre_ocr_meta, {
             "pass1_count": len(pass1_source_msgs),
+            "pass1_total_count": len(pass1_source_msgs),
+            "pass1_system_count": system_count,
             "pass2_count": len(pass2_effective_msgs),
             "pass2_effective_count": pass2_effective_count,
             "pass2_crop_refine": pass2_meta,
@@ -2239,13 +2331,16 @@ output json only."""
             "first_pass_only": False,
             "third_pass_skipped": True,
             "pass1_messages": pass1_source_msgs,
+            "pass1_system_messages": pass1_system_msgs,
             "pass2_crop_messages": pass2_effective_msgs,
             "pass3_messages": [],
         }
 
-    print(f"[GEMINI] Pass 1 final output OK → {len(meta)} messages, contact={contact_name!r}")
+    print(f"[GEMINI] Pass 1 final output OK → {len(meta)} chat rows, contact={contact_name!r}")
     return True, contact_name, meta, pre_ocr_meta, {
-        "pass1_count": len(pass1_source_msgs),
+        "pass1_count": non_system_count,
+        "pass1_total_count": len(pass1_source_msgs),
+        "pass1_system_count": system_count,
         "pass2_count": len(pass2_effective_msgs),
         "pass2_effective_count": pass2_effective_count,
         "pass2_crop_refine": pass2_meta,
@@ -2253,6 +2348,7 @@ output json only."""
         "first_pass_only": False,
         "third_pass_skipped": True,
         "pass1_messages": pass1_source_msgs,
+        "pass1_system_messages": pass1_system_msgs,
         "pass2_crop_messages": pass2_effective_msgs,
         "pass3_messages": [],
     }

@@ -6,35 +6,49 @@ these are images representing a conversation on facebook messenger between two s
 transcribe the conversation in the original language
 the first image is the oldest
 
-i count 14 message bubbles in total
+i count 24 message bubbles in total
 
 in image 1
-i count 2 message bubbles
+i count 10 message bubbles
+receiver
+receiver
+sender
+sender
+receiver
+sender
+sender
+sender
 sender
 receiver
 
 in image 2
-i count 6 message bubbles
+i count 11 message bubbles
 receiver
+sender
+sender
 receiver
 receiver
 sender
 receiver
+receiver
+receiver
+sender
 sender
 
 in image 3
-i count 6 message bubbles
+i count 3 message bubbles
 receiver
 sender
-receiver
-receiver
-receiver
 sender
 
 transcribe what you see
-the added information above is guidance about the actual text bubbles
+the added information above is guidance about the actual text bubbles only
+for actual chat bubbles, map receiver -> role "contact" and sender -> role "user"
+keep the actual chat bubbles in that same top-to-bottom order
+if you clearly see timestamps, missed calls, transfer notices, or other centered/system conversation rows, include them too as role "system"
+those system rows are metadata only and must not change the receiver/sender bubble order above
 
 return json in this structure:
-{"contact_name":"<header or empty>","messages":[{"role":"contact|user","text_src":"<original-language transcription>"}]}
+{"contact_name":"<header or empty>","messages":[{"role":"contact|user|system","text_src":"<original-language transcription>"}]}
 
 output json only.

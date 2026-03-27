@@ -11,8 +11,28 @@ from deep_translator import GoogleTranslator
 # --------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
-CRAFT_REPO = BASE_DIR.parent / "CRAFT-pytorch"
-CRAFT_WEIGHTS = BASE_DIR.parent / "weights" / "craft_mlt_25k.pth"
+
+
+def _resolve_existing_path(candidates):
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate_path = Path(candidate)
+        if candidate_path.exists():
+            return candidate_path
+    return Path(candidates[0])
+
+
+CRAFT_REPO = _resolve_existing_path([
+    os.environ.get("CRAFT_REPO"),
+    BASE_DIR.parent / "CRAFT-pytorch",
+    BASE_DIR.parent / "image_ocr_project" / "CRAFT-pytorch",
+])
+CRAFT_WEIGHTS = _resolve_existing_path([
+    os.environ.get("CRAFT_WEIGHTS"),
+    BASE_DIR.parent / "weights" / "craft_mlt_25k.pth",
+    BASE_DIR.parent / "image_ocr_project" / "weights" / "craft_mlt_25k.pth",
+])
 
 INPUT_DIR = BASE_DIR / "input_images"
 OUTPUT_DIR = BASE_DIR / "result"
@@ -29,8 +49,19 @@ os.makedirs(RENDER_DIR, exist_ok=True)
 # ADD CRAFT TO PYTHON PATH
 # --------------------------------------------------
 
-sys.path.insert(0, str(CRAFT_REPO))
-from craft import CRAFT
+CRAFT = None
+if CRAFT_REPO.exists():
+    sys.path.insert(0, str(CRAFT_REPO))
+    try:
+        from craft import CRAFT
+    except ModuleNotFoundError:
+        CRAFT = None
+
+if CRAFT is None:
+    print(
+        f"[CONFIG] CRAFT module not available at {CRAFT_REPO}. "
+        "CRAFT-dependent features stay disabled until CRAFT_REPO is fixed."
+    )
 
 # --------------------------------------------------
 # LOAD CRAFT MODEL
@@ -43,6 +74,10 @@ def copyStateDict(state_dict):
 
 def load_craft():
     print("[INIT] Loading CRAFT model...")
+    if CRAFT is None:
+        raise ModuleNotFoundError(
+            "CRAFT module not found. Set CRAFT_REPO or place CRAFT-pytorch next to the project."
+        )
     if not CRAFT_WEIGHTS.exists():
         raise FileNotFoundError(f"CRAFT weights not found at: {CRAFT_WEIGHTS}")
     net = CRAFT()

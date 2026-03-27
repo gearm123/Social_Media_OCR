@@ -1,6 +1,6 @@
 [
   {
-    "type": "sender",
+    "type": "receiver",
     "bbox": [
       0,
       0,
@@ -8,7 +8,7 @@
       35
     ],
     "text_th": "",
-    "text_en": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2",
+    "text_en": "May has two hundred.",
     "order": 0,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -26,7 +26,7 @@
       75
     ],
     "text_th": "",
-    "text_en": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0671a79dd426822ff3ac236",
+    "text_en": "Who are you with in Koh Samui?",
     "order": 1,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -36,7 +36,7 @@
     "ocr_reasons": []
   },
   {
-    "type": "receiver",
+    "type": "sender",
     "bbox": [
       0,
       80,
@@ -44,7 +44,7 @@
       115
     ],
     "text_th": "",
-    "text_en": "Go",
+    "text_en": "I'm with a ladyboy mother who used to work at Rani.",
     "order": 2,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -54,7 +54,7 @@
     "ocr_reasons": []
   },
   {
-    "type": "receiver",
+    "type": "sender",
     "bbox": [
       0,
       120,
@@ -62,7 +62,7 @@
       155
     ],
     "text_th": "",
-    "text_en": "Come",
+    "text_en": "Can we talk on the phone?",
     "order": 3,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -80,7 +80,7 @@
       195
     ],
     "text_th": "",
-    "text_en": "Where",
+    "text_en": "She has a foreign husband.",
     "order": 4,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -98,7 +98,7 @@
       235
     ],
     "text_th": "",
-    "text_en": "Then just let the nerves in your brain die.",
+    "text_en": "I'll pay for the boat fare.",
     "order": 5,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -116,8 +116,44 @@
       275
     ],
     "text_th": "",
-    "text_en": "I",
+    "text_en": "Transferred already.",
     "order": 6,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      0,
+      0,
+      400,
+      35
+    ],
+    "text_th": "",
+    "text_en": "Tue time 07:33",
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": [],
+    "order": 7
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      280,
+      400,
+      315
+    ],
+    "text_th": "",
+    "text_en": "Mommy.",
+    "order": 8,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
@@ -129,31 +165,13 @@
     "type": "sender",
     "bbox": [
       0,
-      280,
-      400,
-      315
-    ],
-    "text_th": "",
-    "text_en": "I just feel sorry for you.",
-    "order": 7,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "receiver",
-    "bbox": [
-      0,
       320,
       400,
       355
     ],
     "text_th": "",
-    "text_en": "Where are you going?",
-    "order": 8,
+    "text_en": "Mom.",
+    "order": 9,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
@@ -170,25 +188,7 @@
       395
     ],
     "text_th": "",
-    "text_en": "You don't have to ask.",
-    "order": 9,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "receiver",
-    "bbox": [
-      0,
-      400,
-      400,
-      435
-    ],
-    "text_th": "",
-    "text_en": "Then sink.",
+    "text_en": "The ticket to Surat Thani, mom. The boat won't leave tomorrow. ⛴️ The storm is coming, the boat is sailing.",
     "order": 10,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -198,15 +198,15 @@
     "ocr_reasons": []
   },
   {
-    "type": "receiver",
+    "type": "sender",
     "bbox": [
       0,
-      440,
       400,
-      475
+      400,
+      435
     ],
     "text_th": "",
-    "text_en": "Looking down on me.",
+    "text_en": "I'm on my way to the pier.",
     "order": 11,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -216,15 +216,15 @@
     "ocr_reasons": []
   },
   {
-    "type": "receiver",
+    "type": "sender",
     "bbox": [
       0,
-      480,
+      440,
       400,
-      515
+      475
     ],
     "text_th": "",
-    "text_en": "Sink.",
+    "text_en": "I'll get to the pier first.",
     "order": 12,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -237,12 +237,12 @@
     "type": "sender",
     "bbox": [
       0,
-      520,
+      480,
       400,
-      555
+      515
     ],
     "text_th": "",
-    "text_en": "If you need anything, don't message my husband for help again.",
+    "text_en": "I'll take a picture and show you again.",
     "order": 13,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
@@ -250,5 +250,275 @@
     "ocr_trust_score": 1.0,
     "ocr_low_confidence": false,
     "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      520,
+      400,
+      555
+    ],
+    "text_th": "",
+    "text_en": "Do you have the boat fare yet?",
+    "order": 14,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      560,
+      400,
+      595
+    ],
+    "text_th": "",
+    "text_en": "Who is taking you?",
+    "order": 15,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      600,
+      400,
+      635
+    ],
+    "text_th": "",
+    "text_en": "I don't have it, mom. Mom, please transfer it to me.",
+    "order": 16,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      640,
+      400,
+      675
+    ],
+    "text_th": "",
+    "text_en": "Once you have the total, call and tell me.",
+    "order": 17,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      680,
+      400,
+      715
+    ],
+    "text_th": "",
+    "text_en": "I'll find it for you.",
+    "order": 18,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      720,
+      400,
+      755
+    ],
+    "text_th": "",
+    "text_en": "This time, after you go, you must call every day.",
+    "order": 19,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      760,
+      400,
+      795
+    ],
+    "text_th": "",
+    "text_en": "Thank you very much.",
+    "order": 20,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      0,
+      0,
+      400,
+      35
+    ],
+    "text_th": "",
+    "text_en": "Tue time 08:04",
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": [],
+    "order": 21
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      800,
+      400,
+      835
+    ],
+    "text_th": "",
+    "text_en": "The boat fare is 350 baht, mom.",
+    "order": 22,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      840,
+      400,
+      875
+    ],
+    "text_th": "",
+    "text_en": "I'll transfer it in a moment. Is there anything else?",
+    "order": 23,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      0,
+      0,
+      400,
+      35
+    ],
+    "text_th": "",
+    "text_en": "Missed voice calls\n08:08",
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": [],
+    "order": 24
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      880,
+      400,
+      915
+    ],
+    "text_th": "",
+    "text_en": "Call back.",
+    "order": 25,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      920,
+      400,
+      955
+    ],
+    "text_th": "",
+    "text_en": "Yes.",
+    "order": 26,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      960,
+      400,
+      995
+    ],
+    "text_th": "",
+    "text_en": "When you've transferred it, please read it too, mom.",
+    "order": 27,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      0,
+      0,
+      400,
+      35
+    ],
+    "text_th": "",
+    "text_en": "Money transferred successfully\n21 Dec. '25 | 08:15 a.m.\nMiss Thipsuwan\nKasikorn Bank\nxxx-x-xx485-x\nMr. Jin Kumutrat\nxxx-x-xxxxxx-6394",
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": [],
+    "order": 28
   }
 ]

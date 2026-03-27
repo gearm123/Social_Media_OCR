@@ -1,86 +1,152 @@
 [
   {
     "message_index": 0,
-    "role": "user",
-    "text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2",
-    "text_en_debug": "https://gift.truemoney.com/campaign/?v=019b3ea9e6617762a90e1405a83a8e5f2"
+    "role": "contact",
+    "text_src": "นายมีสองร้อย",
+    "text_en_debug": "You have two hundred."
   },
   {
     "message_index": 1,
     "role": "contact",
-    "text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0671a79dd426822ff3ac236as",
-    "text_en_debug": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0671a79dd426822ff3ac236as"
+    "text_src": "จะกับไปเกาะสมุย",
+    "text_en_debug": "Will go to Koh Samui."
   },
   {
     "message_index": 2,
-    "role": "contact",
-    "text_src": "ไป",
-    "text_en_debug": "go"
+    "role": "user",
+    "text_src": "อยู่กับแม่กะเทยที่เคยทำงานรานี",
+    "text_en_debug": "Living with a ladyboy mother who used to work as a ranee"
   },
   {
     "message_index": 3,
-    "role": "contact",
-    "text_src": "มา",
-    "text_en_debug": "come"
+    "role": "user",
+    "text_src": "โทรคุยได้มั้ยจ๊ะ",
+    "text_en_debug": "Can I call and talk?"
   },
   {
     "message_index": 4,
     "role": "contact",
-    "text_src": "ที่",
-    "text_en_debug": "at"
+    "text_src": "มีผัวฝรั่ง",
+    "text_en_debug": "Have a foreign husband"
   },
   {
     "message_index": 5,
     "role": "user",
-    "text_src": "งั้นก้อปล่อยให้มันประสาทในสมองมึงตายเถอะ",
-    "text_en_debug": "So just let the nerves in your brain die."
+    "text_src": "เดี๋ยวจ่ายค่าเรือ",
+    "text_en_debug": "Just pay for the boat."
   },
   {
     "message_index": 6,
     "role": "contact",
-    "text_src": "กุ",
-    "text_en_debug": "I"
+    "text_src": "โอนไปแล้ว",
+    "text_en_debug": "Already transferred"
   },
   {
     "message_index": 7,
     "role": "user",
-    "text_src": "แค่เห็นใจไง",
-    "text_en_debug": "I just sympathize."
+    "text_src": "แม่จ๋า",
+    "text_en_debug": "Mom"
   },
   {
     "message_index": 8,
-    "role": "contact",
-    "text_src": "ไปไหน",
-    "text_en_debug": "Where are you going?"
+    "role": "user",
+    "text_src": "แม่",
+    "text_en_debug": "mother"
   },
   {
     "message_index": 9,
     "role": "user",
-    "text_src": "มึงไม่ต้องถาม",
-    "text_en_debug": "You don't have to ask."
+    "text_src": "ค่าตั๋วไปสุราษฎร์ธานีนะแม่ มือถือเรือปออีก ⛴️พายุลงเรือแล่น",
+    "text_en_debug": "Ticket price to Surat Thani, Mom. Another mobile phone. ⛴️Storm sets sail"
   },
   {
     "message_index": 10,
-    "role": "contact",
-    "text_src": "ก็จม",
-    "text_en_debug": "It sank."
+    "role": "user",
+    "text_src": "กำลังสิไปท่าเรือยุ",
+    "text_en_debug": "I'm going to the pier."
   },
   {
     "message_index": 11,
-    "role": "contact",
-    "text_src": "ดูถูก",
-    "text_en_debug": "insult"
+    "role": "user",
+    "text_src": "ไปถึงท่าเรือก่อน",
+    "text_en_debug": "Go to the pier first."
   },
   {
     "message_index": 12,
-    "role": "contact",
-    "text_src": "จม",
-    "text_en_debug": "sink"
+    "role": "user",
+    "text_src": "สิถ่ายไปให้เบิ่งอีกบาด",
+    "text_en_debug": "I took a photo and sent it for another spin."
   },
   {
     "message_index": 13,
+    "role": "contact",
+    "text_src": "มีค่าเรือแล้วบ่",
+    "text_en_debug": "Is there a boat fee?"
+  },
+  {
+    "message_index": 14,
+    "role": "contact",
+    "text_src": "ไลไปส่ง",
+    "text_en_debug": "I'll send it to you."
+  },
+  {
+    "message_index": 15,
     "role": "user",
-    "text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ",
-    "text_en_debug": "If there's anything, you don't have to talk to my husband for help."
+    "text_src": "บ่มีจ๊ะแม่ และโอนมาให้แหน่",
+    "text_en_debug": "I don't have it, Mom, and I transferred it to you."
+  },
+  {
+    "message_index": 16,
+    "role": "contact",
+    "text_src": "ยอดแล้วไหรบอก",
+    "text_en_debug": "Tell me how much is it?"
+  },
+  {
+    "message_index": 17,
+    "role": "contact",
+    "text_src": "สิหาให้",
+    "text_en_debug": "I'll give it to you."
+  },
+  {
+    "message_index": 18,
+    "role": "contact",
+    "text_src": "รอบนี้ไปแล้วต้องดูโทรหาทุกวัน",
+    "text_en_debug": "This time around I had to look and call every day."
+  },
+  {
+    "message_index": 19,
+    "role": "user",
+    "text_src": "ขอบคุณหลายๆ",
+    "text_en_debug": "Many thanks"
+  },
+  {
+    "message_index": 20,
+    "role": "user",
+    "text_src": "ค่าเรือ350บาทแม่",
+    "text_en_debug": "Boat fee is 350 baht."
+  },
+  {
+    "message_index": 21,
+    "role": "contact",
+    "text_src": "สิโอนเสร็จมีอีกเบื่อ",
+    "text_en_debug": "Sion is finished and there's another one. Bored."
+  },
+  {
+    "message_index": 22,
+    "role": "contact",
+    "text_src": "โทรกลับ",
+    "text_en_debug": "call back"
+  },
+  {
+    "message_index": 23,
+    "role": "user",
+    "text_src": "ครับ",
+    "text_en_debug": "yes"
+  },
+  {
+    "message_index": 24,
+    "role": "user",
+    "text_src": "โอนมาแล้วอ่านำเด้อแม่",
+    "text_en_debug": "I've transferred it and read it, Mom."
   }
 ]

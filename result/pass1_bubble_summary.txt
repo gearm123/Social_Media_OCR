@@ -1,22 +1,32 @@
 in image 1
-i count 2 message bubbles
+i count 10 message bubbles
+receiver
+receiver
+sender
+sender
+receiver
+sender
+sender
+sender
 sender
 receiver
 
 in image 2
-i count 6 message bubbles
+i count 11 message bubbles
 receiver
+sender
+sender
 receiver
 receiver
 sender
 receiver
+receiver
+receiver
+sender
 sender
 
 in image 3
-i count 6 message bubbles
+i count 3 message bubbles
 receiver
 sender
-receiver
-receiver
-receiver
 sender

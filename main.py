@@ -761,6 +761,40 @@ def _render_safe_contact_name(name: str) -> str:
     return n
 
 
+def _merge_chat_with_system_metadata(chat_meta, system_messages):
+    systems_by_before = {}
+    for sys_msg in list(system_messages or []):
+        before_idx = int(sys_msg.get("insert_before_chat_index") or 0)
+        systems_by_before.setdefault(before_idx, []).append({
+            "type": "timestamp",
+            "bbox": [0, 0, 400, 35],
+            "text_th": "",
+            "text_en": translate_to_en(sys_msg.get("text_src") or "") or (sys_msg.get("text_src") or ""),
+            "ocr_source": "gemini_full_vision",
+            "ocr_span_count": 0,
+            "ocr_validated": True,
+            "ocr_trust_score": 1.0,
+            "ocr_low_confidence": False,
+            "ocr_reasons": [],
+        })
+
+    merged = []
+    order = 0
+    chat_items = list(chat_meta or [])
+    for idx in range(len(chat_items) + 1):
+        for sys_meta in systems_by_before.get(idx, []):
+            item = dict(sys_meta)
+            item["order"] = order
+            merged.append(item)
+            order += 1
+        if idx < len(chat_items):
+            item = dict(chat_items[idx])
+            item["order"] = order
+            merged.append(item)
+            order += 1
+    return merged
+
+
 def main():
     args = _parse_args()
     pipeline_start = time.time()
@@ -876,7 +910,11 @@ def main():
     for i, item in enumerate(pass1_meta):
         item["order"] = i
     pass1_output_count = int((pass_debug or {}).get("pass1_count") or 0)
-    print(f"[ALIGN] Counts: manual_expected={craft_expected_n} pass1={pass1_output_count}")
+    pass1_system_count = int((pass_debug or {}).get("pass1_system_count") or 0)
+    print(
+        f"[ALIGN] Counts: manual_expected={craft_expected_n} "
+        f"pass1_bubbles={pass1_output_count} pass1_system={pass1_system_count}"
+    )
 
     t_pass2 = time.time()
     print("\n[STEP 2c] Gemini rewrite with OCR hints…")
@@ -891,6 +929,10 @@ def main():
     all_meta = _meta_from_gemini_messages(final_messages)
     for i, item in enumerate(all_meta or []):
         item["order"] = i
+    final_render_meta = _merge_chat_with_system_metadata(
+        all_meta,
+        (pass_debug or {}).get("pass1_system_messages") or [],
+    )
     print(f"[TIMER] Pass 2 Gemini rewrite in {time.time()-t_pass2:.1f}s")
 
     t_pass3 = time.time()
@@ -932,7 +974,7 @@ def main():
     print("\n[STEP 4] Saving JSON + rendered chat...")
     combined_json_path = os.path.join(JSON_DIR, "translated_conversation.json")
     with open(combined_json_path, "w", encoding="utf-8") as f:
-        json.dump(all_meta, f, indent=2, ensure_ascii=False)
+        json.dump(final_render_meta, f, indent=2, ensure_ascii=False)
 
     pass1_chat = render_chat(pass1_meta)
     pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
@@ -953,7 +995,7 @@ def main():
 
     combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
     final_chat = render_chat(
-        all_meta,
+        final_render_meta,
         profile_image=profile_image,
         contact_name=final_contact_name,
         header_status=final_status_text,
