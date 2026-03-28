@@ -13,7 +13,7 @@ Task:
 
 Guidelines:
 - Prefer text actually visible in the status-bar crops.
-- Use "Ammy Hoto..." only as a weak fallback hint for the name.
+- Use "ทา ครีม แปบ" only as a weak fallback hint for the name.
 - If the status text is not readable, return an empty string.
 - If the avatar is unclear, still choose the best image and return your best approximate bounding box around the visible avatar circle.
 

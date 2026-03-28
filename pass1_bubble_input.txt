@@ -1,8 +1,8 @@
-11
-r,r,r,r,r,s,r,r,s,r,r
-
-5
-r,r,r,r,r
+9
+r,r,s,r,r,s,r,s,s
 
 7
-r,r,r,r,r,r,r
+r,s,s,s,r,r,r
+
+6
+s,s,r,r,r,s

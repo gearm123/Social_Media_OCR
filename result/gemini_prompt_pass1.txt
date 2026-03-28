@@ -6,13 +6,10 @@ these are images representing a conversation on facebook messenger between two s
 transcribe the conversation in the original language
 the first image is the oldest
 
-i count 23 message bubbles in total
+i count 22 message bubbles in total
 
 in image 1
-i count 11 message bubbles
-receiver
-receiver
-receiver
+i count 9 message bubbles
 receiver
 receiver
 sender
@@ -20,25 +17,27 @@ receiver
 receiver
 sender
 receiver
-receiver
+sender
+sender
 
 in image 2
-i count 5 message bubbles
+i count 7 message bubbles
 receiver
-receiver
+sender
+sender
+sender
 receiver
 receiver
 receiver
 
 in image 3
-i count 7 message bubbles
+i count 6 message bubbles
+sender
+sender
 receiver
 receiver
 receiver
-receiver
-receiver
-receiver
-receiver
+sender
 
 transcribe what you see
 the added information above is guidance about the actual text bubbles only

@@ -2,139 +2,103 @@
   {
     "message_index": 0,
     "role": "contact",
-    "text_src": "โทรหา",
-    "text_en_debug": "call"
+    "text_src": "รอสลิปแป๊บได้บ",
+    "text_en_debug": "Just wait for the slip for a moment."
   },
   {
     "message_index": 1,
     "role": "contact",
-    "text_src": "มีฟ้าคิดฮอด",
-    "text_en_debug": "Mi Fa Kid Hod"
+    "text_src": "ทาครีมแปบ",
+    "text_en_debug": "Apply cream for a moment."
   },
   {
     "message_index": 2,
-    "role": "contact",
-    "text_src": "ว่า",
-    "text_en_debug": "that"
+    "role": "user",
+    "text_src": "ฟ้าทาครีม..แล้วฟ้ามาค่ะ เพราะคุณท่านเพิ่งเลิกรั่ว",
+    "text_en_debug": "Sky applies cream..and then Sky comes. Because you just stopped leaking."
   },
   {
     "message_index": 3,
     "role": "contact",
-    "text_src": "ทำไร",
-    "text_en_debug": "Doing what?"
+    "text_src": "เห็นว่าได้ลพ",
+    "text_en_debug": "I saw that I got the LP."
   },
   {
     "message_index": 4,
     "role": "contact",
-    "text_src": "หายไปเลยนะ",
-    "text_en_debug": "It's gone."
+    "text_src": "เท่าไร",
+    "text_en_debug": "how much"
   },
   {
     "message_index": 5,
     "role": "user",
-    "text_src": "ก็แฟน",
-    "text_en_debug": "It's my boyfriend."
+    "text_src": "สั่งใหม่ออกมายัง ฟ้าจะให้พี่ตังทอนมาด้วย",
+    "text_en_debug": "A new order has been issued. Heaven will let Brother Tangton come as well."
   },
   {
     "message_index": 6,
     "role": "contact",
-    "text_src": "ดีละ",
-    "text_en_debug": "Good."
+    "text_src": "👍",
+    "text_en_debug": ""
   },
   {
     "message_index": 7,
     "role": "contact",
-    "text_src": "ไหนฝากของให้100สิวะถึงอย่าได้รีบแฟนกลับก่อนยึดได้มาได้ตลอดหะคะเถอะ",
-    "text_en_debug": "If you leave something for 100 baht, don't hurry your boyfriend back before you can take it."
+    "text_src": "เป็นรอยไปหมดหน้าอยู่นั้นได้บ",
+    "text_en_debug": "There are marks all over the face."
   },
   {
     "message_index": 8,
     "role": "user",
-    "text_src": "อีก 3 วัน แฟนฉันจะมา",
-    "text_en_debug": "In 3 days my boyfriend will come."
+    "text_src": "ได้",
+    "text_en_debug": "can"
   },
   {
     "message_index": 9,
-    "role": "contact",
-    "text_src": "ใคร",
-    "text_en_debug": "who"
+    "role": "user",
+    "text_src": "ฮอดใส่แล้วค่ะ",
+    "text_en_debug": "I've already put it on."
   },
   {
     "message_index": 10,
     "role": "contact",
-    "text_src": "👍",
-    "text_en_debug": ""
+    "text_src": "เป็นขอไปแตะหน้าอยู่นั้นได้บ",
+    "text_en_debug": "It's okay to ask to touch your face."
   },
   {
     "message_index": 11,
-    "role": "contact",
-    "text_src": "แพท",
-    "text_en_debug": "Pat"
+    "role": "user",
+    "text_src": "ให้",
+    "text_en_debug": "give"
   },
   {
     "message_index": 12,
-    "role": "contact",
-    "text_src": "โทรกลับ",
-    "text_en_debug": "call back"
+    "role": "user",
+    "text_src": "ห้องเต็มเด้อจ้า",
+    "text_en_debug": "The room is full."
   },
   {
     "message_index": 13,
     "role": "contact",
-    "text_src": "แพทไอ...จะคุยด้วย",
-    "text_en_debug": "Pat I...will talk to you."
+    "text_src": "อยู่ห้องบ่อ",
+    "text_en_debug": "In the pond room"
   },
   {
     "message_index": 14,
     "role": "contact",
-    "text_src": "https://gift.truemoney.com/campaign/?v=019b2b3d02ea7166a659121bc6348699200",
-    "text_en_debug": "https://gift.truemoney.com/campaign/?v=019b2b3d02ea7166a659121bc6348699200"
+    "text_src": "สิเอาเบียร์นี่",
+    "text_en_debug": "Here, take this beer."
   },
   {
     "message_index": 15,
     "role": "contact",
-    "text_src": "👍",
-    "text_en_debug": ""
+    "text_src": "อยู่แถวนี้",
+    "text_en_debug": "Around here"
   },
   {
     "message_index": 16,
-    "role": "contact",
-    "text_src": "😭😭😭😭😭😭",
-    "text_en_debug": ""
-  },
-  {
-    "message_index": 17,
-    "role": "contact",
-    "text_src": "ไม่มาแน่",
-    "text_en_debug": "Definitely won't come."
-  },
-  {
-    "message_index": 18,
-    "role": "contact",
-    "text_src": "ถ้ามามากนัก",
-    "text_en_debug": "If you come a lot"
-  },
-  {
-    "message_index": 19,
-    "role": "contact",
-    "text_src": "ก็กลับมาดิ",
-    "text_en_debug": "I'm coming back."
-  },
-  {
-    "message_index": 20,
-    "role": "contact",
-    "text_src": "😭😭😭",
-    "text_en_debug": ""
-  },
-  {
-    "message_index": 21,
-    "role": "contact",
-    "text_src": "ไอ้แพท",
-    "text_en_debug": "Damn Pat"
-  },
-  {
-    "message_index": 22,
-    "role": "contact",
-    "text_src": "อยู่ไหน",
-    "text_en_debug": "Where is"
+    "role": "user",
+    "text_src": "เอามาเลย",
+    "text_en_debug": "Bring it."
   }
 ]

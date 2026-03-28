@@ -761,22 +761,98 @@ def _render_safe_contact_name(name: str) -> str:
     return n
 
 
+def _is_call_action_text(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return t in {"โทรอีกครั้ง", "โทรกลับ", "call again", "call back"}
+
+
+def _looks_like_call_notice(src_text: str, en_text: str) -> bool:
+    s = (src_text or "").lower()
+    e = (en_text or "").lower()
+    call_markers = (
+        "การโทร",
+        "ไม่ได้รับ",
+        "โทรด้วยเสียง",
+        "voice call",
+        "audio call",
+        "video call",
+        "missed",
+        "call",
+    )
+    return any(marker in s or marker in e for marker in call_markers)
+
+
+def _build_call_notice_meta(src_text: str, en_text: str, button_text: str = "Call back"):
+    src = (src_text or "").strip()
+    en = (en_text or "").strip()
+    combined = en or src
+    lines = [line.strip() for line in combined.splitlines() if line.strip()]
+    full_l = combined.lower()
+    src_l = src.lower()
+    missed = ("ไม่ได้รับ" in src_l) or ("missed" in full_l)
+    video = ("วิดีโอ" in src_l) or ("video" in full_l)
+    title = "Missed audio call" if missed else ("Video call" if video else "Audio call")
+    subtitle = ""
+    if len(lines) >= 2:
+        subtitle = lines[1]
+    elif len(lines) == 1:
+        subtitle = lines[0]
+
+    subtitle = subtitle.replace("voice calling", "").replace("audio call", "").replace("video call", "").strip(" -:\n")
+    if not subtitle and lines:
+        subtitle = lines[0]
+    return {
+        "type": "call_notice",
+        "bbox": [0, 0, 400, 35],
+        "text_th": "",
+        "text_en": title,
+        "subtitle": subtitle,
+        "button_text": button_text,
+        "missed": missed,
+        "ocr_source": "gemini_full_vision",
+        "ocr_span_count": 0,
+        "ocr_validated": True,
+        "ocr_trust_score": 1.0,
+        "ocr_low_confidence": False,
+        "ocr_reasons": [],
+    }
+
+
 def _merge_chat_with_system_metadata(chat_meta, system_messages):
     systems_by_before = {}
-    for sys_msg in list(system_messages or []):
+    sys_items = list(system_messages or [])
+    i = 0
+    while i < len(sys_items):
+        sys_msg = sys_items[i]
         before_idx = int(sys_msg.get("insert_before_chat_index") or 0)
-        systems_by_before.setdefault(before_idx, []).append({
-            "type": "timestamp",
-            "bbox": [0, 0, 400, 35],
-            "text_th": "",
-            "text_en": translate_to_en(sys_msg.get("text_src") or "") or (sys_msg.get("text_src") or ""),
-            "ocr_source": "gemini_full_vision",
-            "ocr_span_count": 0,
-            "ocr_validated": True,
-            "ocr_trust_score": 1.0,
-            "ocr_low_confidence": False,
-            "ocr_reasons": [],
-        })
+        src_text = sys_msg.get("text_src") or ""
+        text_en = translate_to_en(src_text) or src_text
+
+        if _looks_like_call_notice(src_text, text_en):
+            button_text = "Call back"
+            if i + 1 < len(sys_items):
+                next_src = sys_items[i + 1].get("text_src") or ""
+                next_en = translate_to_en(next_src) or next_src
+                if _is_call_action_text(next_src) or _is_call_action_text(next_en):
+                    button_text = "Call back"
+                    i += 1
+            systems_by_before.setdefault(before_idx, []).append(
+                _build_call_notice_meta(src_text, text_en, button_text=button_text)
+            )
+        else:
+            systems_by_before.setdefault(before_idx, []).append({
+                "type": "timestamp",
+                "bbox": [0, 0, 400, 35],
+                "text_th": "",
+                "text_en": text_en,
+                "ocr_source": "gemini_full_vision",
+                "ocr_span_count": 0,
+                "ocr_validated": True,
+                "ocr_trust_score": 1.0,
+                "ocr_low_confidence": False,
+                "ocr_reasons": [],
+            })
+        i += 1
 
     merged = []
     order = 0

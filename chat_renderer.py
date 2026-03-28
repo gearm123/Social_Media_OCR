@@ -37,6 +37,12 @@ _CHAT_THEMES = {
         "avatar_accent": (102, 118, 145),
         "presence_active": (58, 192, 98),
         "presence_ring": (255, 255, 255),
+        "call_card_bg": (245, 245, 246),
+        "call_button_bg": (228, 232, 239),
+        "call_title": (20, 20, 20),
+        "call_subtitle": (110, 112, 118),
+        "call_missed_icon": (72, 72, 255),
+        "call_audio_icon": (34, 34, 34),
     },
 }
 
@@ -149,6 +155,14 @@ def _rounded_rect_mask(height, width, radius):
 
 
 def draw_gradient_rounded_rect(img, x1, y1, x2, y2, color_left, color_right, radius):
+    img_h, img_w = img.shape[:2]
+    x1 = max(0, min(int(x1), img_w))
+    x2 = max(0, min(int(x2), img_w))
+    y1 = max(0, min(int(y1), img_h))
+    y2 = max(0, min(int(y2), img_h))
+    if x2 <= x1 or y2 <= y1:
+        return
+
     width = max(1, x2 - x1)
     height = max(1, y2 - y1)
     grad = np.zeros((height, width, 3), dtype=np.uint8)
@@ -322,6 +336,54 @@ def draw_timestamp(img, text, width, y, theme):
     return y + text_h + 20
 
 
+def draw_call_notice_card(img, title, subtitle, button_text, y, theme, missed=False):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    title_scale = 0.60
+    sub_scale = 0.42
+    title_thickness = 2
+    sub_thickness = 1
+    card_x = 14
+    card_w = min(250, img.shape[1] - 28)
+    icon_cx = card_x + 38
+    icon_cy = y + 36
+
+    title_lines = wrap_text(title or "", font, title_scale, title_thickness, card_w - 86)
+    subtitle_lines = wrap_text(subtitle or "", font, sub_scale, sub_thickness, card_w - 86) if subtitle else []
+    title_h = sum(_measure_text(line, font, title_scale, title_thickness)[1] for line in title_lines) + max(0, len(title_lines) - 1) * 4
+    subtitle_h = sum(_measure_text(line, font, sub_scale, sub_thickness)[1] for line in subtitle_lines) + max(0, len(subtitle_lines) - 1) * 4
+    button_h = 40 if button_text else 0
+    card_h = max(84, 24 + title_h + (8 if subtitle_h else 0) + subtitle_h + (14 if button_h else 0) + button_h + 16)
+
+    draw_rounded_rect(img, card_x, y, card_x + card_w, y + card_h, theme["call_card_bg"], 18)
+
+    icon_color = theme["call_missed_icon"] if missed else theme["call_audio_icon"]
+    cv2.circle(img, (icon_cx, icon_cy), 20, icon_color, -1, cv2.LINE_AA)
+    cv2.ellipse(img, (icon_cx, icon_cy), (7, 10), 35, 210, 330, (255, 255, 255), 3, cv2.LINE_AA)
+    cv2.line(img, (icon_cx - 4, icon_cy + 2), (icon_cx + 7, icon_cy - 9), (255, 255, 255), 3, cv2.LINE_AA)
+
+    tx = card_x + 70
+    ty = y + 18
+    for line in title_lines:
+        lh = _draw_text(img, line, tx, ty, font, title_scale, title_thickness, theme["call_title"])
+        ty += lh + 4
+    if subtitle_lines:
+        ty += 2
+        for line in subtitle_lines:
+            lh = _draw_text(img, line, tx, ty, font, sub_scale, sub_thickness, theme["call_subtitle"])
+            ty += lh + 4
+
+    if button_text:
+        btn_x1 = card_x + 16
+        btn_x2 = card_x + card_w - 16
+        btn_y1 = y + card_h - 16 - button_h
+        btn_y2 = y + card_h - 16
+        draw_rounded_rect(img, btn_x1, btn_y1, btn_x2, btn_y2, theme["call_button_bg"], 12)
+        bw, bh, _ = _measure_text(button_text, font, 0.56, 1)
+        _draw_text(img, button_text, btn_x1 + max(10, ((btn_x2 - btn_x1) - bw) // 2), btn_y1 + max(6, ((button_h - bh) // 2) - 1), font, 0.56, 1, theme["call_title"])
+
+    return y + card_h + 12
+
+
 def draw_bubble(img, text, x, y, max_width, align="left", bubble_color=(200, 200, 200), profile_image=None, theme=None):
     theme = theme or _get_chat_theme()
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -400,6 +462,8 @@ def estimate_canvas_height(objects):
 
         if obj.get("type") == "timestamp":
             base_height += 38
+        elif obj.get("type") == "call_notice":
+            base_height += 120
         else:
             lines = max(1, len(text) // 28 + 1)
             base_height += 20 + lines * 22
@@ -462,6 +526,17 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
 
         if obj_type == "timestamp":
             y = draw_timestamp(canvas, text, width, y, theme)
+            prev_type = "timestamp"
+        elif obj_type == "call_notice":
+            y = draw_call_notice_card(
+                canvas,
+                text,
+                (obj.get("subtitle") or "").strip(),
+                (obj.get("button_text") or "").strip(),
+                y,
+                theme,
+                missed=bool(obj.get("missed")),
+            )
             prev_type = "timestamp"
 
         elif obj_type == "sender":
