@@ -16,6 +16,7 @@ from ocr_translate import (
     translate_to_en,
     translate_conversation_gemini_multimodal,
     _gemini_ocr_hints_refine_pass,
+    _gemini_reference_resolution_pass,
     _gemini_status_bar_pass,
     _meta_from_gemini_messages,
     _set_source_language,
@@ -672,25 +673,23 @@ def _parse_args():
     return parser.parse_args()
 
 
-def _compose_labeled_chat_comparison(left_img, right_img, left_label, right_label):
-    """Place two rendered chats side-by-side with simple labels."""
+def _compose_labeled_chat_panels(panels):
+    """Place 2+ rendered chats side-by-side with simple labels."""
     gap = 20
     pad = 12
     label_h = 34
     bg = 248
 
-    if left_img is None or getattr(left_img, "size", 0) == 0:
-        return right_img
-    if right_img is None or getattr(right_img, "size", 0) == 0:
-        return left_img
+    valid_panels = [(img, label) for img, label in panels if img is not None and getattr(img, "size", 0) != 0]
+    if not valid_panels:
+        return None
+    if len(valid_panels) == 1:
+        return valid_panels[0][0]
 
-    panel_w = max(left_img.shape[1], right_img.shape[1])
-    left_h = left_img.shape[0] + label_h
-    right_h = right_img.shape[0] + label_h
-    panel_h = max(left_h, right_h)
-
+    panel_w = max(img.shape[1] for img, _label in valid_panels)
+    panel_h = max(img.shape[0] + label_h for img, _label in valid_panels)
     canvas_h = panel_h + pad * 2
-    canvas_w = panel_w * 2 + gap + pad * 2
+    canvas_w = panel_w * len(valid_panels) + gap * (len(valid_panels) - 1) + pad * 2
     canvas = np.full((canvas_h, canvas_w, 3), bg, dtype=np.uint8)
 
     def _draw_panel(src, label, x0):
@@ -707,8 +706,8 @@ def _compose_labeled_chat_comparison(left_img, right_img, left_label, right_labe
         h, w = src.shape[:2]
         canvas[y1:y1 + h, x0:x0 + w] = src
 
-    _draw_panel(left_img, left_label, pad)
-    _draw_panel(right_img, right_label, pad + panel_w + gap)
+    for idx, (img, label) in enumerate(valid_panels):
+        _draw_panel(img, label, pad + idx * (panel_w + gap))
     return canvas
 
 
@@ -994,7 +993,7 @@ def main():
 
     t_pass2 = time.time()
     print("\n[STEP 2c] Gemini rewrite with OCR hints…")
-    final_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
+    pass2_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
         contact_name,
         (pass_debug or {}).get("pass1_messages") or [],
         pass2_ocr_text,
@@ -1002,17 +1001,31 @@ def main():
     )
     if contact_name2:
         contact_name = contact_name2
-    all_meta = _meta_from_gemini_messages(final_messages)
+    all_meta = _meta_from_gemini_messages(pass2_messages)
     for i, item in enumerate(all_meta or []):
         item["order"] = i
-    final_render_meta = _merge_chat_with_system_metadata(
-        all_meta,
-        (pass_debug or {}).get("pass1_system_messages") or [],
-    )
     print(f"[TIMER] Pass 2 Gemini rewrite in {time.time()-t_pass2:.1f}s")
 
     t_pass3 = time.time()
-    print("\n[STEP 3] Gemini status-bar pass…")
+    print("\n[STEP 3] Gemini reference resolution…")
+    final_messages, contact_name3, pass3_reference_debug = _gemini_reference_resolution_pass(
+        contact_name,
+        pass2_messages,
+        timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
+    )
+    if contact_name3:
+        contact_name = contact_name3
+    final_chat_meta = _meta_from_gemini_messages(final_messages)
+    for i, item in enumerate(final_chat_meta or []):
+        item["order"] = i
+    final_render_meta = _merge_chat_with_system_metadata(
+        final_chat_meta,
+        (pass_debug or {}).get("pass1_system_messages") or [],
+    )
+    print(f"[TIMER] Pass 3 reference resolution in {time.time()-t_pass3:.1f}s")
+
+    t_pass4 = time.time()
+    print("\n[STEP 4] Gemini status-bar pass…")
     status_bar_info = _gemini_status_bar_pass(
         status_bar_images,
         contact_hint=contact_name,
@@ -1029,9 +1042,10 @@ def main():
         f"[STATUS] Final header: name='{final_contact_name}'"
         + (f", status='{final_status_text}'" if final_status_text else "")
     )
-    print(f"[TIMER] Pass 3 status bar in {time.time()-t_pass3:.1f}s")
+    print(f"[TIMER] Pass 4 status bar in {time.time()-t_pass4:.1f}s")
 
     pass1_source_debug_path = os.path.join(JSON_DIR, "pass1_transcript_debug.json")
+    pass3_reference_debug_path = os.path.join(JSON_DIR, "pass3_reference_debug.json")
 
     pass1_source_debug = []
     for i, m in enumerate((pass_debug or {}).get("pass1_messages") or []):
@@ -1046,8 +1060,12 @@ def main():
         json.dump(pass1_source_debug, f, indent=2, ensure_ascii=False)
     print(f"[OUTPUT] Pass 1 transcript debug → {pass1_source_debug_path}")
 
+    with open(pass3_reference_debug_path, "w", encoding="utf-8") as f:
+        json.dump(pass3_reference_debug or [], f, indent=2, ensure_ascii=False)
+    print(f"[OUTPUT] Pass 3 reference debug → {pass3_reference_debug_path}")
+
     t4 = time.time()
-    print("\n[STEP 4] Saving JSON + rendered chat...")
+    print("\n[STEP 5] Saving JSON + rendered chat...")
     combined_json_path = os.path.join(JSON_DIR, "translated_conversation.json")
     with open(combined_json_path, "w", encoding="utf-8") as f:
         json.dump(final_render_meta, f, indent=2, ensure_ascii=False)
@@ -1060,12 +1078,15 @@ def main():
     pass2_path = os.path.join(RENDER_DIR, "translated_conversation_pass2.png")
     cv2.imwrite(pass2_path, pass2_img)
 
-    compare_img = _compose_labeled_chat_comparison(
-        pass1_chat,
-        pass2_img,
-        "Pass 1 Translation",
-        "Pass 2 With OCR Hints",
-    )
+    pass3_img = render_chat(final_chat_meta)
+    pass3_path = os.path.join(RENDER_DIR, "translated_conversation_pass3.png")
+    cv2.imwrite(pass3_path, pass3_img)
+
+    compare_img = _compose_labeled_chat_panels([
+        (pass1_chat, "Pass 1 Translation"),
+        (pass2_img, "Pass 2 OCR Source Polish (Debug EN)"),
+        (pass3_img, "Pass 3 Reference Resolution"),
+    ])
     compare_path = os.path.join(RENDER_DIR, "translated_conversation_compare.png")
     cv2.imwrite(compare_path, compare_img)
 
@@ -1081,6 +1102,7 @@ def main():
     print(f"[OUTPUT] Image → {combined_path}")
     print(f"[OUTPUT] Pass 1 image → {pass1_path}")
     print(f"[OUTPUT] Pass 2 image → {pass2_path}")
+    print(f"[OUTPUT] Pass 3 image → {pass3_path}")
     print(f"[OUTPUT] Compare image → {compare_path}")
     print(f"[TIMER] Render done in {time.time()-t4:.1f}s")
 
@@ -1089,7 +1111,7 @@ def main():
 ╔══════════════════════════════════════════╗
   PIPELINE SUMMARY (full-vision Gemini)
   Images processed : {len(images)}
-  Messages rendered: {len(all_meta)}
+  Messages rendered: {len(final_render_meta)}
   Contact name     : {contact_name}
   Total runtime    : {total_runtime:.1f}s
 ╚══════════════════════════════════════════╝""")

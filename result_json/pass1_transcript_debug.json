@@ -1,104 +1,86 @@
 [
   {
     "message_index": 0,
-    "role": "contact",
-    "text_src": "รอสลิปแป๊บได้บ",
-    "text_en_debug": "Just wait for the slip for a moment."
+    "role": "user",
+    "text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2",
+    "text_en_debug": "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2"
   },
   {
     "message_index": 1,
     "role": "contact",
-    "text_src": "ทาครีมแปบ",
-    "text_en_debug": "Apply cream for a moment."
+    "text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as",
+    "text_en_debug": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as"
   },
   {
     "message_index": 2,
-    "role": "user",
-    "text_src": "ฟ้าทาครีม..แล้วฟ้ามาค่ะ เพราะคุณท่านเพิ่งเลิกรั่ว",
-    "text_en_debug": "Sky applies cream..and then Sky comes. Because you just stopped leaking."
+    "role": "contact",
+    "text_src": "...ล่อน",
+    "text_en_debug": "...Cuticles"
   },
   {
     "message_index": 3,
     "role": "contact",
-    "text_src": "เห็นว่าได้ลพ",
-    "text_en_debug": "I saw that I got the LP."
+    "text_src": "มา",
+    "text_en_debug": "come"
   },
   {
     "message_index": 4,
     "role": "contact",
-    "text_src": "เท่าไร",
-    "text_en_debug": "how much"
+    "text_src": "ที่",
+    "text_en_debug": "at"
   },
   {
     "message_index": 5,
     "role": "user",
-    "text_src": "สั่งใหม่ออกมายัง ฟ้าจะให้พี่ตังทอนมาด้วย",
-    "text_en_debug": "A new order has been issued. Heaven will let Brother Tangton come as well."
+    "text_src": "งั้นก้อปล่อยให้มันประสาทในสมองมึงตายเถอะ",
+    "text_en_debug": "So just let the nerves in your brain die."
   },
   {
     "message_index": 6,
     "role": "contact",
-    "text_src": "👍",
-    "text_en_debug": ""
+    "text_src": "กุ",
+    "text_en_debug": "I"
   },
   {
     "message_index": 7,
-    "role": "contact",
-    "text_src": "เป็นรอยไปหมดหน้าอยู่นั้นได้บ",
-    "text_en_debug": "There are marks all over the face."
+    "role": "user",
+    "text_src": "แค่เป็นห่วงไง",
+    "text_en_debug": "I'm just worried."
   },
   {
     "message_index": 8,
-    "role": "user",
-    "text_src": "ได้",
-    "text_en_debug": "can"
+    "role": "contact",
+    "text_src": "ยกไหน",
+    "text_en_debug": "Which round?"
   },
   {
     "message_index": 9,
     "role": "user",
-    "text_src": "ฮอดใส่แล้วค่ะ",
-    "text_en_debug": "I've already put it on."
+    "text_src": "มึงไม่ต้องถาม",
+    "text_en_debug": "You don't have to ask."
   },
   {
     "message_index": 10,
     "role": "contact",
-    "text_src": "เป็นขอไปแตะหน้าอยู่นั้นได้บ",
-    "text_en_debug": "It's okay to ask to touch your face."
+    "text_src": "ก็จบ",
+    "text_en_debug": "It's over."
   },
   {
     "message_index": 11,
-    "role": "user",
-    "text_src": "ให้",
-    "text_en_debug": "give"
+    "role": "contact",
+    "text_src": "ดบท",
+    "text_en_debug": "Script"
   },
   {
     "message_index": 12,
-    "role": "user",
-    "text_src": "ห้องเต็มเด้อจ้า",
-    "text_en_debug": "The room is full."
+    "role": "contact",
+    "text_src": "จบ",
+    "text_en_debug": "finish"
   },
   {
     "message_index": 13,
-    "role": "contact",
-    "text_src": "อยู่ห้องบ่อ",
-    "text_en_debug": "In the pond room"
-  },
-  {
-    "message_index": 14,
-    "role": "contact",
-    "text_src": "สิเอาเบียร์นี่",
-    "text_en_debug": "Here, take this beer."
-  },
-  {
-    "message_index": 15,
-    "role": "contact",
-    "text_src": "อยู่แถวนี้",
-    "text_en_debug": "Around here"
-  },
-  {
-    "message_index": 16,
     "role": "user",
-    "text_src": "เอามาเลย",
-    "text_en_debug": "Bring it."
+    "text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ",
+    "text_en_debug": "If there's anything, you don't have to talk to my husband for help."
   }
 ]

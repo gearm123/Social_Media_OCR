@@ -1,278 +1,5 @@
 [
   {
-    "type": "receiver",
-    "bbox": [
-      0,
-      0,
-      400,
-      35
-    ],
-    "text_th": "",
-    "text_en": "Wait a moment.",
-    "order": 0,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "receiver",
-    "bbox": [
-      0,
-      40,
-      400,
-      75
-    ],
-    "text_th": "",
-    "text_en": "Putting on cream for a moment.",
-    "order": 1,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "sender",
-    "bbox": [
-      0,
-      80,
-      400,
-      115
-    ],
-    "text_th": "",
-    "text_en": "I'm putting on cream.. then I'll come. Because he just stopped being crazy.",
-    "order": 2,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "timestamp",
-    "bbox": [
-      0,
-      0,
-      400,
-      35
-    ],
-    "text_th": "",
-    "text_en": "Sat time 23:37",
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": [],
-    "order": 3
-  },
-  {
-    "type": "receiver",
-    "bbox": [
-      0,
-      120,
-      400,
-      155
-    ],
-    "text_th": "",
-    "text_en": "I see that you got it.",
-    "order": 4,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "receiver",
-    "bbox": [
-      0,
-      160,
-      400,
-      195
-    ],
-    "text_th": "",
-    "text_en": "How much?",
-    "order": 5,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "sender",
-    "bbox": [
-      0,
-      200,
-      400,
-      235
-    ],
-    "text_th": "",
-    "text_en": "Has the new order come out yet? I'll have the change brought over too.",
-    "order": 6,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "receiver",
-    "bbox": [
-      0,
-      240,
-      400,
-      275
-    ],
-    "text_th": "",
-    "text_en": "👍",
-    "order": 7,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "receiver",
-    "bbox": [
-      0,
-      280,
-      400,
-      315
-    ],
-    "text_th": "",
-    "text_en": "It's cool, can I go put on makeup there?",
-    "order": 8,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "sender",
-    "bbox": [
-      0,
-      320,
-      400,
-      355
-    ],
-    "text_th": "",
-    "text_en": "Yes.",
-    "order": 9,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "sender",
-    "bbox": [
-      0,
-      360,
-      400,
-      395
-    ],
-    "text_th": "",
-    "text_en": "I've arrived and put it on.",
-    "order": 10,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "receiver",
-    "bbox": [
-      0,
-      400,
-      400,
-      435
-    ],
-    "text_th": "",
-    "text_en": "It's cool, can I go put on makeup there?",
-    "order": 11,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "sender",
-    "bbox": [
-      0,
-      440,
-      400,
-      475
-    ],
-    "text_th": "",
-    "text_en": "Okay.",
-    "order": 12,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": []
-  },
-  {
-    "type": "call_notice",
-    "bbox": [
-      0,
-      0,
-      400,
-      35
-    ],
-    "text_th": "",
-    "text_en": "Missed audio call",
-    "subtitle": "Missed voice calls",
-    "button_text": "Call back",
-    "missed": true,
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": [],
-    "order": 13
-  },
-  {
-    "type": "timestamp",
-    "bbox": [
-      0,
-      0,
-      400,
-      35
-    ],
-    "text_th": "",
-    "text_en": "23:37",
-    "ocr_source": "gemini_full_vision",
-    "ocr_span_count": 0,
-    "ocr_validated": true,
-    "ocr_trust_score": 1.0,
-    "ocr_low_confidence": false,
-    "ocr_reasons": [],
-    "order": 14
-  },
-  {
     "type": "call_notice",
     "bbox": [
       0,
@@ -291,19 +18,58 @@
     "ocr_trust_score": 1.0,
     "ocr_low_confidence": false,
     "ocr_reasons": [],
-    "order": 15
+    "order": 0
+  },
+  {
+    "type": "call_notice",
+    "bbox": [
+      0,
+      0,
+      400,
+      35
+    ],
+    "text_th": "",
+    "text_en": "Audio call",
+    "subtitle": "Voice call 32 s",
+    "button_text": "Call back",
+    "missed": false,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": [],
+    "order": 1
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      0,
+      0,
+      400,
+      35
+    ],
+    "text_th": "",
+    "text_en": "Sun. Time 14:50",
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": [],
+    "order": 2
   },
   {
     "type": "sender",
     "bbox": [
       0,
-      480,
+      0,
       400,
-      515
+      35
     ],
     "text_th": "",
-    "text_en": "It's the same room.",
-    "order": 16,
+    "text_en": "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2",
+    "order": 3,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
@@ -320,26 +86,26 @@
       35
     ],
     "text_th": "",
-    "text_en": "13:46",
+    "text_en": "Sun. Time 14:56",
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
     "ocr_trust_score": 1.0,
     "ocr_low_confidence": false,
     "ocr_reasons": [],
-    "order": 17
+    "order": 4
   },
   {
     "type": "receiver",
     "bbox": [
       0,
-      520,
+      40,
       400,
-      555
+      75
     ],
     "text_th": "",
-    "text_en": "Are you in the room?",
-    "order": 18,
+    "text_en": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822f13ac236as",
+    "order": 5,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
@@ -351,13 +117,13 @@
     "type": "receiver",
     "bbox": [
       0,
-      560,
+      80,
       400,
-      595
+      115
     ],
     "text_th": "",
-    "text_en": "I'm going to get beer here.",
-    "order": 19,
+    "text_en": "Deceitful",
+    "order": 6,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
@@ -369,13 +135,13 @@
     "type": "receiver",
     "bbox": [
       0,
-      600,
+      120,
       400,
-      635
+      155
     ],
     "text_th": "",
-    "text_en": "I'm around here.",
-    "order": 20,
+    "text_en": "Come",
+    "order": 7,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
@@ -384,34 +150,70 @@
     "ocr_reasons": []
   },
   {
-    "type": "timestamp",
+    "type": "receiver",
     "bbox": [
       0,
-      0,
+      160,
       400,
-      35
+      195
     ],
     "text_th": "",
-    "text_en": "14:48",
+    "text_en": "At",
+    "order": 8,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
     "ocr_trust_score": 1.0,
     "ocr_low_confidence": false,
-    "ocr_reasons": [],
-    "order": 21
+    "ocr_reasons": []
   },
   {
     "type": "sender",
     "bbox": [
       0,
-      640,
+      200,
       400,
-      675
+      235
     ],
     "text_th": "",
-    "text_en": "Bring it over.",
-    "order": 22,
+    "text_en": "Then just let the nerves in your brain die.",
+    "order": 9,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      240,
+      400,
+      275
+    ],
+    "text_th": "",
+    "text_en": "I",
+    "order": 10,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      280,
+      400,
+      315
+    ],
+    "text_th": "",
+    "text_en": "I'm just worried, you see.",
+    "order": 11,
     "ocr_source": "gemini_full_vision",
     "ocr_span_count": 0,
     "ocr_validated": true,
@@ -429,7 +231,7 @@
     ],
     "text_th": "",
     "text_en": "Audio call",
-    "subtitle": "voice calling",
+    "subtitle": "Making a voice call that doesn't... 04:45",
     "button_text": "Call back",
     "missed": false,
     "ocr_source": "gemini_full_vision",
@@ -438,6 +240,132 @@
     "ocr_trust_score": 1.0,
     "ocr_low_confidence": false,
     "ocr_reasons": [],
-    "order": 23
+    "order": 12
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      320,
+      400,
+      355
+    ],
+    "text_th": "",
+    "text_en": "Reached where?",
+    "order": 13,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      360,
+      400,
+      395
+    ],
+    "text_th": "",
+    "text_en": "You don't need to ask.",
+    "order": 14,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      400,
+      400,
+      435
+    ],
+    "text_th": "",
+    "text_en": "Then end.",
+    "order": 15,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      440,
+      400,
+      475
+    ],
+    "text_th": "",
+    "text_en": "Dbt",
+    "order": 16,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "receiver",
+    "bbox": [
+      0,
+      480,
+      400,
+      515
+    ],
+    "text_th": "",
+    "text_en": "End.",
+    "order": 17,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "sender",
+    "bbox": [
+      0,
+      520,
+      400,
+      555
+    ],
+    "text_th": "",
+    "text_en": "If you have any problems, don't message my husband for help again.",
+    "order": 18,
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": []
+  },
+  {
+    "type": "timestamp",
+    "bbox": [
+      0,
+      0,
+      400,
+      35
+    ],
+    "text_th": "",
+    "text_en": "05:18",
+    "ocr_source": "gemini_full_vision",
+    "ocr_span_count": 0,
+    "ocr_validated": true,
+    "ocr_trust_score": 1.0,
+    "ocr_low_confidence": false,
+    "ocr_reasons": [],
+    "order": 19
   }
 ]

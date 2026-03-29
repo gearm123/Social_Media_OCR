@@ -1756,7 +1756,7 @@ def _gemini_ocr_hints_refine_pass(
     ocr_page_text: str,
     timeout: int,
 ):
-    """Pass 2: rewrite Pass 1 transcript using OCR page hints."""
+    """Pass 2: rewrite Pass 1 transcript using OCR page hints, keeping source text only."""
     if not pass1_messages:
         return pass1_messages, contact_name
 
@@ -1784,7 +1784,7 @@ def _gemini_ocr_hints_refine_pass(
         return text[:limit].rstrip() + "\n\n[... OCR hints truncated ...]"
 
     def _build_prompt(hints_text: str, retry_note: str = "") -> str:
-        return f"""You are PASS 2 of 2.
+        return f"""You are PASS 2 of 4.
 
 You receive:
 1. A conversation transcript from Pass 1.
@@ -1804,11 +1804,13 @@ Task:
 - Improve words, names, URLs, numbers, and short phrases when the OCR clearly supports a better reading.
 - Do not add, remove, merge, or split messages.
 - Ignore OCR fragments that look like UI noise or make the message worse.
-- Return English in `text_en`.
+- Return the best corrected source-language reading in `text_src`.
+- Do not translate to English here.
+- Leave ambiguity, person reference, and final translation for the next pass.
 {retry_note}
 
 Output JSON only:
-{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<final source reading>","text_en":"<final English line>"}}]}}"""
+{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<final source reading>"}}]}}"""
 
     hints = _truncate_hints(hints_full, max_hint_chars)
     prompt = _build_prompt(hints)
@@ -1888,15 +1890,250 @@ Output JSON only:
         }
         for i in range(len(pass1_messages))
     ]
-    for i, mm in enumerate(merged):
-        src = (mm.get("text_src") or "").strip()
-        en_raw = (msgs2[i].get("text_en") or "").strip()
-        mm["text_en"] = _prefer_english_surface(en_raw, translate_to_en(src) or src)
 
     final_name = (name2 or contact_name or "").strip() or contact_name
     if not role_drift_indices:
         _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
     return merged, final_name
+
+
+def _gemini_reference_resolution_pass(
+    contact_name: str,
+    pass2_messages: list,
+    timeout: int,
+):
+    """Pass 3: resolve references from Pass 2 source text, then produce final English."""
+    if not pass2_messages:
+        return pass2_messages, contact_name, []
+
+    def _normalize_reference_text(text: str) -> list:
+        return re.findall(r"[a-z0-9']+", (text or "").lower())
+
+    def _has_visible_ambiguity_markers(text: str) -> bool:
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+        if re.search(r"\b\w+\s*/\s*\w+\b", t):
+            return True
+        if re.search(r"\b(i|you|he|she|we|they|me|him|her|my|your|his|their|our|us)\s+or\s+(i|you|he|she|we|they|me|him|her|my|your|his|their|our|us)\b", t):
+            return True
+        if re.search(r"\[[^\]]*\]", t):
+            return True
+        return False
+
+    def _choose_reference_english(literal_gloss: str, resolved_text: str, confidence: str, ambiguity: str) -> tuple[str, str]:
+        literal = (literal_gloss or "").strip()
+        resolved = (resolved_text or "").strip()
+        conf = (confidence or "").strip().lower()
+        amb = (ambiguity or "").strip().lower()
+        if _has_visible_ambiguity_markers(resolved):
+            return literal or resolved, "literal_resolved_visible_ambiguity"
+        if _has_visible_ambiguity_markers(literal):
+            return resolved or literal, "resolved_literal_visible_ambiguity"
+        if not resolved:
+            return literal, "literal_missing_resolved"
+        if conf != "high":
+            return literal or resolved, "literal_not_high_confidence"
+        if amb not in ("", "none", "low"):
+            return literal or resolved, "literal_ambiguous"
+
+        lit_tokens = _normalize_reference_text(literal)
+        res_tokens = _normalize_reference_text(resolved)
+        if lit_tokens and res_tokens:
+            lit_set = set(lit_tokens)
+            res_set = set(res_tokens)
+            overlap = len(lit_set & res_set) / max(1, len(lit_set | res_set))
+            length_ratio = len(res_tokens) / max(1, len(lit_tokens))
+            if overlap < 0.45 or length_ratio > 1.45:
+                return literal or resolved, "literal_resolved_too_different"
+        return resolved, "resolved_high_confidence"
+
+    payload_messages = []
+    for i, m in enumerate(pass2_messages):
+        src = (m.get("text_src") or m.get("text_en") or "").strip()
+        prev_src = [
+            (pass2_messages[j].get("text_src") or pass2_messages[j].get("text_en") or "").strip()
+            for j in range(max(0, i - 2), i)
+        ]
+        next_src = [
+            (pass2_messages[j].get("text_src") or pass2_messages[j].get("text_en") or "").strip()
+            for j in range(i + 1, min(len(pass2_messages), i + 3))
+        ]
+        payload_messages.append({
+            "message_index": i,
+            "role": m.get("role"),
+            "text_src": src,
+            "prev_context_src": prev_src,
+            "next_context_src": next_src,
+        })
+
+    payload = {
+        "contact_name": contact_name,
+        "messages": payload_messages,
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
+    expected_n = len(pass2_messages)
+
+    prompt = f"""You are PASS 3 of 4.
+
+You receive a chat transcript after OCR correction. Your task is to translate it to English and resolve references only when the context clearly supports it.
+
+Input JSON:
+{payload_json}
+
+Rules:
+- Keep the same number of messages: {expected_n}.
+- Keep the same order.
+- Keep the same role for each message.
+- Use surrounding messages to resolve who is speaking about whom.
+- Distinguish carefully between first person, second person, and third person references.
+- The message `role` only tells you who sent the bubble; it does not by itself tell you who the omitted subject refers to.
+- If the source is ambiguous, preserve that ambiguity in English instead of guessing.
+- Do not invent a subject if it is unclear.
+- Prefer neutral English like "Coming now." or "Call me back." when that is safer than a wrong explicit subject.
+- Do not assume the omitted subject in a message automatically refers to the speaker. It may refer to the other person or a third party.
+- Never show uncertainty as visible alternatives in the final English.
+- Do not output forms like `I/you`, `he/she`, `bring it / bring change`, bracketed options, or multiple candidate readings.
+- If you are not confident, keep the wording general and natural instead of exposing ambiguity.
+- `text_src` should remain the corrected source-language message.
+- `literal_gloss_en` should be a cautious, close English gloss of `text_src`.
+- `resolved_text_en` should be the English after minimal reference resolution.
+- `resolved_text_en` must preserve the same message content as `literal_gloss_en`.
+- Only make minimal reference adjustments such as clarifying an omitted subject, object, or addressee when the context is truly clear.
+- Do not add new actions, motives, explanations, emotional tone, or extra detail that is not already in the source.
+- Do not rewrite the sentence more fluently if that changes wording beyond the reference clarification itself.
+- Use `resolution_confidence` = `high|medium|low`.
+- Only use `high` when the surrounding context clearly supports the reference interpretation.
+- If the change would require more than minimal pronoun/subject clarification, use `medium` or `low`.
+- If not high confidence, keep `resolved_text_en` the same as or extremely close to `literal_gloss_en`.
+
+For each message, also return:
+- `subject_role`: `contact|user|third_party|unknown`
+- `target_role`: `contact|user|third_party|unknown`
+- `ambiguity`: `none|low|medium|high`
+- `note`: short explanation if useful
+
+Output JSON only:
+{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<source reading>","literal_gloss_en":"<cautious English gloss>","resolved_text_en":"<reference-resolved English>","resolution_confidence":"high|medium|low","subject_role":"contact|user|third_party|unknown","target_role":"contact|user|third_party|unknown","ambiguity":"none|low|medium|high","note":"<short note>"}}]}}"""
+
+    _write_gemini_prompt_file("gemini_prompt_pass3_reference.txt", "Pass 3 (reference resolution)", prompt)
+    try:
+        gres = _gemini_generate(prompt, timeout=timeout)
+        raw = (gres.text if gres else "") or ""
+    except Exception as e:
+        print(f"[GEMINI] Pass 3 reference failed: {e}")
+        _append_gemini_debug_pass2(prompt, f"ERROR: {e}", "PASS 3 — Reference resolution")
+        return pass2_messages, contact_name, []
+
+    if not raw.strip():
+        print("[GEMINI] Pass 3 reference empty — keeping Pass 2 translation fallback")
+        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Reference resolution")
+        fallback = [
+            {
+                "role": m.get("role"),
+                "text_src": (m.get("text_src") or "").strip(),
+                "text_en": translate_to_en(m.get("text_src") or "") or (m.get("text_src") or ""),
+            }
+            for m in pass2_messages
+        ]
+        return fallback, contact_name, []
+
+    try:
+        payload_text = _extract_json_object(raw) or raw.strip()
+        data = json.loads(payload_text)
+    except json.JSONDecodeError as e:
+        print(f"[GEMINI] Pass 3 reference JSON parse failed: {e}")
+        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Reference resolution")
+        fallback = [
+            {
+                "role": m.get("role"),
+                "text_src": (m.get("text_src") or "").strip(),
+                "text_en": translate_to_en(m.get("text_src") or "") or (m.get("text_src") or ""),
+            }
+            for m in pass2_messages
+        ]
+        return fallback, contact_name, []
+
+    name2 = (data.get("contact_name") or contact_name or "").strip() or contact_name
+    msgs2 = data.get("messages") or []
+    if not isinstance(msgs2, list) or len(msgs2) != len(pass2_messages):
+        print(
+            f"[GEMINI] Pass 3 reference message count mismatch ({len(msgs2)} vs {len(pass2_messages)}) — "
+            "keeping Pass 2 translation fallback"
+        )
+        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Reference resolution")
+        fallback = [
+            {
+                "role": m.get("role"),
+                "text_src": (m.get("text_src") or "").strip(),
+                "text_en": translate_to_en(m.get("text_src") or "") or (m.get("text_src") or ""),
+            }
+            for m in pass2_messages
+        ]
+        return fallback, contact_name, []
+
+    role_drift_indices = []
+    resolved = []
+    debug_rows = []
+    for i, m in enumerate(msgs2):
+        if not isinstance(m, dict):
+            continue
+        r2 = _canonicalize_gemini_role(m.get("role") or "")
+        if r2 not in ("contact", "user", "system"):
+            r2 = "system"
+        if r2 != pass2_messages[i]["role"]:
+            role_drift_indices.append(i)
+        text_src = (
+            m.get("text_src")
+            or pass2_messages[i].get("text_src")
+            or pass2_messages[i].get("text_en")
+            or ""
+        ).strip()
+        literal_gloss_en = (m.get("literal_gloss_en") or "").strip()
+        resolved_text_en = (m.get("resolved_text_en") or m.get("text_en") or "").strip()
+        resolution_confidence = (m.get("resolution_confidence") or "").strip().lower()
+        fallback_literal = translate_to_en(text_src) or text_src
+        ambiguity = (m.get("ambiguity") or "").strip()
+        chosen_en, choice_reason = _choose_reference_english(
+            literal_gloss_en or fallback_literal,
+            resolved_text_en,
+            resolution_confidence,
+            ambiguity,
+        )
+        if _has_visible_ambiguity_markers(chosen_en):
+            chosen_en = fallback_literal
+            choice_reason = "fallback_literal_hidden_ambiguity"
+        if not chosen_en:
+            chosen_en = fallback_literal
+        resolved.append({
+            "role": pass2_messages[i]["role"],
+            "text_src": text_src,
+            "text_en": _prefer_english_surface(chosen_en, fallback_literal),
+        })
+        debug_rows.append({
+            "message_index": i,
+            "role": pass2_messages[i]["role"],
+            "text_src": text_src,
+            "literal_gloss_en": literal_gloss_en,
+            "resolved_text_en": resolved_text_en,
+            "chosen_text_en": chosen_en,
+            "choice_reason": choice_reason,
+            "resolution_confidence": resolution_confidence or "low",
+            "subject_role": (m.get("subject_role") or "unknown").strip(),
+            "target_role": (m.get("target_role") or "unknown").strip(),
+            "ambiguity": ambiguity,
+            "note": (m.get("note") or "").strip(),
+        })
+
+    if role_drift_indices:
+        _append_gemini_debug_pass2(
+            prompt,
+            raw + f"\n[ROLE DRIFT IGNORED: {role_drift_indices}]\n",
+            "PASS 3 — Reference resolution",
+        )
+    else:
+        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Reference resolution")
+    return resolved, name2, debug_rows
 
 
 def _parse_gemini_status_bar_json(raw: str) -> dict:
@@ -1949,7 +2186,7 @@ def _gemini_status_bar_pass(
     contact_hint: str,
     timeout: int,
 ):
-    """Pass 3: extract final header information from status-bar crops."""
+    """Pass 4: extract final header information from status-bar crops."""
     if not status_bar_images:
         return {
             "contact_name": (contact_hint or "").strip(),
@@ -1974,7 +2211,7 @@ def _gemini_status_bar_pass(
             "avatar_bbox": None,
         }
 
-    prompt = f"""You are PASS 3 of 3.
+    prompt = f"""You are PASS 4 of 4.
 
 These images are the top Messenger header/status-bar crops from the same conversation, in chronological order.
 
@@ -1993,14 +2230,14 @@ Guidelines:
 Return JSON only:
 {{"contact_name":"<string>","status_text":"<string>","avatar_image_index":0,"avatar_bbox":[x1,y1,x2,y2]}}"""
 
-    _write_gemini_prompt_file("gemini_prompt_pass3_statusbar.txt", "Pass 3 status bar", prompt)
+    _write_gemini_prompt_file("gemini_prompt_pass4_statusbar.txt", "Pass 4 status bar", prompt)
 
     try:
         gres = _gemini_generate(prompt, image_b64_list=img_b64_list, timeout=timeout)
         raw = (gres.text if gres else "") or ""
     except Exception as e:
-        print(f"[GEMINI] Pass 3 status-bar failed: {e}")
-        _append_gemini_debug_pass2(prompt, f"ERROR: {e}", "PASS 3 — Status bar extraction")
+        print(f"[GEMINI] Pass 4 status-bar failed: {e}")
+        _append_gemini_debug_pass2(prompt, f"ERROR: {e}", "PASS 4 — Status bar extraction")
         return {
             "contact_name": (contact_hint or "").strip(),
             "status_text": "",
@@ -2009,7 +2246,7 @@ Return JSON only:
         }
 
     if not raw.strip():
-        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Status bar extraction")
+        _append_gemini_debug_pass2(prompt, raw, "PASS 4 — Status bar extraction")
         return {
             "contact_name": (contact_hint or "").strip(),
             "status_text": "",
@@ -2020,8 +2257,8 @@ Return JSON only:
     try:
         info = _parse_gemini_status_bar_json(raw)
     except json.JSONDecodeError as e:
-        print(f"[GEMINI] Pass 3 status-bar JSON parse failed: {e}")
-        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Status bar extraction")
+        print(f"[GEMINI] Pass 4 status-bar JSON parse failed: {e}")
+        _append_gemini_debug_pass2(prompt, raw, "PASS 4 — Status bar extraction")
         return {
             "contact_name": (contact_hint or "").strip(),
             "status_text": "",
@@ -2031,7 +2268,7 @@ Return JSON only:
 
     if not info.get("contact_name"):
         info["contact_name"] = (contact_hint or "").strip()
-    _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Status bar extraction")
+    _append_gemini_debug_pass2(prompt, raw, "PASS 4 — Status bar extraction")
     return info
 
 

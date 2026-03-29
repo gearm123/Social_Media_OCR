@@ -1,0 +1,21 @@
+Pass 4 status bar
+============================================================
+
+You are PASS 4 of 4.
+
+These images are the top Messenger header/status-bar crops from the same conversation, in chronological order.
+
+Task:
+- Infer the best contact name shown in the header.
+- Infer the short status text if visible, such as Active now, Online, last active text, or similar.
+- Choose the image with the clearest profile icon and return its 0-based image index.
+- Return the approximate avatar bounding box within that chosen crop as [x1, y1, x2, y2].
+
+Guidelines:
+- Prefer text actually visible in the status-bar crops.
+- Use "พี่แคล้ว รุนเพ..." only as a weak fallback hint for the name.
+- If the status text is not readable, return an empty string.
+- If the avatar is unclear, still choose the best image and return your best approximate bounding box around the visible avatar circle.
+
+Return JSON only:
+{"contact_name":"<string>","status_text":"<string>","avatar_image_index":0,"avatar_bbox":[x1,y1,x2,y2]}

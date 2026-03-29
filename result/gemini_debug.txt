@@ -53,7 +53,7 @@ output json only.
 
 === RAW RESPONSE ===
 ```json
-{"contact_name":"","messages":[{"role":"contact","text_src":"รอสลิปแป๊บได้บ"},{"role":"contact","text_src":"ทาครีมแปบ"},{"role":"user","text_src":"ฟ้าทาครีม..แล้วฟ้ามาค่ะ เพราะคุณท่านเพิ่งเลิกรั่ว"},{"role":"system","text_src":"ส. เวลา 23:37"},{"role":"contact","text_src":"เห็นว่าได้ลพ"},{"role":"contact","text_src":"เท่าไร"},{"role":"user","text_src":"สั่งใหม่ออกมายัง ฟ้าจะให้พี่ตังทอนมาด้วย"},{"role":"contact","text_src":"👍"},{"role":"contact","text_src":"เป็นรอยไปหมดหน้าอยู่นั้นได้บ"},{"role":"user","text_src":"ได้"},{"role":"user","text_src":"ฮอดใส่แล้วค่ะ"},{"role":"contact","text_src":"เป็นขอไปแตะหน้าอยู่นั้นได้บ"},{"role":"user","text_src":"ให้"},{"role":"system","text_src":"การโทรด้วยเสียงที่ไม่ได้รับ"},{"role":"system","text_src":"23:37"},{"role":"system","text_src":"โทรอีกครั้ง"},{"role":"user","text_src":"ห้องเต็มเด้อจ้า"},{"role":"system","text_src":"13:46"},{"role":"contact","text_src":"อยู่ห้องบ่อ"},{"role":"contact","text_src":"สิเอาเบียร์นี่"},{"role":"contact","text_src":"อยู่แถวนี้"},{"role":"system","text_src":"14:48"},{"role":"user","text_src":"เอามาเลย"},{"role":"system","text_src":"การโทรด้วยเสียง"},{"role":"system","text_src":"19 วิ"},{"role":"system","text_src":"โทรอีกครั้ง"}]}
+{"contact_name":"พี่แคร... รุนเพ...","messages":[{"role":"system","text_src":"โทรอีกครั้ง"},{"role":"system","text_src":"การโทรด้วยเสียง 32 วิ"},{"role":"system","text_src":"โทรอีกครั้ง"},{"role":"system","text_src":"อา. เวลา 14:50"},{"role":"user","text_src":"https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2"},{"role":"system","text_src":"อา. เวลา 14:56"},{"role":"contact","text_src":"https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as"},{"role":"system","text_src":"การหลอกลวงมักเริ่มต้นด้วยคำขอให้คุณ กดที่นี่เพื่อเรียนรู้เพิ่มเติมเกี่ยวกับวิธีป้องกันตนเองหรือร้องขอความช่วยเหลือ"},{"role":"system","text_src":"คุณพี่แคร...อาจขอให้คุณโอนเงินหรือร้องขอความช่วยเหลือ"},{"role":"contact","text_src":"...ล่อน"},{"role":"contact","text_src":"มา"},{"role":"contact","text_src":"ที่"},{"role":"user","text_src":"งั้นก้อปล่อยให้มันประสาทในสมองมึงตายเถอะ"},{"role":"contact","text_src":"กุ"},{"role":"user","text_src":"แค่เป็นห่วงไง"},{"role":"system","text_src":"การโทรด้วยเสียงที่ไม่ได้... 04:45"},{"role":"system","text_src":"โทรอีกครั้ง"},{"role":"contact","text_src":"ยกไหน"},{"role":"user","text_src":"มึงไม่ต้องถาม"},{"role":"contact","text_src":"ก็จบ"},{"role":"contact","text_src":"ดบท"},{"role":"contact","text_src":"จบ"},{"role":"user","text_src":"มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ"},{"role":"system","text_src":"05:18"}]}
 ```
 
 === GEMINI API (parsed JSON) ===
@@ -63,7 +63,7 @@ output json only.
       "content": {
         "parts": [
           {
-            "text": "```json\n{\"contact_name\":\"\",\"messages\":[{\"role\":\"contact\",\"text_src\":\"รอสลิปแป๊บได้บ\"},{\"role\":\"contact\",\"text_src\":\"ทาครีมแปบ\"},{\"role\":\"user\",\"text_src\":\"ฟ้าทาครีม..แล้วฟ้ามาค่ะ เพราะคุณท่านเพิ่งเลิกรั่ว\"},{\"role\":\"system\",\"text_src\":\"ส. เวลา 23:37\"},{\"role\":\"contact\",\"text_src\":\"เห็นว่าได้ลพ\"},{\"role\":\"contact\",\"text_src\":\"เท่าไร\"},{\"role\":\"user\",\"text_src\":\"สั่งใหม่ออกมายัง ฟ้าจะให้พี่ตังทอนมาด้วย\"},{\"role\":\"contact\",\"text_src\":\"👍\"},{\"role\":\"contact\",\"text_src\":\"เป็นรอยไปหมดหน้าอยู่นั้นได้บ\"},{\"role\":\"user\",\"text_src\":\"ได้\"},{\"role\":\"user\",\"text_src\":\"ฮอดใส่แล้วค่ะ\"},{\"role\":\"contact\",\"text_src\":\"เป็นขอไปแตะหน้าอยู่นั้นได้บ\"},{\"role\":\"user\",\"text_src\":\"ให้\"},{\"role\":\"system\",\"text_src\":\"การโทรด้วยเสียงที่ไม่ได้รับ\"},{\"role\":\"system\",\"text_src\":\"23:37\"},{\"role\":\"system\",\"text_src\":\"โทรอีกครั้ง\"},{\"role\":\"user\",\"text_src\":\"ห้องเต็มเด้อจ้า\"},{\"role\":\"system\",\"text_src\":\"13:46\"},{\"role\":\"contact\",\"text_src\":\"อยู่ห้องบ่อ\"},{\"role\":\"contact\",\"text_src\":\"สิเอาเบียร์นี่\"},{\"role\":\"contact\",\"text_src\":\"อยู่แถวนี้\"},{\"role\":\"system\",\"text_src\":\"14:48\"},{\"role\":\"user\",\"text_src\":\"เอามาเลย\"},{\"role\":\"system\",\"text_src\":\"การโทรด้วยเสียง\"},{\"role\":\"system\",\"text_src\":\"19 วิ\"},{\"role\":\"system\",\"text_src\":\"โทรอีกครั้ง\"}]}\n```"
+            "text": "```json\n{\"contact_name\":\"พี่แคร... รุนเพ...\",\"messages\":[{\"role\":\"system\",\"text_src\":\"โทรอีกครั้ง\"},{\"role\":\"system\",\"text_src\":\"การโทรด้วยเสียง 32 วิ\"},{\"role\":\"system\",\"text_src\":\"โทรอีกครั้ง\"},{\"role\":\"system\",\"text_src\":\"อา. เวลา 14:50\"},{\"role\":\"user\",\"text_src\":\"https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2\"},{\"role\":\"system\",\"text_src\":\"อา. เวลา 14:56\"},{\"role\":\"contact\",\"text_src\":\"https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as\"},{\"role\":\"system\",\"text_src\":\"การหลอกลวงมักเริ่มต้นด้วยคำขอให้คุณ กดที่นี่เพื่อเรียนรู้เพิ่มเติมเกี่ยวกับวิธีป้องกันตนเองหรือร้องขอความช่วยเหลือ\"},{\"role\":\"system\",\"text_src\":\"คุณพี่แคร...อาจขอให้คุณโอนเงินหรือร้องขอความช่วยเหลือ\"},{\"role\":\"contact\",\"text_src\":\"...ล่อน\"},{\"role\":\"contact\",\"text_src\":\"มา\"},{\"role\":\"contact\",\"text_src\":\"ที่\"},{\"role\":\"user\",\"text_src\":\"งั้นก้อปล่อยให้มันประสาทในสมองมึงตายเถอะ\"},{\"role\":\"contact\",\"text_src\":\"กุ\"},{\"role\":\"user\",\"text_src\":\"แค่เป็นห่วงไง\"},{\"role\":\"system\",\"text_src\":\"การโทรด้วยเสียงที่ไม่ได้... 04:45\"},{\"role\":\"system\",\"text_src\":\"โทรอีกครั้ง\"},{\"role\":\"contact\",\"text_src\":\"ยกไหน\"},{\"role\":\"user\",\"text_src\":\"มึงไม่ต้องถาม\"},{\"role\":\"contact\",\"text_src\":\"ก็จบ\"},{\"role\":\"contact\",\"text_src\":\"ดบท\"},{\"role\":\"contact\",\"text_src\":\"จบ\"},{\"role\":\"user\",\"text_src\":\"มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ\"},{\"role\":\"system\",\"text_src\":\"05:18\"}]}\n```"
           }
         ],
         "role": "model"
@@ -73,7 +73,7 @@ output json only.
       "safetyRatings": [
         {
           "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-          "probability": "LOW"
+          "probability": "NEGLIGIBLE"
         },
         {
           "category": "HARM_CATEGORY_HATE_SPEECH",
@@ -92,8 +92,8 @@ output json only.
   ],
   "usageMetadata": {
     "promptTokenCount": 1038,
-    "candidatesTokenCount": 405,
-    "totalTokenCount": 6791,
+    "candidatesTokenCount": 482,
+    "totalTokenCount": 9314,
     "promptTokensDetails": [
       {
         "modality": "TEXT",
@@ -104,17 +104,17 @@ output json only.
         "tokenCount": 774
       }
     ],
-    "thoughtsTokenCount": 5348
+    "thoughtsTokenCount": 7794
   },
   "modelVersion": "gemini-2.5-pro",
-  "responseId": "4xzHafjmH6qMvdIPnoam6AQ"
+  "responseId": "_q7JaazeK-n1kdUP2NLR-AE"
 }
 
 === NOTE ===
 {
-  "contact_name": "ทา ครีม แปบ",
-  "n_messages": 25,
-  "bubble_messages": 17,
+  "contact_name": "พี่แคร... รุนเพ...",
+  "n_messages": 22,
+  "bubble_messages": 14,
   "system_messages": 8,
   "ambiguity_ledger": [],
   "has_ref_placeholders": false
@@ -125,7 +125,7 @@ PASS 2 — OCR-guided rewrite
 ============================================================
 
 === PROMPT ===
-You are PASS 2 of 2.
+You are PASS 2 of 4.
 
 You receive:
 1. A conversation transcript from Pass 1.
@@ -133,92 +133,77 @@ You receive:
 
 Input JSON:
 {
-  "contact_name": "ทา ครีม แปบ",
+  "contact_name": "พี่แคร... รุนเพ...",
   "messages": [
     {
       "message_index": 0,
-      "role": "contact",
-      "pass1_text_src": "รอสลิปแป๊บได้บ"
+      "role": "user",
+      "pass1_text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2"
     },
     {
       "message_index": 1,
       "role": "contact",
-      "pass1_text_src": "ทาครีมแปบ"
+      "pass1_text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822ff3ac236as"
     },
     {
       "message_index": 2,
-      "role": "user",
-      "pass1_text_src": "ฟ้าทาครีม..แล้วฟ้ามาค่ะ เพราะคุณท่านเพิ่งเลิกรั่ว"
+      "role": "contact",
+      "pass1_text_src": "...ล่อน"
     },
     {
       "message_index": 3,
       "role": "contact",
-      "pass1_text_src": "เห็นว่าได้ลพ"
+      "pass1_text_src": "มา"
     },
     {
       "message_index": 4,
       "role": "contact",
-      "pass1_text_src": "เท่าไร"
+      "pass1_text_src": "ที่"
     },
     {
       "message_index": 5,
       "role": "user",
-      "pass1_text_src": "สั่งใหม่ออกมายัง ฟ้าจะให้พี่ตังทอนมาด้วย"
+      "pass1_text_src": "งั้นก้อปล่อยให้มันประสาทในสมองมึงตายเถอะ"
     },
     {
       "message_index": 6,
       "role": "contact",
-      "pass1_text_src": "👍"
+      "pass1_text_src": "กุ"
     },
     {
       "message_index": 7,
-      "role": "contact",
-      "pass1_text_src": "เป็นรอยไปหมดหน้าอยู่นั้นได้บ"
+      "role": "user",
+      "pass1_text_src": "แค่เป็นห่วงไง"
     },
     {
       "message_index": 8,
-      "role": "user",
-      "pass1_text_src": "ได้"
+      "role": "contact",
+      "pass1_text_src": "ยกไหน"
     },
     {
       "message_index": 9,
       "role": "user",
-      "pass1_text_src": "ฮอดใส่แล้วค่ะ"
+      "pass1_text_src": "มึงไม่ต้องถาม"
     },
     {
       "message_index": 10,
       "role": "contact",
-      "pass1_text_src": "เป็นขอไปแตะหน้าอยู่นั้นได้บ"
+      "pass1_text_src": "ก็จบ"
     },
     {
       "message_index": 11,
-      "role": "user",
-      "pass1_text_src": "ให้"
+      "role": "contact",
+      "pass1_text_src": "ดบท"
     },
     {
       "message_index": 12,
-      "role": "user",
-      "pass1_text_src": "ห้องเต็มเด้อจ้า"
+      "role": "contact",
+      "pass1_text_src": "จบ"
     },
     {
       "message_index": 13,
-      "role": "contact",
-      "pass1_text_src": "อยู่ห้องบ่อ"
-    },
-    {
-      "message_index": 14,
-      "role": "contact",
-      "pass1_text_src": "สิเอาเบียร์นี่"
-    },
-    {
-      "message_index": 15,
-      "role": "contact",
-      "pass1_text_src": "อยู่แถวนี้"
-    },
-    {
-      "message_index": 16,
       "role": "user",
-      "pass1_text_src": "เอามาเลย"
+      "pass1_text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกนะ"
     }
   ]
 }
@@ -226,235 +211,611 @@ Input JSON:
 OCR hints from the cleaned images:
 image 1
 min_confidence 0.94
-- conf=0.973 bbox=[336, 5, 386, 72] text="รอ"
-- conf=0.986 bbox=[394, 7, 450, 74] text="สัก"
-- conf=0.977 bbox=[452, 9, 540, 77] text="แปบ"
-- conf=0.987 bbox=[336, 150, 395, 202] text="ทา"
-- conf=0.985 bbox=[398, 150, 477, 203] text="ครีม"
-- conf=0.980 bbox=[483, 151, 570, 203] text="แปบ"
-- conf=0.987 bbox=[561, 304, 582, 368] text="ว"
-- conf=0.993 bbox=[584, 305, 639, 372] text="ทา"
-- conf=0.994 bbox=[641, 308, 718, 375] text="ครีม"
-- conf=0.987 bbox=[724, 313, 741, 377] text="."
-- conf=0.995 bbox=[739, 313, 751, 376] text="."
-- conf=0.999 bbox=[747, 314, 824, 381] text="แล้ว"
-- conf=0.976 bbox=[826, 317, 880, 383] text="ฟ่า"
-- conf=0.981 bbox=[1035, 328, 1135, 397] text="เพราะ"
-- conf=0.946 bbox=[649, 384, 686, 442] text="เพิ่"
-- conf=0.974 bbox=[578, 524, 598, 557] text="ส"
-- conf=0.989 bbox=[601, 524, 606, 557] text="."
-- conf=0.997 bbox=[620, 524, 681, 557] text="เวลา"
-- conf=0.945 bbox=[690, 524, 727, 558] text="23"
-- conf=0.986 bbox=[331, 613, 404, 671] text="เห็น"
-- conf=0.995 bbox=[413, 615, 452, 672] text="ว่า"
-- conf=0.994 bbox=[461, 616, 508, 673] text="ได้"
-- conf=0.995 bbox=[517, 618, 538, 673] text="ล"
-- conf=0.977 bbox=[544, 619, 576, 675] text="พ"
-- conf=0.989 bbox=[338, 743, 402, 785] text="เท้า"
-- conf=0.983 bbox=[547, 884, 567, 940] text="ง"
-- conf=0.994 bbox=[577, 884, 648, 941] text="ใหม่"
-- conf=0.998 bbox=[666, 885, 734, 942] text="ออก"
-- conf=0.941 bbox=[740, 885, 840, 943] text="มายัง"
-- conf=0.998 bbox=[656, 958, 735, 999] text="ด้วย"
-- conf=0.999 bbox=[604, 959, 653, 999] text="มา"
-- conf=0.990 bbox=[520, 960, 598, 1001] text="ทอน"
-- conf=0.981 bbox=[778, 1228, 815, 1291] text="ได้"
-- conf=0.986 bbox=[715, 1230, 769, 1293] text="นั้น"
-- conf=0.982 bbox=[663, 1231, 708, 1294] text="อยู่"
-- conf=0.989 bbox=[505, 1232, 659, 1299] text="แต่งหน้า"
-- conf=0.983 bbox=[457, 1237, 502, 1300] text="ไป"
-- conf=0.975 bbox=[403, 1238, 449, 1302] text="ขอ"
-- conf=0.984 bbox=[332, 1239, 395, 1304] text="เย็น"
-- conf=0.992 bbox=[951, 1494, 1022, 1542] text="แล้ว"
-- conf=0.974 bbox=[912, 1497, 945, 1544] text="ใส"
+- conf=0.981 bbox=[236, 112, 320, 151] text="TRUE"
+- conf=0.986 bbox=[322, 112, 334, 151] text="-"
+- conf=0.991 bbox=[473, 200, 570, 257] text="แคล้ว"
+- conf=0.984 bbox=[585, 200, 623, 257] text="รุน"
+- conf=0.971 bbox=[629, 200, 663, 256] text="เพ"
+- conf=0.995 bbox=[610, 252, 682, 294] text="ชั่วโมง"
+- conf=0.991 bbox=[531, 254, 575, 294] text="เมื่อ"
+- conf=0.967 bbox=[587, 254, 604, 294] text="2"
+- conf=0.996 bbox=[487, 255, 527, 295] text="งาน"
+- conf=0.987 bbox=[712, 336, 768, 377] text="โทร"
+- conf=0.987 bbox=[767, 336, 805, 377] text="อีก"
+- conf=0.991 bbox=[813, 336, 867, 377] text="ครั้ง"
+- conf=0.998 bbox=[645, 471, 698, 520] text="การ"
+- conf=0.996 bbox=[702, 472, 759, 521] text="โทร"
+- conf=0.996 bbox=[761, 473, 812, 522] text="ด้วย"
+- conf=0.990 bbox=[820, 474, 894, 523] text="เสียง"
+- conf=0.988 bbox=[644, 528, 699, 561] text="325"
+- conf=0.990 bbox=[809, 618, 860, 661] text="ครั้ง"
+- conf=0.996 bbox=[711, 619, 765, 662] text="โทร"
+- conf=0.994 bbox=[764, 619, 805, 661] text="อีก"
+- conf=0.970 bbox=[544, 756, 575, 798] text="อา"
+- conf=0.955 bbox=[580, 756, 583, 797] text="."
+- conf=0.997 bbox=[555, 845, 646, 882] text="https"
+- conf=0.994 bbox=[650, 847, 661, 882] text=":"
+- conf=0.980 bbox=[661, 847, 694, 883] text="//"
+- conf=0.987 bbox=[552, 942, 727, 980] text="campaign"
+- conf=0.982 bbox=[733, 942, 751, 980] text="/"
+- conf=0.995 bbox=[595, 1133, 648, 1172] text="เวลา"
+- conf=0.996 bbox=[547, 1134, 575, 1173] text="อา"
+- conf=0.995 bbox=[578, 1135, 583, 1172] text="."
+- conf=0.998 bbox=[350, 1217, 449, 1264] text="https"
+- conf=0.988 bbox=[449, 1217, 461, 1264] text=":"
+- conf=0.967 bbox=[349, 1263, 736, 1312] text="gift.truemoney.com/"
+- conf=0.944 bbox=[537, 1311, 552, 1353] text="/"
+- conf=0.942 bbox=[559, 1311, 571, 1353] text="?"
+- conf=0.986 bbox=[355, 1400, 651, 1446] text="6822f13ac236as"
+- conf=0.984 bbox=[751, 1607, 838, 1652] text="คำขอ"
+- conf=0.983 bbox=[849, 1608, 884, 1651] text="ให้"
+- conf=0.996 bbox=[647, 1609, 685, 1652] text="ต้น"
+- conf=0.995 bbox=[693, 1609, 748, 1652] text="ด้วย"
+- conf=0.991 bbox=[406, 1610, 546, 1654] text="หลอกลวง"
+- conf=0.995 bbox=[596, 1610, 639, 1653] text="เริ่ม"
+- conf=0.959 bbox=[350, 1611, 400, 1655] text="การ"
+- conf=0.945 bbox=[447, 1660, 496, 1697] text="เนิน"
+- conf=0.997 bbox=[505, 1661, 562, 1698] text="การ"
+- conf=0.972 bbox=[564, 1662, 618, 1698] text="โดย"
+- conf=0.985 bbox=[624, 1662, 688, 1699] text="ด่วน"
+- conf=0.969 bbox=[810, 1703, 843, 1743] text="อก"
+- conf=0.988 bbox=[850, 1703, 886, 1743] text="ราย"
 
 image 2
 min_confidence 0.94
-- conf=0.980 bbox=[207, 157, 273, 226] text="เย็น"
-- conf=0.978 bbox=[280, 159, 329, 227] text="ขอ"
-- conf=0.990 bbox=[340, 159, 379, 228] text="ไป"
-- conf=0.970 bbox=[385, 159, 550, 229] text="แต่งหน้า"
-- conf=0.993 bbox=[551, 162, 597, 231] text="อยู่"
-- conf=0.993 bbox=[607, 163, 656, 231] text="นั้น"
-- conf=0.993 bbox=[666, 164, 706, 232] text="ได้"
-- conf=0.980 bbox=[933, 317, 964, 365] text="ได้"
-- conf=0.991 bbox=[933, 456, 979, 507] text="ค่ะ"
-- conf=0.994 bbox=[884, 607, 928, 654] text="ได้"
-- conf=0.995 bbox=[849, 608, 878, 655] text="ไม่"
-- conf=0.951 bbox=[738, 610, 826, 658] text="เสียง"
-- conf=0.993 bbox=[617, 614, 673, 661] text="โทร"
-- conf=0.996 bbox=[552, 616, 611, 664] text="การ"
-- conf=0.993 bbox=[554, 677, 639, 704] text="23:37"
-- conf=0.995 bbox=[626, 765, 689, 813] text="โทร"
-- conf=0.989 bbox=[692, 766, 729, 812] text="อีก"
-- conf=0.978 bbox=[516, 1036, 601, 1067] text="13:46"
-- conf=0.984 bbox=[365, 1139, 425, 1202] text="บ่อ"
-- conf=0.985 bbox=[289, 1143, 364, 1205] text="ห้อง"
-- conf=0.979 bbox=[234, 1146, 281, 1208] text="อยู่"
-- conf=0.955 bbox=[329, 1257, 351, 1305] text="ป"
-- conf=0.980 bbox=[264, 1258, 325, 1307] text="เอา"
-- conf=0.977 bbox=[373, 1356, 404, 1409] text="นี้"
-- conf=0.991 bbox=[288, 1360, 370, 1419] text="แถว"
-- conf=0.993 bbox=[239, 1370, 284, 1425] text="อยู่"
-- conf=0.993 bbox=[526, 1512, 609, 1545] text="14:48"
+- conf=0.960 bbox=[411, 47, 495, 94] text="แคล้ว"
+- conf=0.974 bbox=[540, 50, 568, 95] text="เพ"
+- conf=0.991 bbox=[389, 91, 446, 132] text="กำลัง"
+- conf=0.943 bbox=[301, 330, 337, 354] text="มา"
+- conf=0.942 bbox=[402, 502, 431, 554] text="งั้น"
+- conf=0.975 bbox=[435, 502, 477, 554] text="ก้อ"
+- conf=0.997 bbox=[481, 503, 557, 557] text="ปล่อย"
+- conf=0.998 bbox=[566, 506, 588, 559] text="ให้"
+- conf=0.957 bbox=[595, 507, 645, 559] text="เส้น"
+- conf=0.968 bbox=[648, 508, 744, 563] text="ประสา"
+- conf=0.983 bbox=[798, 513, 852, 566] text="สมอ"
+- conf=0.993 bbox=[444, 566, 503, 598] text="ตาย"
+- conf=0.959 bbox=[504, 567, 572, 599] text="เถอะ"
+- conf=0.989 bbox=[686, 786, 721, 826] text="แค"
+- conf=0.988 bbox=[726, 786, 740, 826] text="ป"
 
 image 3
 min_confidence 0.94
-- conf=0.990 bbox=[862, 53, 923, 93] text="เดิม"
-- conf=0.954 bbox=[924, 54, 963, 94] text="เด้"
-- conf=0.988 bbox=[967, 54, 988, 94] text="อ"
-- conf=0.964 bbox=[999, 54, 1021, 94] text="ค"
-- conf=0.942 bbox=[1029, 54, 1066, 94] text="ร้า"
-- conf=0.988 bbox=[584, 176, 670, 201] text="13:46"
-- conf=0.978 bbox=[300, 272, 344, 328] text="อยู่"
-- conf=0.986 bbox=[351, 272, 427, 328] text="ห้อง"
-- conf=0.988 bbox=[324, 387, 386, 434] text="เอา"
-- conf=0.982 bbox=[409, 486, 461, 556] text="นี้"
-- conf=0.997 bbox=[358, 488, 408, 558] text="แถว"
-- conf=0.992 bbox=[264, 490, 357, 562] text="อยู่"
-- conf=0.995 bbox=[992, 762, 1054, 794] text="เลย"
-- conf=0.994 bbox=[887, 765, 943, 798] text="เอา"
-- conf=0.996 bbox=[944, 765, 988, 796] text="มา"
-- conf=0.995 bbox=[813, 897, 892, 942] text="เสียง"
-- conf=0.974 bbox=[750, 898, 807, 944] text="ด้วย"
-- conf=0.953 bbox=[691, 900, 748, 946] text="โทร"
-- conf=0.999 bbox=[630, 902, 687, 948] text="การ"
-- conf=0.953 bbox=[633, 961, 688, 992] text="195"
-- conf=0.992 bbox=[808, 1039, 864, 1083] text="ครั้ง"
-- conf=0.944 bbox=[698, 1040, 758, 1086] text="โทร"
-- conf=0.964 bbox=[758, 1040, 801, 1084] text="อีก"
+- conf=0.997 bbox=[640, 131, 690, 176] text="การ"
+- conf=0.997 bbox=[692, 132, 745, 177] text="โทร"
+- conf=0.992 bbox=[746, 133, 795, 178] text="ด้วย"
+- conf=0.995 bbox=[801, 134, 865, 179] text="เสียง"
+- conf=0.995 bbox=[871, 136, 888, 179] text="ที่"
+- conf=0.999 bbox=[894, 136, 920, 180] text="ไม่"
+- conf=0.997 bbox=[931, 137, 957, 180] text="ได้"
+- conf=0.987 bbox=[636, 184, 711, 210] text="0445"
+- conf=0.982 bbox=[698, 266, 748, 304] text="โทร"
+- conf=0.993 bbox=[750, 266, 786, 304] text="อีก"
+- conf=0.948 bbox=[789, 266, 848, 306] text="ครั้ง"
+- conf=0.990 bbox=[411, 402, 476, 452] text="ไหน"
+- conf=0.966 bbox=[388, 407, 410, 453] text="ถ"
+- conf=0.968 bbox=[835, 537, 862, 577] text="ไม่"
+- conf=0.996 bbox=[871, 537, 932, 579] text="ต้อง"
+- conf=0.978 bbox=[380, 651, 410, 690] text="เจ"
+- conf=0.982 bbox=[415, 654, 439, 692] text="ม"
+- conf=0.959 bbox=[358, 846, 385, 872] text="เจ"
+- conf=0.964 bbox=[389, 847, 408, 873] text="ม"
+- conf=0.984 bbox=[482, 952, 499, 1001] text="มี"
+- conf=0.998 bbox=[503, 952, 578, 1004] text="อะไร"
+- conf=0.996 bbox=[581, 954, 616, 1005] text="ไม่"
+- conf=0.948 bbox=[621, 956, 680, 1008] text="ต้อง"
+- conf=0.994 bbox=[682, 958, 726, 1008] text="ทัก"
+- conf=0.998 bbox=[735, 960, 765, 1010] text="ไป"
+- conf=0.999 bbox=[774, 961, 818, 1011] text="หา"
+- conf=0.987 bbox=[819, 963, 860, 1013] text="ผัว"
+- conf=0.995 bbox=[885, 965, 920, 1015] text="ให้"
+- conf=0.998 bbox=[925, 966, 990, 1017] text="ช่วย"
+- conf=0.952 bbox=[481, 1012, 522, 1047] text="อีก"
+- conf=0.994 bbox=[524, 1012, 564, 1048] text="น่ะ"
 
 Task:
 - Rewrite the conversation using the OCR hints only as soft supporting evidence.
-- Keep the same number of messages: 17.
+- Keep the same number of messages: 14.
 - Keep the same order.
 - Keep the same role for each message.
 - Improve words, names, URLs, numbers, and short phrases when the OCR clearly supports a better reading.
 - Do not add, remove, merge, or split messages.
 - Ignore OCR fragments that look like UI noise or make the message worse.
-- Return English in `text_en`.
+- Return the best corrected source-language reading in `text_src`.
+- Do not translate to English here.
+- Leave ambiguity, person reference, and final translation for the next pass.
 
 
 Output JSON only:
-{"contact_name":"<string>","messages":[{"message_index":0,"role":"contact|user|system","text_src":"<final source reading>","text_en":"<final English line>"}]}
+{"contact_name":"<string>","messages":[{"message_index":0,"role":"contact|user|system","text_src":"<final source reading>"}]}
 
 === RAW RESPONSE ===
 ```json
 {
-  "contact_name": "ทา ครีม แปบ",
+  "contact_name": "พี่แคล้ว รุนเพ...",
   "messages": [
     {
       "message_index": 0,
-      "role": "contact",
-      "text_src": "รอสักแปบ",
-      "text_en": "Wait a moment."
+      "role": "user",
+      "text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2"
     },
     {
       "message_index": 1,
       "role": "contact",
-      "text_src": "ทาครีมแปบ",
-      "text_en": "Putting on cream for a moment."
+      "text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822f13ac236as"
     },
     {
       "message_index": 2,
-      "role": "user",
-      "text_src": "ฟ้าทาครีม..แล้วฟ้ามาค่ะ เพราะคุณท่านเพิ่งเลิกรั่ว",
-      "text_en": "I'm putting on cream.. then I'll come. Because he just stopped being crazy."
+      "role": "contact",
+      "text_src": "หลอกลวง"
     },
     {
       "message_index": 3,
       "role": "contact",
-      "text_src": "เห็นว่าได้ลพ",
-      "text_en": "I see that you got it."
+      "text_src": "มา"
     },
     {
       "message_index": 4,
       "role": "contact",
-      "text_src": "เท่าไร",
-      "text_en": "How much?"
+      "text_src": "ที่"
     },
     {
       "message_index": 5,
       "role": "user",
-      "text_src": "สั่งใหม่ออกมายัง ฟ้าจะให้พี่ตังทอนมาด้วย",
-      "text_en": "Has the new order come out yet? I'll have the change brought over too."
+      "text_src": "งั้นก้อปล่อยให้เส้นประสาทในสมองมึงตายเถอะ"
     },
     {
       "message_index": 6,
       "role": "contact",
-      "text_src": "👍",
-      "text_en": "👍"
+      "text_src": "กุ"
     },
     {
       "message_index": 7,
-      "role": "contact",
-      "text_src": "เย็นขอไปแต่งหน้าอยู่นั้นได้บ่",
-      "text_en": "It's cool, can I go put on makeup there?"
+      "role": "user",
+      "text_src": "แค่เป็นห่วงไง"
     },
     {
       "message_index": 8,
-      "role": "user",
-      "text_src": "ได้",
-      "text_en": "Yes."
+      "role": "contact",
+      "text_src": "ถึงไหน"
     },
     {
       "message_index": 9,
       "role": "user",
-      "text_src": "ฮอดใส่แล้วค่ะ",
-      "text_en": "I've arrived and put it on."
+      "text_src": "มึงไม่ต้องถาม"
     },
     {
       "message_index": 10,
       "role": "contact",
-      "text_src": "เย็นขอไปแต่งหน้าอยู่นั้นได้บ่",
-      "text_en": "It's cool, can I go put on makeup there?"
+      "text_src": "ก็จบ"
     },
     {
       "message_index": 11,
-      "role": "user",
-      "text_src": "ให้",
-      "text_en": "Okay."
+      "role": "contact",
+      "text_src": "ดบท"
     },
     {
       "message_index": 12,
-      "role": "user",
-      "text_src": "ห้องเดิมเด้อจ้า",
-      "text_en": "It's the same room."
+      "role": "contact",
+      "text_src": "จบ"
     },
     {
       "message_index": 13,
-      "role": "contact",
-      "text_src": "อยู่ห้องบ่อ",
-      "text_en": "Are you in the room?"
-    },
-    {
-      "message_index": 14,
-      "role": "contact",
-      "text_src": "สิเอาเบียร์นี่",
-      "text_en": "I'm going to get beer here."
-    },
-    {
-      "message_index": 15,
-      "role": "contact",
-      "text_src": "อยู่แถวนี้",
-      "text_en": "I'm around here."
-    },
-    {
-      "message_index": 16,
       "role": "user",
-      "text_src": "เอามาเลย",
-      "text_en": "Bring it over."
+      "text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกน่ะ"
     }
   ]
 }
 ```
 
 ============================================================
-PASS 3 — Status bar extraction
+PASS 3 — Reference resolution
 ============================================================
 
 === PROMPT ===
-You are PASS 3 of 3.
+You are PASS 3 of 4.
+
+You receive a chat transcript after OCR correction. Your task is to translate it to English and resolve references only when the context clearly supports it.
+
+Input JSON:
+{
+  "contact_name": "พี่แคล้ว รุนเพ...",
+  "messages": [
+    {
+      "message_index": 0,
+      "role": "user",
+      "text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2",
+      "prev_context_src": [],
+      "next_context_src": [
+        "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822f13ac236as",
+        "หลอกลวง"
+      ]
+    },
+    {
+      "message_index": 1,
+      "role": "contact",
+      "text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822f13ac236as",
+      "prev_context_src": [
+        "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2"
+      ],
+      "next_context_src": [
+        "หลอกลวง",
+        "มา"
+      ]
+    },
+    {
+      "message_index": 2,
+      "role": "contact",
+      "text_src": "หลอกลวง",
+      "prev_context_src": [
+        "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2",
+        "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822f13ac236as"
+      ],
+      "next_context_src": [
+        "มา",
+        "ที่"
+      ]
+    },
+    {
+      "message_index": 3,
+      "role": "contact",
+      "text_src": "มา",
+      "prev_context_src": [
+        "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822f13ac236as",
+        "หลอกลวง"
+      ],
+      "next_context_src": [
+        "ที่",
+        "งั้นก้อปล่อยให้เส้นประสาทในสมองมึงตายเถอะ"
+      ]
+    },
+    {
+      "message_index": 4,
+      "role": "contact",
+      "text_src": "ที่",
+      "prev_context_src": [
+        "หลอกลวง",
+        "มา"
+      ],
+      "next_context_src": [
+        "งั้นก้อปล่อยให้เส้นประสาทในสมองมึงตายเถอะ",
+        "กุ"
+      ]
+    },
+    {
+      "message_index": 5,
+      "role": "user",
+      "text_src": "งั้นก้อปล่อยให้เส้นประสาทในสมองมึงตายเถอะ",
+      "prev_context_src": [
+        "มา",
+        "ที่"
+      ],
+      "next_context_src": [
+        "กุ",
+        "แค่เป็นห่วงไง"
+      ]
+    },
+    {
+      "message_index": 6,
+      "role": "contact",
+      "text_src": "กุ",
+      "prev_context_src": [
+        "ที่",
+        "งั้นก้อปล่อยให้เส้นประสาทในสมองมึงตายเถอะ"
+      ],
+      "next_context_src": [
+        "แค่เป็นห่วงไง",
+        "ถึงไหน"
+      ]
+    },
+    {
+      "message_index": 7,
+      "role": "user",
+      "text_src": "แค่เป็นห่วงไง",
+      "prev_context_src": [
+        "งั้นก้อปล่อยให้เส้นประสาทในสมองมึงตายเถอะ",
+        "กุ"
+      ],
+      "next_context_src": [
+        "ถึงไหน",
+        "มึงไม่ต้องถาม"
+      ]
+    },
+    {
+      "message_index": 8,
+      "role": "contact",
+      "text_src": "ถึงไหน",
+      "prev_context_src": [
+        "กุ",
+        "แค่เป็นห่วงไง"
+      ],
+      "next_context_src": [
+        "มึงไม่ต้องถาม",
+        "ก็จบ"
+      ]
+    },
+    {
+      "message_index": 9,
+      "role": "user",
+      "text_src": "มึงไม่ต้องถาม",
+      "prev_context_src": [
+        "แค่เป็นห่วงไง",
+        "ถึงไหน"
+      ],
+      "next_context_src": [
+        "ก็จบ",
+        "ดบท"
+      ]
+    },
+    {
+      "message_index": 10,
+      "role": "contact",
+      "text_src": "ก็จบ",
+      "prev_context_src": [
+        "ถึงไหน",
+        "มึงไม่ต้องถาม"
+      ],
+      "next_context_src": [
+        "ดบท",
+        "จบ"
+      ]
+    },
+    {
+      "message_index": 11,
+      "role": "contact",
+      "text_src": "ดบท",
+      "prev_context_src": [
+        "มึงไม่ต้องถาม",
+        "ก็จบ"
+      ],
+      "next_context_src": [
+        "จบ",
+        "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกน่ะ"
+      ]
+    },
+    {
+      "message_index": 12,
+      "role": "contact",
+      "text_src": "จบ",
+      "prev_context_src": [
+        "ก็จบ",
+        "ดบท"
+      ],
+      "next_context_src": [
+        "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกน่ะ"
+      ]
+    },
+    {
+      "message_index": 13,
+      "role": "user",
+      "text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกน่ะ",
+      "prev_context_src": [
+        "ดบท",
+        "จบ"
+      ],
+      "next_context_src": []
+    }
+  ]
+}
+
+Rules:
+- Keep the same number of messages: 14.
+- Keep the same order.
+- Keep the same role for each message.
+- Use surrounding messages to resolve who is speaking about whom.
+- Distinguish carefully between first person, second person, and third person references.
+- The message `role` only tells you who sent the bubble; it does not by itself tell you who the omitted subject refers to.
+- If the source is ambiguous, preserve that ambiguity in English instead of guessing.
+- Do not invent a subject if it is unclear.
+- Prefer neutral English like "Coming now." or "Call me back." when that is safer than a wrong explicit subject.
+- Do not assume the omitted subject in a message automatically refers to the speaker. It may refer to the other person or a third party.
+- Never show uncertainty as visible alternatives in the final English.
+- Do not output forms like `I/you`, `he/she`, `bring it / bring change`, bracketed options, or multiple candidate readings.
+- If you are not confident, keep the wording general and natural instead of exposing ambiguity.
+- `text_src` should remain the corrected source-language message.
+- `literal_gloss_en` should be a cautious, close English gloss of `text_src`.
+- `resolved_text_en` should be the English after minimal reference resolution.
+- `resolved_text_en` must preserve the same message content as `literal_gloss_en`.
+- Only make minimal reference adjustments such as clarifying an omitted subject, object, or addressee when the context is truly clear.
+- Do not add new actions, motives, explanations, emotional tone, or extra detail that is not already in the source.
+- Do not rewrite the sentence more fluently if that changes wording beyond the reference clarification itself.
+- Use `resolution_confidence` = `high|medium|low`.
+- Only use `high` when the surrounding context clearly supports the reference interpretation.
+- If the change would require more than minimal pronoun/subject clarification, use `medium` or `low`.
+- If not high confidence, keep `resolved_text_en` the same as or extremely close to `literal_gloss_en`.
+
+For each message, also return:
+- `subject_role`: `contact|user|third_party|unknown`
+- `target_role`: `contact|user|third_party|unknown`
+- `ambiguity`: `none|low|medium|high`
+- `note`: short explanation if useful
+
+Output JSON only:
+{"contact_name":"<string>","messages":[{"message_index":0,"role":"contact|user|system","text_src":"<source reading>","literal_gloss_en":"<cautious English gloss>","resolved_text_en":"<reference-resolved English>","resolution_confidence":"high|medium|low","subject_role":"contact|user|third_party|unknown","target_role":"contact|user|third_party|unknown","ambiguity":"none|low|medium|high","note":"<short note>"}]}
+
+=== RAW RESPONSE ===
+```json
+{
+  "contact_name": "พี่แคล้ว รุนเพ...",
+  "messages": [
+    {
+      "message_index": 0,
+      "role": "user",
+      "text_src": "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2",
+      "literal_gloss_en": "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2",
+      "resolved_text_en": "https://gift.truemoney.com/campaign/?v=019b3ea9ee617762a90e1405a83a8e5f2",
+      "resolution_confidence": "high",
+      "subject_role": "unknown",
+      "target_role": "unknown",
+      "ambiguity": "none",
+      "note": "This is a URL, not a sentence requiring translation."
+    },
+    {
+      "message_index": 1,
+      "role": "contact",
+      "text_src": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822f13ac236as",
+      "literal_gloss_en": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822f13ac236as",
+      "resolved_text_en": "https://gift.truemoney.com/campaign/?v=019b8f3ddd0a71a79dd426822f13ac236as",
+      "resolution_confidence": "high",
+      "subject_role": "unknown",
+      "target_role": "unknown",
+      "ambiguity": "none",
+      "note": "This is a URL, not a sentence requiring translation."
+    },
+    {
+      "message_index": 2,
+      "role": "contact",
+      "text_src": "หลอกลวง",
+      "literal_gloss_en": "Deceitful",
+      "resolved_text_en": "It's a scam.",
+      "resolution_confidence": "high",
+      "subject_role": "third_party",
+      "target_role": "user",
+      "ambiguity": "low",
+      "note": "The context of the TrueMoney gift links makes it clear that the contact is calling them a scam."
+    },
+    {
+      "message_index": 3,
+      "role": "contact",
+      "text_src": "มา",
+      "literal_gloss_en": "Come",
+      "resolved_text_en": "Come",
+      "resolution_confidence": "low",
+      "subject_role": "unknown",
+      "target_role": "user",
+      "ambiguity": "high",
+      "note": "This is a single, fragmented word. It's unclear if it's a command or part of a larger sentence."
+    },
+    {
+      "message_index": 4,
+      "role": "contact",
+      "text_src": "ที่",
+      "literal_gloss_en": "At",
+      "resolved_text_en": "At",
+      "resolution_confidence": "low",
+      "subject_role": "unknown",
+      "target_role": "unknown",
+      "ambiguity": "high",
+      "note": "This is a single, fragmented word. It likely continues the previous message, but the full meaning is unclear."
+    },
+    {
+      "message_index": 5,
+      "role": "user",
+      "text_src": "งั้นก้อปล่อยให้เส้นประสาทในสมองมึงตายเถอะ",
+      "literal_gloss_en": "Then just let the nerves in your brain die.",
+      "resolved_text_en": "Then just let the nerves in your brain die.",
+      "resolution_confidence": "high",
+      "subject_role": "user",
+      "target_role": "contact",
+      "ambiguity": "none",
+      "note": "The pronoun 'มึง' (meung) is an explicit and rude form of 'you', clearly addressing the contact."
+    },
+    {
+      "message_index": 6,
+      "role": "contact",
+      "text_src": "กุ",
+      "literal_gloss_en": "I",
+      "resolved_text_en": "I",
+      "resolution_confidence": "high",
+      "subject_role": "contact",
+      "target_role": "unknown",
+      "ambiguity": "high",
+      "note": "The pronoun 'กุ' (gu) is an explicit and rude form of 'I'. The sentence is incomplete."
+    },
+    {
+      "message_index": 7,
+      "role": "user",
+      "text_src": "แค่เป็นห่วงไง",
+      "literal_gloss_en": "Just am worried, you see.",
+      "resolved_text_en": "I'm just worried, you see.",
+      "resolution_confidence": "high",
+      "subject_role": "user",
+      "target_role": "contact",
+      "ambiguity": "none",
+      "note": "The omitted subject is unambiguously the speaker (user), who is justifying their previous harsh comment."
+    },
+    {
+      "message_index": 8,
+      "role": "contact",
+      "text_src": "ถึงไหน",
+      "literal_gloss_en": "Reached where?",
+      "resolved_text_en": "How far along?",
+      "resolution_confidence": "low",
+      "subject_role": "unknown",
+      "target_role": "user",
+      "ambiguity": "high",
+      "note": "The meaning of this question is highly dependent on context that is missing. It could be asking about a location, a task, or the state of the argument."
+    },
+    {
+      "message_index": 9,
+      "role": "user",
+      "text_src": "มึงไม่ต้องถาม",
+      "literal_gloss_en": "You don't need to ask.",
+      "resolved_text_en": "You don't need to ask.",
+      "resolution_confidence": "high",
+      "subject_role": "contact",
+      "target_role": "contact",
+      "ambiguity": "none",
+      "note": "The pronoun 'มึง' (meung) explicitly refers to the addressee (contact)."
+    },
+    {
+      "message_index": 10,
+      "role": "contact",
+      "text_src": "ก็จบ",
+      "literal_gloss_en": "Then end.",
+      "resolved_text_en": "Then it's over.",
+      "resolution_confidence": "high",
+      "subject_role": "third_party",
+      "target_role": "user",
+      "ambiguity": "low",
+      "note": "This is a common idiom meaning that the matter or conversation is finished. 'It' refers to the situation."
+    },
+    {
+      "message_index": 11,
+      "role": "contact",
+      "text_src": "ดบท",
+      "literal_gloss_en": "Dbt",
+      "resolved_text_en": "Dbt",
+      "resolution_confidence": "low",
+      "subject_role": "unknown",
+      "target_role": "unknown",
+      "ambiguity": "high",
+      "note": "This appears to be a typo or a nonsensical word. It cannot be translated with confidence."
+    },
+    {
+      "message_index": 12,
+      "role": "contact",
+      "text_src": "จบ",
+      "literal_gloss_en": "End.",
+      "resolved_text_en": "It's over.",
+      "resolution_confidence": "high",
+      "subject_role": "third_party",
+      "target_role": "user",
+      "ambiguity": "low",
+      "note": "Similar to message 10, this signifies the end of the conversation."
+    },
+    {
+      "message_index": 13,
+      "role": "user",
+      "text_src": "มีอะไรไม่ต้องทักไปหาผัวกูให้ช่วยอีกน่ะ",
+      "literal_gloss_en": "Have anything, don't need to message my husband to help again.",
+      "resolved_text_en": "If you have any problems, don't message my husband for help again.",
+      "resolution_confidence": "high",
+      "subject_role": "contact",
+      "target_role": "contact",
+      "ambiguity": "none",
+      "note": "This is a command directed at the contact. The pronoun 'กู' (guu) means 'my' and refers to the speaker (user). The implied 'you' is the contact."
+    }
+  ]
+}
+```
+
+============================================================
+PASS 4 — Status bar extraction
+============================================================
+
+=== PROMPT ===
+You are PASS 4 of 4.
 
 These images are the top Messenger header/status-bar crops from the same conversation, in chronological order.
 
@@ -466,7 +827,7 @@ Task:
 
 Guidelines:
 - Prefer text actually visible in the status-bar crops.
-- Use "ทา ครีม แปบ" only as a weak fallback hint for the name.
+- Use "พี่แคล้ว รุนเพ..." only as a weak fallback hint for the name.
 - If the status text is not readable, return an empty string.
 - If the avatar is unclear, still choose the best image and return your best approximate bounding box around the visible avatar circle.
 
@@ -475,5 +836,5 @@ Return JSON only:
 
 === RAW RESPONSE ===
 ```json
-{"contact_name":"Nanja Love","status_text":"ใช้งานเมื่อ 1 ชั่วโมง...","avatar_image_index":0,"avatar_bbox":[125,25,225,125]}
+{"contact_name":"พี่แคล้ว รุนเพ...","status_text":"ใช้งานเมื่อ 2 ชั่วโมง...","avatar_image_index":2,"avatar_bbox":[220,15,310,105]}
 ```
