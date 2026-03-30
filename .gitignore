@@ -1,0 +1,8 @@
+__pycache__/
+debug_crops/
+rendered_chat/
+result/
+result_json/
+
+input_images/*
+!input_images/.gitkeep
