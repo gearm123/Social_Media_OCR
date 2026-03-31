@@ -14,13 +14,16 @@ BASE_DIR = Path(__file__).resolve().parent
 
 
 def _resolve_existing_path(candidates):
+    fallback = None
     for candidate in candidates:
         if not candidate:
             continue
         candidate_path = Path(candidate)
+        if fallback is None:
+            fallback = candidate_path
         if candidate_path.exists():
             return candidate_path
-    return Path(candidates[0])
+    return fallback or BASE_DIR
 
 
 CRAFT_REPO = _resolve_existing_path([
