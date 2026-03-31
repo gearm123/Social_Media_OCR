@@ -1,10 +1,18 @@
 import cv2
 import torch
 import numpy as np
-import craft_utils
-import imgproc
+try:
+    import craft_utils
+    import imgproc
+except ModuleNotFoundError:
+    craft_utils = None
+    imgproc = None
 
 def detect_text(image, craft_net):
+    if craft_utils is None or imgproc is None:
+        raise ModuleNotFoundError(
+            "CRAFT helper modules are not available. Install/configure CRAFT-pytorch to use detect_text()."
+        )
     img_resized, target_ratio, _ = imgproc.resize_aspect_ratio(
         image,
         1280,
