@@ -7,3 +7,6 @@ jobs/
 
 input_images/*
 !input_images/.gitkeep
+
+tests/local_inputs/*
+!tests/local_inputs/.gitkeep

@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import traceback
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ from threading import Thread
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -16,6 +17,9 @@ from main import run_pipeline_job
 
 BASE_DIR = Path(__file__).resolve().parent
 JOBS_DIR = BASE_DIR / "jobs"
+SERVER_TEST_INPUTS = BASE_DIR / "server_test_inputs"
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Translate Chat API", version="0.1.0")
@@ -92,6 +96,25 @@ def _run_job(job_id: str, image_paths: list[str], language: Optional[str], bubbl
         )
 
 
+def _check_smoke_secret(x_smoke_secret: Optional[str]) -> None:
+    expected = os.environ.get("SMOKE_TEST_SECRET", "").strip()
+    if not expected:
+        return
+    if (x_smoke_secret or "").strip() != expected:
+        raise HTTPException(status_code=403, detail="Invalid or missing X-Smoke-Secret")
+
+
+@app.get("/")
+def root():
+    return {
+        "service": "translate-chat-api",
+        "health": "GET /health",
+        "docs": "GET /docs",
+        "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text)",
+        "smoke_test": "POST /test/smoke (optional Form: language; Header X-Smoke-Secret if env SMOKE_TEST_SECRET is set)",
+    }
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -135,6 +158,62 @@ async def create_job(
         daemon=True,
     ).start()
     status["artifact_urls"] = {}
+    return status
+
+
+@app.post("/test/smoke")
+async def smoke_job(
+    language: Optional[str] = Form(default=None),
+    x_smoke_secret: Optional[str] = Header(default=None, alias="X-Smoke-Secret"),
+):
+    """Run one pipeline job using committed files under ``server_test_inputs/`` (for deployed checks)."""
+    _check_smoke_secret(x_smoke_secret)
+    if not SERVER_TEST_INPUTS.is_dir():
+        raise HTTPException(status_code=500, detail="server_test_inputs directory is missing")
+
+    candidates = sorted(
+        p
+        for p in SERVER_TEST_INPUTS.iterdir()
+        if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES
+    )
+    if not candidates:
+        raise HTTPException(
+            status_code=500,
+            detail="No sample images in server_test_inputs (add .png / .jpg files)",
+        )
+
+    job_id = uuid4().hex
+    job_dir = _job_dir(job_id)
+    input_dir = job_dir / "input_images"
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    image_paths = []
+    for idx, src in enumerate(candidates):
+        suffix = src.suffix.lower() or ".png"
+        dest = input_dir / f"{idx:03d}{suffix}"
+        shutil.copy2(src, dest)
+        image_paths.append(str(dest))
+
+    src_pass1 = SERVER_TEST_INPUTS / "pass1_bubble_input.txt"
+    if src_pass1.exists():
+        shutil.copy2(src_pass1, job_dir / "pass1_bubble_input.txt")
+
+    status = _write_status(
+        job_id,
+        status="queued",
+        stage="queued",
+        created_at=_utc_now(),
+        language=language,
+        images_count=len(image_paths),
+        smoke_test=True,
+    )
+    Thread(
+        target=_run_job,
+        args=(job_id, image_paths, language, None),
+        daemon=True,
+    ).start()
+    status["artifact_urls"] = {}
+    status["note"] = "Uses files from server_test_inputs/; poll GET /jobs/{job_id} until status is completed or failed"
     return status
 
 
