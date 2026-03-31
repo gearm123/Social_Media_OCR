@@ -987,6 +987,7 @@ def run_pipeline_job(
         raise ValueError("No input images were provided.")
 
     with _override_runtime_dirs(input_dir, output_dir, json_dir, render_dir, debug_dir):
+        print(f"[JOB] Pipeline start job_dir={work_dir}", flush=True)
         crop_infos = [prepare_image_crop_info(str(path)) for path in images]
         if not crop_infos:
             raise RuntimeError("No usable images after preprocessing.")
@@ -1035,11 +1036,13 @@ def run_pipeline_job(
         if not ok or not all_meta:
             raise RuntimeError("Gemini did not return a usable conversation.")
 
+        print("[JOB] Pass 1 multimodal OK; running page OCR for pass 2 hints…", flush=True)
         pass2_ocr_text, _pass2_ocr_entries = collect_page_ocr_debug(page_images)
         pass2_ocr_debug_path = os.path.join(OUTPUT_DIR, "pass2_ocr_debug.txt")
         with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
             f.write(pass2_ocr_text)
 
+        print("[JOB] Starting Gemini pass 2 (OCR hints refine)…", flush=True)
         contact_name = (g_contact or contact_name or "Person A").strip() or "Person A"
         pass1_meta = list(all_meta or [])
         for i, item in enumerate(pre_ocr_meta or []):
@@ -1059,6 +1062,7 @@ def run_pipeline_job(
         for i, item in enumerate(all_meta or []):
             item["order"] = i
 
+        print("[JOB] Starting Gemini pass 3 (reference resolution)…", flush=True)
         final_messages, contact_name3, pass3_reference_debug = _gemini_reference_resolution_pass(
             contact_name,
             pass2_messages,
@@ -1074,6 +1078,7 @@ def run_pipeline_job(
             (pass_debug or {}).get("pass1_system_messages") or [],
         )
 
+        print("[JOB] Pass 3 reference done; starting status-bar pass…", flush=True)
         status_bar_info = _gemini_status_bar_pass(
             status_bar_images,
             contact_hint=contact_name,
@@ -1085,6 +1090,7 @@ def run_pipeline_job(
         final_status_text = (translate_to_en(final_status_text_src) or final_status_text_src).strip()
         profile_image = None
 
+        print("[JOB] Status-bar pass done; writing JSON debug + translated_conversation.json…", flush=True)
         pass1_source_debug_path = os.path.join(JSON_DIR, "pass1_transcript_debug.json")
         pass3_reference_debug_path = os.path.join(JSON_DIR, "pass3_reference_debug.json")
         pass1_source_debug = []
@@ -1104,6 +1110,7 @@ def run_pipeline_job(
         with open(combined_json_path, "w", encoding="utf-8") as f:
             json.dump(final_render_meta, f, indent=2, ensure_ascii=False)
 
+        print("[JOB] Rendering PNGs (OpenCV: pass1/2/3, compare, final)…", flush=True)
         pass1_chat = render_chat(pass1_meta)
         pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
         cv2.imwrite(pass1_path, pass1_chat)
@@ -1132,6 +1139,10 @@ def run_pipeline_job(
             header_status=final_status_text,
         )
         cv2.imwrite(combined_path, final_chat)
+        print(
+            f"[JOB] Complete: messages={len(final_render_meta)} final_image={combined_path}",
+            flush=True,
+        )
 
     return {
         "job_dir": str(work_dir),
