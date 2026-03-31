@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import argparse
+from contextlib import contextmanager
 from pathlib import Path
 import cv2
 import numpy as np
@@ -12,6 +13,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from config import INPUT_DIR, OUTPUT_DIR, JSON_DIR, RENDER_DIR, ocr_engine
+import config as runtime_config
+import ocr_translate as ocr_translate_module
 from ocr_translate import (
     translate_to_en,
     translate_conversation_gemini_multimodal,
@@ -870,250 +873,314 @@ def _merge_chat_with_system_metadata(chat_meta, system_messages):
     return merged
 
 
-def main():
-    args = _parse_args()
+def _parse_bubble_summary_text(raw_text: str, num_images: int):
+    raw_lines = [line.strip() for line in (raw_text or "").splitlines()]
+    lines = [line for line in raw_lines if line]
+    if not lines:
+        return "", 0, []
+    if len(lines) % 2 != 0:
+        raise ValueError("Bubble summary text must contain count/order line pairs.")
+
+    specs = []
+    for i in range(0, len(lines), 2):
+        try:
+            count = int(lines[i])
+        except ValueError as exc:
+            raise ValueError(f"Invalid bubble count line: {lines[i]!r}") from exc
+
+        order_line = lines[i + 1]
+        if "," in order_line:
+            tokens = [p.strip() for p in order_line.replace(";", ",").split(",") if p.strip()]
+        else:
+            tokens = [p.strip() for p in order_line.split() if p.strip()]
+
+        mapped = []
+        for tok in tokens:
+            role = _map_bubble_role_token(tok)
+            if role is None:
+                raise ValueError(f"Invalid bubble role token: {tok!r}")
+            mapped.append(role)
+
+        if count != len(mapped):
+            count = len(mapped)
+        specs.append({"count": count, "order": mapped})
+
+    if len(specs) != num_images:
+        raise ValueError(
+            f"Bubble summary has {len(specs)} image specs but this job has {num_images} images."
+        )
+    return _build_bubble_summary_from_specs(specs)
+
+
+@contextmanager
+def _override_runtime_dirs(input_dir, output_dir, json_dir, render_dir, debug_dir):
+    original = {
+        "main.INPUT_DIR": globals()["INPUT_DIR"],
+        "main.OUTPUT_DIR": globals()["OUTPUT_DIR"],
+        "main.JSON_DIR": globals()["JSON_DIR"],
+        "main.RENDER_DIR": globals()["RENDER_DIR"],
+        "config.INPUT_DIR": runtime_config.INPUT_DIR,
+        "config.OUTPUT_DIR": runtime_config.OUTPUT_DIR,
+        "config.JSON_DIR": runtime_config.JSON_DIR,
+        "config.RENDER_DIR": runtime_config.RENDER_DIR,
+        "config.DEBUG_DIR": runtime_config.DEBUG_DIR,
+        "ocr_translate.OUTPUT_DIR": ocr_translate_module.OUTPUT_DIR,
+        "ocr_translate.DEBUG_DIR": ocr_translate_module.DEBUG_DIR,
+    }
+    globals()["INPUT_DIR"] = Path(input_dir)
+    globals()["OUTPUT_DIR"] = Path(output_dir)
+    globals()["JSON_DIR"] = Path(json_dir)
+    globals()["RENDER_DIR"] = Path(render_dir)
+    runtime_config.INPUT_DIR = Path(input_dir)
+    runtime_config.OUTPUT_DIR = Path(output_dir)
+    runtime_config.JSON_DIR = Path(json_dir)
+    runtime_config.RENDER_DIR = Path(render_dir)
+    runtime_config.DEBUG_DIR = Path(debug_dir)
+    ocr_translate_module.OUTPUT_DIR = Path(output_dir)
+    ocr_translate_module.DEBUG_DIR = Path(debug_dir)
+    try:
+        yield
+    finally:
+        globals()["INPUT_DIR"] = original["main.INPUT_DIR"]
+        globals()["OUTPUT_DIR"] = original["main.OUTPUT_DIR"]
+        globals()["JSON_DIR"] = original["main.JSON_DIR"]
+        globals()["RENDER_DIR"] = original["main.RENDER_DIR"]
+        runtime_config.INPUT_DIR = original["config.INPUT_DIR"]
+        runtime_config.OUTPUT_DIR = original["config.OUTPUT_DIR"]
+        runtime_config.JSON_DIR = original["config.JSON_DIR"]
+        runtime_config.RENDER_DIR = original["config.RENDER_DIR"]
+        runtime_config.DEBUG_DIR = original["config.DEBUG_DIR"]
+        ocr_translate_module.OUTPUT_DIR = original["ocr_translate.OUTPUT_DIR"]
+        ocr_translate_module.DEBUG_DIR = original["ocr_translate.DEBUG_DIR"]
+
+
+def run_pipeline_job(
+    image_paths,
+    work_dir,
+    language=None,
+    bubble_summary_text=None,
+    allow_interactive_bubble_summary=False,
+):
     pipeline_start = time.time()
-    print("\n[PIPELINE] Gemini full-vision chat translator\n")
+    work_dir = Path(work_dir)
+    input_dir = work_dir / "input_images"
+    output_dir = work_dir / "result"
+    json_dir = work_dir / "result_json"
+    render_dir = work_dir / "rendered_chat"
+    debug_dir = work_dir / "debug_crops"
+    for path in (input_dir, output_dir, json_dir, render_dir, debug_dir):
+        path.mkdir(parents=True, exist_ok=True)
 
     source_lang_note = None
-    if args.language:
-        code = args.language.lower()
+    if language:
+        code = language.lower()
         name = _KNOWN_LANGUAGES.get(code, code.upper())
         _set_source_language(code, name)
         source_lang_note = name
-        print(f"[LANG] Source language hint for Gemini: {name} ({code})")
-    else:
-        print("[LANG] Source language: infer from screenshots")
 
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not gemini_key:
-        print("[ERROR] GEMINI_API_KEY is required for this pipeline.")
-        print("  Set: $env:GEMINI_API_KEY = 'your_key'")
-        return
-    print("[GEMINI] API key found — multimodal translation enabled")
+        raise RuntimeError("GEMINI_API_KEY is required for this pipeline.")
 
+    images = [Path(p) for p in image_paths]
+    if not images:
+        raise ValueError("No input images were provided.")
+
+    with _override_runtime_dirs(input_dir, output_dir, json_dir, render_dir, debug_dir):
+        crop_infos = [prepare_image_crop_info(str(path)) for path in images]
+        if not crop_infos:
+            raise RuntimeError("No usable images after preprocessing.")
+
+        contact_name = _extract_contact_name(crop_infos[0]) if crop_infos else ""
+        page_images = extract_page_segment_images(crop_infos)
+        status_bar_images = extract_status_bar_images(crop_infos)
+        combined_img, _page_ranges = build_combined_image(crop_infos, global_first_page_index=0)
+        if combined_img is None:
+            raise RuntimeError("Empty combined image.")
+
+        ocr_hints = None
+        ocr_hints_format = "none"
+        ocr_pass2_by_message = None
+        pass1_exclude_ocr = True
+        pass1_message_images = []
+        craft_expected_n = None
+        pass1_bubble_context = ""
+        if bubble_summary_text:
+            pass1_bubble_context, craft_expected_n, _manual_page_specs = _parse_bubble_summary_text(
+                bubble_summary_text, len(page_images)
+            )
+        elif allow_interactive_bubble_summary:
+            pass1_bubble_context, craft_expected_n, _manual_page_specs = prompt_manual_bubble_summary(
+                len(page_images)
+            )
+
+        if pass1_bubble_context:
+            bubble_debug_path = os.path.join(OUTPUT_DIR, "pass1_bubble_summary.txt")
+            with open(bubble_debug_path, "w", encoding="utf-8") as f:
+                f.write(pass1_bubble_context)
+
+        ok, g_contact, all_meta, pre_ocr_meta, pass_debug = translate_conversation_gemini_multimodal(
+            page_images,
+            combined_img,
+            pass1_message_images=pass1_message_images,
+            craft_vertical_bands_markdown=pass1_bubble_context,
+            contact_hint=contact_name,
+            source_language_name=source_lang_note,
+            ocr_hints=ocr_hints,
+            ocr_hints_format=ocr_hints_format,
+            pass1_exclude_ocr_hints=pass1_exclude_ocr,
+            craft_expected_message_rows=craft_expected_n,
+            ocr_pass2_by_message=ocr_pass2_by_message,
+        )
+        if not ok or not all_meta:
+            raise RuntimeError("Gemini did not return a usable conversation.")
+
+        pass2_ocr_text, _pass2_ocr_entries = collect_page_ocr_debug(page_images)
+        pass2_ocr_debug_path = os.path.join(OUTPUT_DIR, "pass2_ocr_debug.txt")
+        with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
+            f.write(pass2_ocr_text)
+
+        contact_name = (g_contact or contact_name or "Person A").strip() or "Person A"
+        pass1_meta = list(all_meta or [])
+        for i, item in enumerate(pre_ocr_meta or []):
+            item["order"] = i
+        for i, item in enumerate(pass1_meta):
+            item["order"] = i
+
+        pass2_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
+            contact_name,
+            (pass_debug or {}).get("pass1_messages") or [],
+            pass2_ocr_text,
+            timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
+        )
+        if contact_name2:
+            contact_name = contact_name2
+        all_meta = _meta_from_gemini_messages(pass2_messages)
+        for i, item in enumerate(all_meta or []):
+            item["order"] = i
+
+        final_messages, contact_name3, pass3_reference_debug = _gemini_reference_resolution_pass(
+            contact_name,
+            pass2_messages,
+            timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
+        )
+        if contact_name3:
+            contact_name = contact_name3
+        final_chat_meta = _meta_from_gemini_messages(final_messages)
+        for i, item in enumerate(final_chat_meta or []):
+            item["order"] = i
+        final_render_meta = _merge_chat_with_system_metadata(
+            final_chat_meta,
+            (pass_debug or {}).get("pass1_system_messages") or [],
+        )
+
+        status_bar_info = _gemini_status_bar_pass(
+            status_bar_images,
+            contact_hint=contact_name,
+            timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
+        )
+        final_contact_name_src = (status_bar_info.get("contact_name") or contact_name or "Person A").strip() or "Person A"
+        final_status_text_src = (status_bar_info.get("status_text") or "").strip()
+        final_contact_name = (translate_to_en(final_contact_name_src) or final_contact_name_src).strip() or "Person A"
+        final_status_text = (translate_to_en(final_status_text_src) or final_status_text_src).strip()
+        profile_image = None
+
+        pass1_source_debug_path = os.path.join(JSON_DIR, "pass1_transcript_debug.json")
+        pass3_reference_debug_path = os.path.join(JSON_DIR, "pass3_reference_debug.json")
+        pass1_source_debug = []
+        for i, m in enumerate((pass_debug or {}).get("pass1_messages") or []):
+            pass1_source_debug.append({
+                "message_index": i,
+                "role": m.get("role"),
+                "text_src": m.get("text_src") or "",
+                "text_en_debug": translate_to_en(m.get("text_src") or "") or "",
+            })
+        with open(pass1_source_debug_path, "w", encoding="utf-8") as f:
+            json.dump(pass1_source_debug, f, indent=2, ensure_ascii=False)
+        with open(pass3_reference_debug_path, "w", encoding="utf-8") as f:
+            json.dump(pass3_reference_debug or [], f, indent=2, ensure_ascii=False)
+
+        combined_json_path = os.path.join(JSON_DIR, "translated_conversation.json")
+        with open(combined_json_path, "w", encoding="utf-8") as f:
+            json.dump(final_render_meta, f, indent=2, ensure_ascii=False)
+
+        pass1_chat = render_chat(pass1_meta)
+        pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
+        cv2.imwrite(pass1_path, pass1_chat)
+
+        pass2_img = render_chat(all_meta)
+        pass2_path = os.path.join(RENDER_DIR, "translated_conversation_pass2.png")
+        cv2.imwrite(pass2_path, pass2_img)
+
+        pass3_img = render_chat(final_chat_meta)
+        pass3_path = os.path.join(RENDER_DIR, "translated_conversation_pass3.png")
+        cv2.imwrite(pass3_path, pass3_img)
+
+        compare_img = _compose_labeled_chat_panels([
+            (pass1_chat, "Pass 1 Translation"),
+            (pass2_img, "Pass 2 OCR Source Polish (Debug EN)"),
+            (pass3_img, "Pass 3 Reference Resolution"),
+        ])
+        compare_path = os.path.join(RENDER_DIR, "translated_conversation_compare.png")
+        cv2.imwrite(compare_path, compare_img)
+
+        combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
+        final_chat = render_chat(
+            final_render_meta,
+            profile_image=profile_image,
+            contact_name=final_contact_name,
+            header_status=final_status_text,
+        )
+        cv2.imwrite(combined_path, final_chat)
+
+    return {
+        "job_dir": str(work_dir),
+        "language": language,
+        "contact_name": final_contact_name,
+        "status_text": final_status_text,
+        "images_processed": len(images),
+        "messages_rendered": len(final_render_meta),
+        "total_runtime_sec": round(time.time() - pipeline_start, 2),
+        "artifacts": {
+            "json": str(json_dir / "translated_conversation.json"),
+            "pass1_debug": str(json_dir / "pass1_transcript_debug.json"),
+            "pass3_debug": str(json_dir / "pass3_reference_debug.json"),
+            "final_image": str(render_dir / "translated_conversation.png"),
+            "compare_image": str(render_dir / "translated_conversation_compare.png"),
+            "pass1_image": str(render_dir / "translated_conversation_pass1.png"),
+            "pass2_image": str(render_dir / "translated_conversation_pass2.png"),
+            "pass3_image": str(render_dir / "translated_conversation_pass3.png"),
+            "ocr_debug": str(output_dir / "pass2_ocr_debug.txt"),
+            "gemini_debug": str(output_dir / "gemini_debug.txt"),
+        },
+    }
+
+
+def main():
+    args = _parse_args()
+    print("\n[PIPELINE] Gemini full-vision chat translator\n")
+    if args.language:
+        print(f"[LANG] Source language hint: {args.language}")
+    else:
+        print("[LANG] Source language: infer from screenshots")
     images = sorted(Path(INPUT_DIR).glob("*"))
     print(f"[INPUT] Found {len(images)} images")
-
-    t1 = time.time()
-    print("\n[STEP 1] Reading images and detecting artifacts...")
-    crop_infos = []
-    for path in images:
-        print(f"  {Path(path).name}")
-        crop_infos.append(prepare_image_crop_info(str(path)))
-    print(f"[TIMER] Step 1 done in {time.time()-t1:.1f}s")
-
-    if not crop_infos:
-        print("[ERROR] No input images.")
-        return
-
-    contact_name = _extract_contact_name(crop_infos[0]) if crop_infos else ""
-    if contact_name:
-        print(f"[NAME] Status-bar hint: '{contact_name}'")
-    else:
-        print("[NAME] No status-bar name (Vision disabled or unreadable) — Gemini may infer")
-
-    t2 = time.time()
-    page_images = extract_page_segment_images(crop_infos)
-    status_bar_images = extract_status_bar_images(crop_infos)
-    combined_img, page_ranges = build_combined_image(
-        crop_infos, global_first_page_index=0
+    result = run_pipeline_job(
+        images,
+        Path(__file__).resolve().parent,
+        language=args.language,
+        allow_interactive_bubble_summary=True,
     )
-    if combined_img is None:
-        print("[ERROR] Empty combined image.")
-        return
-
-    print(
-        f"[COMBINE] {combined_img.shape[1]}×{combined_img.shape[0]} px, "
-        f"{len(page_ranges)} page band(s)"
-    )
-    print(f"[COMBINE] {len(page_images)} page crop(s) for OCR / internal use")
-    print(f"[STATUS] {len(status_bar_images)} status-bar crop(s) ready for Pass 3")
-    print(f"[TIMER] Stitch done in {time.time()-t2:.1f}s")
-
-    ocr_hints = None
-    ocr_hints_format = "none"
-    ocr_pass2_by_message = None
-    pass1_bubble_context = ""
-    pass1_exclude_ocr = True
-    pass1_message_images = []
-    craft_expected_n = None
-    manual_page_specs = []
-    pass1_bubble_context, craft_expected_n, manual_page_specs = prompt_manual_bubble_summary(len(page_images))
-
-    if pass1_bubble_context:
-        bubble_debug_path = os.path.join(OUTPUT_DIR, "pass1_bubble_summary.txt")
-        with open(bubble_debug_path, "w", encoding="utf-8") as f:
-            f.write(pass1_bubble_context)
-        print(f"[OUTPUT] Pass 1 bubble summary → {bubble_debug_path}")
-
-
-    t3 = time.time()
-    print("\n[STEP 2] Gemini multimodal…")
-    ok, g_contact, all_meta, pre_ocr_meta, pass_debug = translate_conversation_gemini_multimodal(
-        page_images,
-        combined_img,
-        pass1_message_images=pass1_message_images,
-        craft_vertical_bands_markdown=pass1_bubble_context,
-        contact_hint=contact_name,
-        source_language_name=source_lang_note,
-        ocr_hints=ocr_hints,
-        ocr_hints_format=ocr_hints_format,
-        pass1_exclude_ocr_hints=pass1_exclude_ocr,
-        craft_expected_message_rows=craft_expected_n,
-        ocr_pass2_by_message=ocr_pass2_by_message,
-    )
-    print(f"[TIMER] Gemini done in {time.time()-t3:.1f}s")
-
-    if not ok or not all_meta:
-        print("[ERROR] Gemini did not return a usable conversation. See result/gemini_debug.txt")
-        return
-
-    t_ocr2 = time.time()
-    print("\n[STEP 2b] OCR pass on cleaned images…")
-    pass2_ocr_text, pass2_ocr_entries = collect_page_ocr_debug(page_images)
-    pass2_ocr_debug_path = os.path.join(OUTPUT_DIR, "pass2_ocr_debug.txt")
-    with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
-        f.write(pass2_ocr_text)
-    print(f"[OUTPUT] Pass 2 OCR debug → {pass2_ocr_debug_path}")
-    print(f"[TIMER] Pass 2 OCR in {time.time()-t_ocr2:.1f}s")
-
-    contact_name = (g_contact or contact_name or "Person A").strip() or "Person A"
-    pass1_meta = list(all_meta or [])
-    for i, item in enumerate(pre_ocr_meta or []):
-        item["order"] = i
-    for i, item in enumerate(pass1_meta):
-        item["order"] = i
-    pass1_output_count = int((pass_debug or {}).get("pass1_count") or 0)
-    pass1_system_count = int((pass_debug or {}).get("pass1_system_count") or 0)
-    print(
-        f"[ALIGN] Counts: manual_expected={craft_expected_n} "
-        f"pass1_bubbles={pass1_output_count} pass1_system={pass1_system_count}"
-    )
-
-    t_pass2 = time.time()
-    print("\n[STEP 2c] Gemini rewrite with OCR hints…")
-    pass2_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
-        contact_name,
-        (pass_debug or {}).get("pass1_messages") or [],
-        pass2_ocr_text,
-        timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
-    )
-    if contact_name2:
-        contact_name = contact_name2
-    all_meta = _meta_from_gemini_messages(pass2_messages)
-    for i, item in enumerate(all_meta or []):
-        item["order"] = i
-    print(f"[TIMER] Pass 2 Gemini rewrite in {time.time()-t_pass2:.1f}s")
-
-    t_pass3 = time.time()
-    print("\n[STEP 3] Gemini reference resolution…")
-    final_messages, contact_name3, pass3_reference_debug = _gemini_reference_resolution_pass(
-        contact_name,
-        pass2_messages,
-        timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
-    )
-    if contact_name3:
-        contact_name = contact_name3
-    final_chat_meta = _meta_from_gemini_messages(final_messages)
-    for i, item in enumerate(final_chat_meta or []):
-        item["order"] = i
-    final_render_meta = _merge_chat_with_system_metadata(
-        final_chat_meta,
-        (pass_debug or {}).get("pass1_system_messages") or [],
-    )
-    print(f"[TIMER] Pass 3 reference resolution in {time.time()-t_pass3:.1f}s")
-
-    t_pass4 = time.time()
-    print("\n[STEP 4] Gemini status-bar pass…")
-    status_bar_info = _gemini_status_bar_pass(
-        status_bar_images,
-        contact_hint=contact_name,
-        timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
-    )
-    final_contact_name_src = (status_bar_info.get("contact_name") or contact_name or "Person A").strip() or "Person A"
-    final_status_text_src = (status_bar_info.get("status_text") or "").strip()
-    final_contact_name = (translate_to_en(final_contact_name_src) or final_contact_name_src).strip() or "Person A"
-    final_status_text = (translate_to_en(final_status_text_src) or final_status_text_src).strip()
-    # The detected Messenger avatar is too small/noisy to preserve reliably, so keep the generic header avatar.
-    profile_image = None
-    contact_name = final_contact_name
-    print(
-        f"[STATUS] Final header: name='{final_contact_name}'"
-        + (f", status='{final_status_text}'" if final_status_text else "")
-    )
-    print(f"[TIMER] Pass 4 status bar in {time.time()-t_pass4:.1f}s")
-
-    pass1_source_debug_path = os.path.join(JSON_DIR, "pass1_transcript_debug.json")
-    pass3_reference_debug_path = os.path.join(JSON_DIR, "pass3_reference_debug.json")
-
-    pass1_source_debug = []
-    for i, m in enumerate((pass_debug or {}).get("pass1_messages") or []):
-        pass1_source_debug.append({
-            "message_index": i,
-            "role": m.get("role"),
-            "text_src": m.get("text_src") or "",
-            "text_en_debug": translate_to_en(m.get("text_src") or "") or "",
-        })
-
-    with open(pass1_source_debug_path, "w", encoding="utf-8") as f:
-        json.dump(pass1_source_debug, f, indent=2, ensure_ascii=False)
-    print(f"[OUTPUT] Pass 1 transcript debug → {pass1_source_debug_path}")
-
-    with open(pass3_reference_debug_path, "w", encoding="utf-8") as f:
-        json.dump(pass3_reference_debug or [], f, indent=2, ensure_ascii=False)
-    print(f"[OUTPUT] Pass 3 reference debug → {pass3_reference_debug_path}")
-
-    t4 = time.time()
-    print("\n[STEP 5] Saving JSON + rendered chat...")
-    combined_json_path = os.path.join(JSON_DIR, "translated_conversation.json")
-    with open(combined_json_path, "w", encoding="utf-8") as f:
-        json.dump(final_render_meta, f, indent=2, ensure_ascii=False)
-
-    pass1_chat = render_chat(pass1_meta)
-    pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
-    cv2.imwrite(pass1_path, pass1_chat)
-
-    pass2_img = render_chat(all_meta)
-    pass2_path = os.path.join(RENDER_DIR, "translated_conversation_pass2.png")
-    cv2.imwrite(pass2_path, pass2_img)
-
-    pass3_img = render_chat(final_chat_meta)
-    pass3_path = os.path.join(RENDER_DIR, "translated_conversation_pass3.png")
-    cv2.imwrite(pass3_path, pass3_img)
-
-    compare_img = _compose_labeled_chat_panels([
-        (pass1_chat, "Pass 1 Translation"),
-        (pass2_img, "Pass 2 OCR Source Polish (Debug EN)"),
-        (pass3_img, "Pass 3 Reference Resolution"),
-    ])
-    compare_path = os.path.join(RENDER_DIR, "translated_conversation_compare.png")
-    cv2.imwrite(compare_path, compare_img)
-
-    combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
-    final_chat = render_chat(
-        final_render_meta,
-        profile_image=profile_image,
-        contact_name=final_contact_name,
-        header_status=final_status_text,
-    )
-    cv2.imwrite(combined_path, final_chat)
-    print(f"[OUTPUT] JSON → {combined_json_path}")
-    print(f"[OUTPUT] Image → {combined_path}")
-    print(f"[OUTPUT] Pass 1 image → {pass1_path}")
-    print(f"[OUTPUT] Pass 2 image → {pass2_path}")
-    print(f"[OUTPUT] Pass 3 image → {pass3_path}")
-    print(f"[OUTPUT] Compare image → {compare_path}")
-    print(f"[TIMER] Render done in {time.time()-t4:.1f}s")
-
-    total_runtime = time.time() - pipeline_start
+    print(f"[OUTPUT] JSON → {result['artifacts']['json']}")
+    print(f"[OUTPUT] Image → {result['artifacts']['final_image']}")
+    print(f"[OUTPUT] Compare image → {result['artifacts']['compare_image']}")
     print(f"""
 ╔══════════════════════════════════════════╗
   PIPELINE SUMMARY (full-vision Gemini)
-  Images processed : {len(images)}
-  Messages rendered: {len(final_render_meta)}
-  Contact name     : {contact_name}
-  Total runtime    : {total_runtime:.1f}s
+  Images processed : {result['images_processed']}
+  Messages rendered: {result['messages_rendered']}
+  Contact name     : {result['contact_name']}
+  Total runtime    : {result['total_runtime_sec']:.1f}s
 ╚══════════════════════════════════════════╝""")
 
 if __name__ == "__main__":

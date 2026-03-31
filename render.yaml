@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: translate-chat-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_VISION_API_KEY
+        sync: false
+      - key: GEMINI_REQUEST_TIMEOUT_SEC
+        value: "600"
