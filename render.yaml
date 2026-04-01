@@ -13,3 +13,7 @@ services:
         sync: false
       - key: GEMINI_REQUEST_TIMEOUT_SEC
         value: "600"
+      - key: JWT_SECRET
+        sync: false
+      - key: REQUIRE_AUTH_FOR_JOBS
+        value: "0"

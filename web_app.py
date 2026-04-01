@@ -5,14 +5,17 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
-from typing import Optional
+from typing import Annotated, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from auth_api import router as auth_router
+from auth_deps import assert_job_readable, get_current_user_optional, get_job_user
 from main import run_pipeline_job
+from user_store import UserRecord
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -30,6 +33,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router, prefix="/auth", tags=["auth"])
 
 
 def _utc_now():
@@ -111,7 +116,13 @@ def root():
         "service": "translate-chat-api",
         "health": "GET /health",
         "docs": "GET /docs",
+        "auth": {
+            "register": "POST /auth/register JSON {email, password}",
+            "login": "POST /auth/login JSON {email, password} → Bearer token",
+            "me": "GET /auth/me Authorization: Bearer <token>",
+        },
         "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text)",
+        "job_auth": "Set REQUIRE_AUTH_FOR_JOBS=1 to require Bearer token; jobs are scoped to the user",
         "smoke_test": "POST /test/smoke (optional Form: language; Header X-Smoke-Secret if env SMOKE_TEST_SECRET is set)",
     }
 
@@ -123,6 +134,7 @@ def health():
 
 @app.post("/jobs")
 async def create_job(
+    job_user: Annotated[Optional[UserRecord], Depends(get_job_user)],
     files: list[UploadFile] = File(...),
     language: Optional[str] = Form(default=None),
     bubble_summary_text: Optional[str] = Form(default=None),
@@ -169,6 +181,7 @@ async def create_job(
         language=language,
         images_count=len(image_paths),
         bubble_summary_text=bubble_summary_text,
+        user_id=(job_user.id if job_user else None),
     )
     Thread(
         target=_run_job,
@@ -181,6 +194,7 @@ async def create_job(
 
 @app.post("/test/smoke")
 async def smoke_job(
+    job_user: Annotated[Optional[UserRecord], Depends(get_job_user)],
     language: Optional[str] = Form(default=None),
     x_smoke_secret: Optional[str] = Header(default=None, alias="X-Smoke-Secret"),
 ):
@@ -224,6 +238,7 @@ async def smoke_job(
         language=language,
         images_count=len(image_paths),
         smoke_test=True,
+        user_id=(job_user.id if job_user else None),
     )
     Thread(
         target=_run_job,
@@ -236,13 +251,22 @@ async def smoke_job(
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: str):
-    return _load_status(job_id)
+def get_job(
+    job_id: str,
+    user: Annotated[Optional[UserRecord], Depends(get_current_user_optional)],
+):
+    status = _load_status(job_id)
+    assert_job_readable(status, user)
+    return status
 
 
 @app.get("/jobs/{job_id}/results")
-def get_job_results(job_id: str):
+def get_job_results(
+    job_id: str,
+    user: Annotated[Optional[UserRecord], Depends(get_current_user_optional)],
+):
     status = _load_status(job_id)
+    assert_job_readable(status, user)
     if status.get("status") != "completed":
         raise HTTPException(status_code=409, detail="Job is not completed yet")
     return {
@@ -254,8 +278,13 @@ def get_job_results(job_id: str):
 
 
 @app.get("/jobs/{job_id}/artifacts/{artifact_name}")
-def get_job_artifact(job_id: str, artifact_name: str):
+def get_job_artifact(
+    job_id: str,
+    artifact_name: str,
+    user: Annotated[Optional[UserRecord], Depends(get_current_user_optional)],
+):
     status = _load_status(job_id)
+    assert_job_readable(status, user)
     result = status.get("result") or {}
     artifacts = result.get("artifacts") or {}
     path = artifacts.get(artifact_name)

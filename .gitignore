@@ -4,6 +4,7 @@ rendered_chat/
 result/
 result_json/
 jobs/
+data/
 
 input_images/*
 !input_images/.gitkeep
