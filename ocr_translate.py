@@ -755,17 +755,29 @@ def _gemini_generate(
     if max_output_tokens_override is not None:
         max_out = int(max_output_tokens_override)
     else:
-        max_out = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "32768"))
+        # Pro + thinking can need a large combined ceiling (thoughts + visible JSON).
+        max_out = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "65536"))
     gen_cfg: Dict[str, Any] = {
         "maxOutputTokens": max(1024, min(max_out, 65536)),
         "temperature": 0.0,
         "topP": 1.0,
     }
-    # Gemini 2.5 **Flash** (not Pro): internal "thinking" shares the output token cap → truncated JSON.
-    # Default thinkingBudget=0 for OCR/translation (set GEMINI_THINKING_BUDGET=-1 for dynamic thinking).
-    # 2.5 Pro cannot disable thinking per API docs — omit thinkingConfig for Pro.
     _mname = (model or "").lower()
-    if "2.5" in _mname and "pro" not in _mname:
+    # Thinking tokens and answer tokens share the generation budget. If thinkingConfig is omitted,
+    # 2.5 Pro defaults to dynamic thinking and can spend ~32k on thoughts → MAX_TOKENS with empty text.
+    # API allows thinkingBudget 128–32768 for 2.5 Pro (cannot set 0). Cap leaves room for long JSON.
+    # Only 2.5 Pro documented here; Gemini 3 Pro uses different thinking controls.
+    _is_25_pro = "2.5" in _mname and "pro" in _mname and "flash" not in _mname
+    if _is_25_pro:
+        _ptb = os.environ.get("GEMINI_PRO_THINKING_BUDGET", "8192").strip()
+        try:
+            pro_thinking = int(_ptb)
+        except ValueError:
+            pro_thinking = 8192
+        pro_thinking = max(128, min(pro_thinking, 32768))
+        gen_cfg["thinkingConfig"] = {"thinkingBudget": pro_thinking}
+    elif "2.5" in _mname and "pro" not in _mname:
+        # Gemini 2.5 Flash / Flash-Lite: can disable thinking (0) so JSON is not truncated.
         _tb = os.environ.get("GEMINI_THINKING_BUDGET", "0").strip()
         try:
             thinking_budget = int(_tb)
