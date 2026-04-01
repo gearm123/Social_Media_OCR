@@ -117,8 +117,12 @@ def root():
         "health": "GET /health",
         "docs": "GET /docs",
         "auth": {
-            "register": "POST /auth/register JSON {email, password}",
+            "providers": "GET /auth/providers — OAuth client IDs for the SPA",
+            "register": "POST /auth/register JSON {username, email, password}",
             "login": "POST /auth/login JSON {email, password} → Bearer token",
+            "oauth_google": "POST /auth/oauth/google JSON {id_token}",
+            "oauth_facebook": "POST /auth/oauth/facebook JSON {access_token}",
+            "oauth_apple": "POST /auth/oauth/apple JSON {id_token}",
             "me": "GET /auth/me Authorization: Bearer <token>",
         },
         "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text)",

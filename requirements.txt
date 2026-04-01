@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 python-multipart
 PyJWT>=2.8.0
+google-auth>=2.0.0
 numpy
 opencv-python-headless
 requests
