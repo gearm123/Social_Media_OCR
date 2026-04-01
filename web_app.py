@@ -72,12 +72,13 @@ def _artifact_urls(job_id: str, artifacts: dict) -> dict:
 
 def _run_job(job_id: str, image_paths: list[str], language: Optional[str], bubble_summary_text: Optional[str]):
     try:
-        _write_status(job_id, status="running", stage="pipeline")
+        _write_status(job_id, status="running", stage="starting")
         result = run_pipeline_job(
             image_paths=image_paths,
             work_dir=_job_dir(job_id),
             language=language,
             bubble_summary_text=bubble_summary_text,
+            on_stage=lambda s: _write_status(job_id, status="running", stage=s),
         )
         _write_status(
             job_id,

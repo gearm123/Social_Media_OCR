@@ -5,6 +5,7 @@ import time
 import argparse
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Callable, Optional
 import cv2
 import numpy as np
 
@@ -960,7 +961,16 @@ def run_pipeline_job(
     language=None,
     bubble_summary_text=None,
     allow_interactive_bubble_summary=False,
+    on_stage: Optional[Callable[[str], None]] = None,
 ):
+    def _emit_stage(stage_name: str) -> None:
+        if on_stage is None:
+            return
+        try:
+            on_stage(stage_name)
+        except Exception:
+            pass
+
     pipeline_start = time.time()
     work_dir = Path(work_dir)
     input_dir = work_dir / "input_images"
@@ -1020,6 +1030,7 @@ def run_pipeline_job(
             with open(bubble_debug_path, "w", encoding="utf-8") as f:
                 f.write(pass1_bubble_context)
 
+        _emit_stage("transcribing")
         ok, g_contact, all_meta, pre_ocr_meta, pass_debug = translate_conversation_gemini_multimodal(
             page_images,
             combined_img,
@@ -1043,6 +1054,7 @@ def run_pipeline_job(
             f.write(pass2_ocr_text)
 
         print("[JOB] Starting Gemini pass 2 (OCR hints refine)…", flush=True)
+        _emit_stage("polishing")
         contact_name = (g_contact or contact_name or "Person A").strip() or "Person A"
         pass1_meta = list(all_meta or [])
         for i, item in enumerate(pre_ocr_meta or []):
@@ -1063,6 +1075,7 @@ def run_pipeline_job(
             item["order"] = i
 
         print("[JOB] Starting Gemini pass 3 (reference resolution)…", flush=True)
+        _emit_stage("bringing_together")
         final_messages, contact_name3, pass3_reference_debug = _gemini_reference_resolution_pass(
             contact_name,
             pass2_messages,
@@ -1079,6 +1092,7 @@ def run_pipeline_job(
         )
 
         print("[JOB] Pass 3 reference done; starting status-bar pass…", flush=True)
+        _emit_stage("final_touches")
         status_bar_info = _gemini_status_bar_pass(
             status_bar_images,
             contact_hint=contact_name,
