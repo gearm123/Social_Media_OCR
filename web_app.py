@@ -135,13 +135,30 @@ async def create_job(
     input_dir.mkdir(parents=True, exist_ok=True)
 
     image_paths = []
+    intake_rows = []
     for idx, upload in enumerate(files):
-        suffix = Path(upload.filename or f"image_{idx}.png").suffix or ".png"
+        orig_name = upload.filename or f"image_{idx}.png"
+        suffix = Path(orig_name).suffix or ".png"
         safe_name = f"{idx:03d}{suffix.lower()}"
         dest = input_dir / safe_name
         with dest.open("wb") as f:
             shutil.copyfileobj(upload.file, f)
         image_paths.append(str(dest))
+        intake_rows.append((idx, orig_name, dest.stat().st_size))
+
+    bubble_preview = (bubble_summary_text or "").strip()
+    bubble_line_count = len([ln for ln in bubble_preview.splitlines() if ln.strip()])
+    print(f"[JOB_INTAKE] job_id={job_id} images_saved={len(image_paths)} language={language!r}", flush=True)
+    for idx, orig_name, nbytes in intake_rows:
+        print(f"[JOB_INTAKE]   input[{idx}] original_name={orig_name!r} bytes_on_disk={nbytes}", flush=True)
+    if bubble_preview:
+        print(
+            f"[JOB_INTAKE] bubble_summary_text lines={bubble_line_count} chars={len(bubble_preview)}:",
+            flush=True,
+        )
+        print(bubble_preview, flush=True)
+    else:
+        print("[JOB_INTAKE] bubble_summary_text: (none)", flush=True)
 
     status = _write_status(
         job_id,
