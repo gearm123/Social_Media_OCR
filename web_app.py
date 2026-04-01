@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse
 
 from auth_api import router as auth_router
 from auth_deps import assert_job_readable, get_current_user_optional, get_job_user
+from billing_api import router as billing_router
+from billing_store import billing_enforce_enabled, get_billing_store, normalize_guest_key
 from main import run_pipeline_job
 from user_store import UserRecord
 
@@ -35,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
+app.include_router(billing_router, prefix="/billing", tags=["billing"])
 
 
 def _utc_now():
@@ -75,7 +78,15 @@ def _artifact_urls(job_id: str, artifacts: dict) -> dict:
     return out
 
 
-def _run_job(job_id: str, image_paths: list[str], language: Optional[str], bubble_summary_text: Optional[str]):
+def _run_job(
+    job_id: str,
+    image_paths: list[str],
+    language: Optional[str],
+    bubble_summary_text: Optional[str],
+    billing_user_id: Optional[str] = None,
+    billing_consumption: Optional[str] = None,
+    billing_guest_key: Optional[str] = None,
+):
     try:
         _write_status(job_id, status="running", stage="starting")
         result = run_pipeline_job(
@@ -92,6 +103,11 @@ def _run_job(job_id: str, image_paths: list[str], language: Optional[str], bubbl
             result=result,
             artifact_urls=_artifact_urls(job_id, result.get("artifacts") or {}),
         )
+        store = get_billing_store(BASE_DIR)
+        if billing_guest_key and billing_consumption == "guest_free":
+            store.guest_apply_successful_job(billing_guest_key)
+        elif billing_user_id and billing_consumption:
+            store.apply_successful_job(billing_user_id, billing_consumption)
     except Exception as exc:
         _write_status(
             job_id,
@@ -100,6 +116,15 @@ def _run_job(job_id: str, image_paths: list[str], language: Optional[str], bubbl
             error=str(exc),
             traceback=traceback.format_exc(),
         )
+
+
+def _billing_block_detail(code: str) -> dict:
+    messages = {
+        "free_exhausted": "No free runs remaining; purchase a plan or credits.",
+        "multi_requires_plan": "Multiple images require an active pass or job credits.",
+        "no_files": "At least one image is required.",
+    }
+    return {"code": code, "message": messages.get(code, code)}
 
 
 def _check_smoke_secret(x_smoke_secret: Optional[str]) -> None:
@@ -127,6 +152,7 @@ def root():
         },
         "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text)",
         "job_auth": "Set REQUIRE_AUTH_FOR_JOBS=1 to require Bearer token; jobs are scoped to the user",
+        "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/portal-session (Stripe Customer Portal), POST /billing/webhook. BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id (8–64 hex) for free guest runs",
         "smoke_test": "POST /test/smoke (optional Form: language; Header X-Smoke-Secret if env SMOKE_TEST_SECRET is set)",
     }
 
@@ -142,9 +168,41 @@ async def create_job(
     files: list[UploadFile] = File(...),
     language: Optional[str] = Form(default=None),
     bubble_summary_text: Optional[str] = Form(default=None),
+    x_guest_billing_id: Annotated[Optional[str], Header(alias="X-Guest-Billing-Id")] = None,
 ):
     if not files:
         raise HTTPException(status_code=400, detail="At least one image file is required")
+
+    billing_consumption: Optional[str] = None
+    billing_guest_key: Optional[str] = None
+    if billing_enforce_enabled():
+        bill = get_billing_store(BASE_DIR)
+        if job_user is not None:
+            ok, consumption, err = bill.can_start_job(job_user.id, len(files))
+            if not ok:
+                raise HTTPException(
+                    status_code=402,
+                    detail=_billing_block_detail(err),
+                )
+            billing_consumption = consumption
+        else:
+            gk = normalize_guest_key(x_guest_billing_id)
+            if not gk:
+                raise HTTPException(
+                    status_code=401,
+                    detail=(
+                        "Sign in with Authorization: Bearer, or send header X-Guest-Billing-Id "
+                        "(8–64 hex characters, e.g. UUID without dashes) for guest free runs"
+                    ),
+                )
+            ok, consumption, err = bill.guest_can_start_job(gk, len(files))
+            if not ok:
+                raise HTTPException(
+                    status_code=402,
+                    detail=_billing_block_detail(err),
+                )
+            billing_guest_key = gk
+            billing_consumption = consumption
 
     job_id = uuid4().hex
     job_dir = _job_dir(job_id)
@@ -186,10 +244,20 @@ async def create_job(
         images_count=len(image_paths),
         bubble_summary_text=bubble_summary_text,
         user_id=(job_user.id if job_user else None),
+        billing_consumption=billing_consumption,
+        billing_guest_key=billing_guest_key,
     )
     Thread(
         target=_run_job,
-        args=(job_id, image_paths, language, bubble_summary_text),
+        args=(
+            job_id,
+            image_paths,
+            language,
+            bubble_summary_text,
+            job_user.id if job_user else None,
+            billing_consumption,
+            billing_guest_key,
+        ),
         daemon=True,
     ).start()
     status["artifact_urls"] = {}
@@ -246,7 +314,7 @@ async def smoke_job(
     )
     Thread(
         target=_run_job,
-        args=(job_id, image_paths, language, None),
+        args=(job_id, image_paths, language, None, None, None, None),
         daemon=True,
     ).start()
     status["artifact_urls"] = {}
@@ -258,9 +326,10 @@ async def smoke_job(
 def get_job(
     job_id: str,
     user: Annotated[Optional[UserRecord], Depends(get_current_user_optional)],
+    x_guest_billing_id: Annotated[Optional[str], Header(alias="X-Guest-Billing-Id")] = None,
 ):
     status = _load_status(job_id)
-    assert_job_readable(status, user)
+    assert_job_readable(status, user, x_guest_billing_id)
     return status
 
 
@@ -268,9 +337,10 @@ def get_job(
 def get_job_results(
     job_id: str,
     user: Annotated[Optional[UserRecord], Depends(get_current_user_optional)],
+    x_guest_billing_id: Annotated[Optional[str], Header(alias="X-Guest-Billing-Id")] = None,
 ):
     status = _load_status(job_id)
-    assert_job_readable(status, user)
+    assert_job_readable(status, user, x_guest_billing_id)
     if status.get("status") != "completed":
         raise HTTPException(status_code=409, detail="Job is not completed yet")
     return {
@@ -286,9 +356,10 @@ def get_job_artifact(
     job_id: str,
     artifact_name: str,
     user: Annotated[Optional[UserRecord], Depends(get_current_user_optional)],
+    x_guest_billing_id: Annotated[Optional[str], Header(alias="X-Guest-Billing-Id")] = None,
 ):
     status = _load_status(job_id)
-    assert_job_readable(status, user)
+    assert_job_readable(status, user, x_guest_billing_id)
     result = status.get("result") or {}
     artifacts = result.get("artifacts") or {}
     path = artifacts.get(artifact_name)

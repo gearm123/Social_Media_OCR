@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from auth_jwt import decode_access_token
+from billing_store import normalize_guest_key
 from user_store import UserRecord, UserStore, user_store_from_env
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -75,10 +76,20 @@ async def get_job_user(
     return user
 
 
-def assert_job_readable(status: Dict[str, Any], user: Optional[UserRecord]) -> None:
-    """If job auth is required, caller must be logged in and own the job."""
+def assert_job_readable(
+    status: Dict[str, Any],
+    user: Optional[UserRecord],
+    x_guest_billing_id: Optional[str] = None,
+) -> None:
+    """If job auth is required: user-owned jobs need Bearer owner; guest jobs need matching X-Guest-Billing-Id."""
     if not require_auth_for_jobs():
         return
+    job_guest = status.get("billing_guest_key")
+    if job_guest:
+        gk = normalize_guest_key(x_guest_billing_id)
+        if gk and gk == job_guest:
+            return
+        raise HTTPException(status_code=404, detail="Job not found")
     if user is None:
         raise HTTPException(
             status_code=401,
