@@ -19,17 +19,19 @@ services:
         value: "0"
       - key: BILLING_ENFORCE
         value: "0"
-      - key: STRIPE_SECRET_KEY
+      - key: PADDLE_API_KEY
         sync: false
-      - key: STRIPE_WEBHOOK_SECRET
+      - key: PADDLE_WEBHOOK_SECRET
         sync: false
-      - key: STRIPE_PRICE_SINGLE
+      - key: PADDLE_SANDBOX
+        value: "0"
+      - key: PADDLE_PRICE_SINGLE
         sync: false
-      - key: STRIPE_PRICE_DAY
+      - key: PADDLE_PRICE_DAY
         sync: false
-      - key: STRIPE_PRICE_MONTH
+      - key: PADDLE_PRICE_MONTH
         sync: false
-      - key: STRIPE_PRICE_SIXMO
+      - key: PADDLE_PRICE_SIXMO
         sync: false
       - key: FRONTEND_URL
         sync: false

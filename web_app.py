@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from auth_api import router as auth_router
 from auth_deps import assert_job_readable, get_current_user_optional, get_job_user
@@ -21,6 +21,7 @@ from user_store import UserRecord
 
 
 BASE_DIR = Path(__file__).resolve().parent
+TERMS_HTML_PATH = BASE_DIR / "legal" / "terms.html"
 JOBS_DIR = BASE_DIR / "jobs"
 SERVER_TEST_INPUTS = BASE_DIR / "server_test_inputs"
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -152,7 +153,8 @@ def root():
         },
         "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text)",
         "job_auth": "Set REQUIRE_AUTH_FOR_JOBS=1 to require Bearer token; jobs are scoped to the user",
-        "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/portal-session (Stripe Customer Portal), POST /billing/webhook. BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id (8–64 hex) for free guest runs",
+        "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/portal-session (Paddle customer portal), POST /billing/webhook. BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id (8–64 hex) for free guest runs",
+        "legal": "GET /legal/terms — Terms of Service (set PUBLIC_CONTACT_EMAIL)",
         "smoke_test": "POST /test/smoke (optional Form: language; Header X-Smoke-Secret if env SMOKE_TEST_SECRET is set)",
     }
 
@@ -160,6 +162,16 @@ def root():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/legal/terms", response_class=HTMLResponse)
+def terms_of_service():
+    """Public Terms of Service for storefront / payment provider onboarding (e.g. Paddle)."""
+    if not TERMS_HTML_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Terms page not found")
+    html = TERMS_HTML_PATH.read_text(encoding="utf-8")
+    contact = os.environ.get("PUBLIC_CONTACT_EMAIL", "").strip() or "UPDATE_YOUR_EMAIL@example.com"
+    return html.replace("{{CONTACT_EMAIL}}", contact)
 
 
 @app.post("/jobs")

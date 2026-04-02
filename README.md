@@ -54,9 +54,9 @@ Typical flow:
 
 The main goal of the project is accurate conversation reconstruction and translation, especially in difficult cases where OCR is noisy, chat UI artifacts are present, or subject/reference resolution is ambiguous.
 
-## HTTP API & billing (Stripe)
+## HTTP API & billing (Paddle)
 
-The FastAPI app (`web_app.py`) exposes translation jobs plus optional **Stripe** billing.
+The FastAPI app (`web_app.py`) exposes translation jobs plus optional **[Paddle Billing](https://www.paddle.com/billing)** (merchant of record). Paddle can pay out to sellers in Israel and handles tax and payment methods; you configure products/prices in Paddle, not a card processor directly.
 
 ### Entitlements (SQLite)
 
@@ -65,7 +65,7 @@ Stored in the same database file as users (`data/users.sqlite3` by default, or `
 - `free_runs_used` / cap of 3 single-image runs (when not on a pass and no credits)
 - `paid_job_credits` (one-time “full run” purchases)
 - `access_until` (ISO timestamp) for active subscription or day-pass style access
-- `stripe_customer_id`, `stripe_subscription_id`
+- `paddle_customer_id`, `paddle_address_id`, `paddle_subscription_id` (legacy `stripe_*` columns may still exist from older installs and are migrated/read for compatibility)
 
 **Guest (anonymous) rows** in `billing_guest_entitlements`: same 3-run / 1-image free cap, keyed by `X-Guest-Billing-Id` (8–64 hex chars).
 
@@ -75,28 +75,33 @@ Stored in the same database file as users (`data/users.sqlite3` by default, or `
 |----------|---------|
 | `BILLING_ENFORCE` | Set to `1` to enforce quotas on `POST /jobs`: signed-in users use Bearer; guests send **X-Guest-Billing-Id** (free tier only). |
 | `REQUIRE_AUTH_FOR_JOBS` | `1` = user jobs need Bearer; **guest** jobs need the same **X-Guest-Billing-Id** on poll/artifact requests. |
-| `STRIPE_SECRET_KEY` | Stripe secret API key |
-| `STRIPE_WEBHOOK_SECRET` | Signing secret from Stripe Dashboard → Webhooks |
-| `STRIPE_PRICE_SINGLE` | Price ID for one-time full-run credit |
-| `STRIPE_PRICE_DAY` | Price ID for 24h pass (one-time payment) |
-| `STRIPE_PRICE_MONTH` | Price ID for monthly subscription |
-| `STRIPE_PRICE_SIXMO` | Price ID for every-6-month subscription |
-| `FRONTEND_URL` | SPA origin for Checkout success/cancel redirects (no trailing slash) |
+| `PADDLE_API_KEY` | Paddle server API key (Dashboard → Developer tools) |
+| `PADDLE_WEBHOOK_SECRET` | Webhook signing secret from Paddle (notifications) |
+| `PADDLE_SANDBOX` | `1` / `true` to use `sandbox-api.paddle.com` |
+| `PADDLE_API_BASE` | Optional override of production API host (default `https://api.paddle.com`) |
+| `PADDLE_PRICE_SINGLE` | Price ID for one-time full-run credit |
+| `PADDLE_PRICE_DAY` | Price ID for 24h pass (one-time payment) |
+| `PADDLE_PRICE_MONTH` | Price ID for monthly subscription |
+| `PADDLE_PRICE_SIXMO` | Price ID for every-6-month subscription |
+| `PADDLE_CHECKOUT_COUNTRY` | ISO country for billing address on checkout (default `IL`) |
+| `PADDLE_CHECKOUT_POSTAL_CODE` | Postal code for that address (default `6100001`) |
+| `PADDLE_CHECKOUT_REGION` / `PADDLE_CHECKOUT_CITY` | Optional region and city |
+| `PADDLE_WEBHOOK_TOLERANCE_SEC` | Max age of webhook timestamp for signature verification (default `300`) |
+| `FRONTEND_URL` | SPA origin for checkout success/cancel redirects (no trailing slash) |
 
 ### Endpoints
 
-- `GET /billing/status` — whether Stripe/prices are configured (no secrets)
+- `GET /billing/status` — whether Paddle API key, webhook secret, and price env vars are set (no secrets)
 - `GET /billing/guest-status` — guest free-tier counts (**header: X-Guest-Billing-Id**)
 - `GET /billing/me` — current entitlements (**Authorization: Bearer** required)
-- `POST /billing/checkout-session` — JSON `{ "plan": "single" \| "day" \| "month" \| "sixmo" }` → `{ "url" }` for Stripe Checkout
-- `POST /billing/portal-session` — `{ "url" }` for **Stripe Customer Portal** (manage card, cancel subscription); requires prior checkout so a Stripe Customer exists
-- `POST /billing/webhook` — raw Stripe webhook (configure URL in Dashboard)
+- `POST /billing/checkout-session` — JSON `{ "plan": "single" \| "day" \| "month" \| "sixmo" }` → `{ "url" }` (Paddle Checkout)
+- `POST /billing/portal-session` — `{ "url" }` for **Paddle customer portal** (subscriptions, etc.); requires a prior successful checkout so a Paddle customer exists
+- `POST /billing/webhook` — Paddle notifications (raw body; header `Paddle-Signature`)
 
 After a successful pipeline run, the server decrements credits or increments free usage according to the `billing_consumption` value stored on the job (or guest free runs for `guest_free`).
 
-### Stripe setup (short)
+### Paddle setup (short)
 
-1. Create Products/Prices in Stripe for the four plans; copy each **Price ID** into the env vars above.
-2. In Stripe Dashboard → **Customer portal**, enable the features you want (cancel, update payment method, etc.).
-3. Add webhook endpoint `https://<your-api>/billing/webhook` and subscribe to: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, **`invoice.paid`** (keeps `access_until` aligned on subscription renewals).
-4. Local testing: `stripe listen --forward-to localhost:8000/billing/webhook` and use the printed signing secret as `STRIPE_WEBHOOK_SECRET`.
+1. In Paddle, create catalog **prices** for the four plans; copy each **Price ID** into the `PADDLE_PRICE_*` env vars.
+2. Under **Developer tools** → **Notifications**, add destination URL `https://<your-api>/billing/webhook` and subscribe to at least: **`transaction.completed`**, **`subscription.created`**, **`subscription.updated`**, **`subscription.activated`**, **`subscription.canceled`**. Copy the signing secret into `PADDLE_WEBHOOK_SECRET`.
+3. Use sandbox (`PADDLE_SANDBOX=1` and sandbox API key) until you go live; then production key and `PADDLE_SANDBOX=0`.

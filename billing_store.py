@@ -119,7 +119,34 @@ class BillingStore:
                     )
                     """
                 )
+                self._migrate_entitlements(conn)
                 conn.commit()
+
+    def _migrate_entitlements(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(billing_entitlements)").fetchall()}
+        if "paddle_customer_id" not in cols:
+            conn.execute("ALTER TABLE billing_entitlements ADD COLUMN paddle_customer_id TEXT")
+        if "paddle_address_id" not in cols:
+            conn.execute("ALTER TABLE billing_entitlements ADD COLUMN paddle_address_id TEXT")
+        if "paddle_subscription_id" not in cols:
+            conn.execute("ALTER TABLE billing_entitlements ADD COLUMN paddle_subscription_id TEXT")
+        conn.execute(
+            """
+            UPDATE billing_entitlements SET paddle_customer_id = stripe_customer_id
+            WHERE paddle_customer_id IS NULL AND stripe_customer_id IS NOT NULL
+            """
+        )
+        conn.execute(
+            """
+            UPDATE billing_entitlements SET paddle_subscription_id = stripe_subscription_id
+            WHERE paddle_subscription_id IS NULL AND stripe_subscription_id IS NOT NULL
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_billing_paddle_customer "
+            "ON billing_entitlements(paddle_customer_id) "
+            "WHERE paddle_customer_id IS NOT NULL"
+        )
 
     def ensure_row(self, user_id: str) -> None:
         now = _utc_now_iso()
@@ -145,6 +172,7 @@ class BillingStore:
                 row = conn.execute(
                     """
                     SELECT user_id, stripe_customer_id, stripe_subscription_id,
+                           paddle_customer_id, paddle_address_id, paddle_subscription_id,
                            access_until, paid_job_credits, free_runs_used, updated_at
                     FROM billing_entitlements WHERE user_id = ?
                     """,
@@ -153,18 +181,24 @@ class BillingStore:
         if not row:
             return {}
         d = dict(row)
+        d["paddle_customer_id"] = d.get("paddle_customer_id") or d.get("stripe_customer_id")
+        d["paddle_address_id"] = d.get("paddle_address_id")
+        d["paddle_subscription_id"] = d.get("paddle_subscription_id") or d.get("stripe_subscription_id")
         d["has_unlimited"] = access_until_active(d.get("access_until"))
         d["free_runs_remaining"] = max(0, FREE_RUNS_MAX - int(d.get("free_runs_used") or 0))
         return d
 
-    def get_user_id_by_stripe_customer(self, customer_id: str) -> Optional[str]:
+    def get_user_id_by_paddle_customer(self, customer_id: str) -> Optional[str]:
         if not customer_id:
             return None
         with self._lock:
             with self._connect() as conn:
                 row = conn.execute(
-                    "SELECT user_id FROM billing_entitlements WHERE stripe_customer_id = ?",
-                    (customer_id,),
+                    """
+                    SELECT user_id FROM billing_entitlements
+                    WHERE paddle_customer_id = ? OR stripe_customer_id = ?
+                    """,
+                    (customer_id, customer_id),
                 ).fetchone()
         return row["user_id"] if row else None
 
@@ -184,7 +218,7 @@ class BillingStore:
                 return False
 
     def release_webhook_event(self, event_id: str) -> None:
-        """If processing fails, release so Stripe retry can be processed."""
+        """If processing fails, release so the payment provider can retry safely."""
         with self._lock:
             with self._connect() as conn:
                 conn.execute(
@@ -193,7 +227,7 @@ class BillingStore:
                 )
                 conn.commit()
 
-    def set_stripe_customer(self, user_id: str, customer_id: str) -> None:
+    def set_paddle_customer(self, user_id: str, customer_id: str) -> None:
         now = _utc_now_iso()
         self.ensure_row(user_id)
         with self._lock:
@@ -201,10 +235,25 @@ class BillingStore:
                 conn.execute(
                     """
                     UPDATE billing_entitlements
-                    SET stripe_customer_id = ?, updated_at = ?
+                    SET paddle_customer_id = ?, updated_at = ?
                     WHERE user_id = ?
                     """,
                     (customer_id, now, user_id),
+                )
+                conn.commit()
+
+    def set_paddle_address(self, user_id: str, address_id: str) -> None:
+        now = _utc_now_iso()
+        self.ensure_row(user_id)
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE billing_entitlements
+                    SET paddle_address_id = ?, updated_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (address_id, now, user_id),
                 )
                 conn.commit()
 
@@ -285,7 +334,7 @@ class BillingStore:
                     conn.execute(
                         """
                         UPDATE billing_entitlements
-                        SET stripe_subscription_id = ?,
+                        SET paddle_subscription_id = ?,
                             access_until = ?,
                             updated_at = ?
                         WHERE user_id = ?
@@ -296,11 +345,41 @@ class BillingStore:
                     conn.execute(
                         """
                         UPDATE billing_entitlements
-                        SET stripe_subscription_id = ?, updated_at = ?
+                        SET paddle_subscription_id = ?, updated_at = ?
                         WHERE user_id = ?
                         """,
                         (subscription_id, now, user_id),
                     )
+                conn.commit()
+
+    def set_subscription_access_iso(
+        self,
+        user_id: str,
+        subscription_id: Optional[str],
+        access_until_iso: str,
+    ) -> None:
+        """Paddle subscription period end as RFC 3339 / ISO 8601."""
+        now = _utc_now_iso()
+        self.ensure_row(user_id)
+        s = access_until_iso.strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        normalized = dt.astimezone(timezone.utc).isoformat()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE billing_entitlements
+                    SET paddle_subscription_id = COALESCE(?, paddle_subscription_id),
+                        access_until = ?,
+                        updated_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (subscription_id, normalized, now, user_id),
+                )
                 conn.commit()
 
     def ensure_guest_row(self, guest_key: str) -> None:
