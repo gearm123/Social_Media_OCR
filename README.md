@@ -80,7 +80,7 @@ Stored in the same database file as users (`data/users.sqlite3` by default, or `
 | `PADDLE_SANDBOX` | Leave **unset** or `0` for **live** (`api.paddle.com`). Set `1` only if you use a separate Paddle **sandbox** account (optional). |
 | `PADDLE_API_BASE` | Optional override of production API host (default `https://api.paddle.com`) |
 | `PADDLE_PRICE_SINGLE` | Price ID for one-time full-run credit |
-| `PADDLE_PRICE_DEBUG` | Optional one-time **debug** price (e.g. $0.10 test); grants **1 job credit** like `single` |
+| `PADDLE_PRICE_DEBUG` | Optional one-time **debug** price (≥ **$0.70 USD** in Paddle — minimum charge); grants **1 job credit** like `single` |
 | `PADDLE_PRICE_MONTH` | Price ID for monthly subscription |
 | `PADDLE_PRICE_SIXMO` | Price ID for every-6-month subscription |
 | `PADDLE_PRICE_YEAR` | Price ID for annual subscription (bill yearly) |
@@ -105,6 +105,6 @@ After a successful pipeline run, the server decrements credits or increments fre
 
 ### Paddle setup (short)
 
-1. In Paddle, create catalog **prices**: one-time **single**; optional one-time **debug** (e.g. $0.10) for `PADDLE_PRICE_DEBUG`; recurring **month**, **every 6 months**, **every 12 months** (year). Copy each **Price ID** into the `PADDLE_PRICE_*` env vars.
+1. In Paddle, create catalog **prices**: one-time **single**; optional one-time **debug** (≥ **$0.70 USD** — Paddle minimum) for `PADDLE_PRICE_DEBUG`; recurring **month**, **every 6 months**, **every 12 months** (year). Copy each **Price ID** into the `PADDLE_PRICE_*` env vars.
 2. Under **Developer tools** → **Notifications**, add destination URL `https://<your-api>/billing/webhook` and subscribe to at least: **`transaction.completed`**, **`subscription.created`**, **`subscription.updated`**, **`subscription.activated`**, **`subscription.canceled`**. Copy the signing secret into `PADDLE_WEBHOOK_SECRET`.
 3. **Live only (typical):** use your **live** API key, **live** client token on the frontend, leave `PADDLE_SANDBOX` unset or `0`, and **live** price IDs. Sandbox is optional and only if you explicitly create a sandbox seller account.
