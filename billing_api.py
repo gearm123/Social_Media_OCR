@@ -59,6 +59,24 @@ def _price_id(plan: str) -> Optional[str]:
     return pid or None
 
 
+def _checkout_url_from_transaction_response(res: dict[str, Any]) -> Optional[str]:
+    """Read checkout payment link from Paddle POST /transactions response (shape may vary slightly)."""
+    if not isinstance(res, dict):
+        return None
+    data = res.get("data")
+    if isinstance(data, dict):
+        checkout = data.get("checkout")
+        if isinstance(checkout, dict):
+            u = checkout.get("url")
+            if isinstance(u, str) and u.strip():
+                return u.strip()
+        for key in ("checkout_url", "payment_url"):
+            u = data.get(key)
+            if isinstance(u, str) and u.strip().startswith("http"):
+                return u.strip()
+    return None
+
+
 def _frontend_base() -> str:
     return os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
 
@@ -298,9 +316,7 @@ def create_checkout_session(
     except PaddleAPIError as e:
         raise HTTPException(status_code=502, detail=f"Paddle transaction error: {e}") from e
 
-    data = res.get("data") or res
-    checkout = data.get("checkout") or {}
-    url = checkout.get("url")
+    url = _checkout_url_from_transaction_response(res)
     if not url:
         raise HTTPException(
             status_code=502,
@@ -352,9 +368,7 @@ def create_guest_checkout_session(
     except PaddleAPIError as e:
         raise HTTPException(status_code=502, detail=f"Paddle transaction error: {e}") from e
 
-    data = res.get("data") or res
-    checkout = data.get("checkout") or {}
-    url = checkout.get("url")
+    url = _checkout_url_from_transaction_response(res)
     if not url:
         raise HTTPException(
             status_code=502,
