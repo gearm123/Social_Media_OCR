@@ -28,6 +28,7 @@ from paddle_client import (
     paddle_get_or_create_address_id_for_checkout,
     paddle_get_or_create_customer_id_for_checkout,
     paddle_get_subscription,
+    paddle_get_transaction,
     paddle_post_transaction,
 )
 from user_store import UserRecord
@@ -41,6 +42,8 @@ VALID_PLANS = frozenset({"single", "debug", "month", "sixmo", "year"})
 PAYMENT_PLANS = frozenset({"single", "debug"})
 # Recurring in Paddle: monthly, every 6 months, every 12 months (year billed annually).
 SUBSCRIPTION_PLANS = frozenset({"month", "sixmo", "year"})
+# Paddle transaction.status values that mean payment is good for provisioning one-time credits.
+_PADDLE_TX_PAID_STATUSES = frozenset({"completed", "billed", "paid"})
 
 _PRICE_ENV = {
     "single": "PADDLE_PRICE_SINGLE",
@@ -115,6 +118,12 @@ class CheckoutBody(BaseModel):
 class GuestCheckoutBody(BaseModel):
     plan: str = Field(..., min_length=3, max_length=16)
     email: str = Field(..., min_length=3, max_length=320)
+
+
+class GuestClaimTransactionBody(BaseModel):
+    """After Paddle checkout completes in the browser; provisions credits if webhooks are slow or missing."""
+
+    transaction_id: str = Field(..., min_length=10, max_length=64)
 
 
 class CheckoutResponse(BaseModel):
@@ -401,6 +410,82 @@ def create_guest_checkout_session(
             detail="Paddle did not return checkout.url — check FRONTEND_URL (allowed in Paddle), price IDs, and API key",
         )
     return CheckoutResponse(url=url)
+
+
+@router.post("/guest-claim-transaction")
+def guest_claim_paid_transaction(
+    body: GuestClaimTransactionBody,
+    x_guest_billing_id: Annotated[Optional[str], Header(alias="X-Guest-Billing-Id")] = None,
+):
+    """
+    Browser calls this right after Paddle checkout completes (in addition to webhooks).
+    Fixes Render/slow webhook cases where the UI returns before credits exist in SQLite.
+    """
+    gk = normalize_guest_key(x_guest_billing_id)
+    if not gk:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing or invalid X-Guest-Billing-Id (8–64 hex characters)",
+        )
+    tid = body.transaction_id.strip()
+    if not tid.startswith("txn_"):
+        raise HTTPException(
+            status_code=400,
+            detail="transaction_id must be a Paddle id (txn_…)",
+        )
+    if not paddle_configured():
+        raise HTTPException(status_code=503, detail="Paddle is not configured (PADDLE_API_KEY)")
+
+    try:
+        res = paddle_get_transaction(tid)
+    except PaddleAPIError as e:
+        raise HTTPException(status_code=502, detail=f"Paddle error: {e}") from e
+
+    pdata = res.get("data") if isinstance(res.get("data"), dict) else res
+    if not isinstance(pdata, dict):
+        raise HTTPException(status_code=502, detail="Invalid Paddle transaction response")
+
+    status = str(pdata.get("status") or "").strip().lower()
+    if status not in _PADDLE_TX_PAID_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transaction not ready for billing yet (status={status or 'unknown'})",
+        )
+
+    store = get_billing_store(BASE_DIR)
+    custom = _normalize_custom_data(pdata.get("custom_data"))
+    gk_raw = _custom_str(custom, "guest_key")
+    gk_from_custom = normalize_guest_key(gk_raw) if gk_raw else None
+    cid = pdata.get("customer_id")
+    if isinstance(cid, str):
+        cid = cid.strip() or None
+    resolved = gk_from_custom or (store.get_guest_key_by_paddle_customer_id(cid) if cid else None)
+    if not resolved or resolved != gk:
+        raise HTTPException(
+            status_code=403,
+            detail="Transaction does not match this guest session",
+        )
+
+    plan = (_custom_str(custom, "plan") or "").lower()
+    grant = plan in ("single", "debug") or not plan
+    if not grant:
+        raise HTTPException(status_code=409, detail="Not a one-time guest purchase transaction")
+
+    if cid:
+        store.set_guest_paddle_customer(gk, cid)
+
+    if store.try_claim_one_time_txn_credit(tid):
+        store.guest_add_job_credits(gk, 1)
+
+    g = store.get_guest_entitlements(gk)
+    return {
+        "guest_key": gk,
+        "free_runs_used": g["free_runs_used"],
+        "free_runs_remaining": g["free_runs_remaining"],
+        "free_runs_max": GUEST_FREE_RUNS_MAX,
+        "paid_job_credits": int(g.get("paid_job_credits") or 0),
+        "note": "Guests: one free single-image try; then one-time purchase (no account). Credits allow multi-image runs.",
+    }
 
 
 @router.post("/portal-session", response_model=PortalResponse)

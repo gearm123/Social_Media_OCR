@@ -68,7 +68,7 @@ Stored in the same database file as users (`data/users.sqlite3` by default, or `
 - `access_until` (ISO timestamp) for active subscription billing period; monthly run quota is separate (`BILLING_SUBSCRIPTION_RUNS_PER_MONTH`)
 - `paddle_customer_id`, `paddle_address_id`, `paddle_subscription_id` (legacy `stripe_*` columns may still exist from older installs and are migrated/read for compatibility)
 
-**Guest (anonymous) rows** in `billing_guest_entitlements`: **1** free single-image run per `X-Guest-Billing-Id` (8–64 hex); `paid_job_credits` from one-time checkout via `POST /billing/guest-checkout-session` (webhook `custom_data.guest_key`); multi-image allowed when credits > 0.
+**Guest (anonymous) rows** in `billing_guest_entitlements`: **1** free single-image run per `X-Guest-Billing-Id` (8–64 hex); `paid_job_credits` from one-time checkout via `POST /billing/guest-checkout-session` (webhook `custom_data.guest_key`, and **`POST /billing/guest-claim-transaction`** after checkout so credits apply even if webhooks are slow); multi-image allowed when credits > 0.
 
 ### Environment variables
 
@@ -99,6 +99,7 @@ Stored in the same database file as users (`data/users.sqlite3` by default, or `
 - `GET /billing/me` — current entitlements (**Authorization: Bearer** required)
 - `POST /billing/checkout-session` — JSON `{ "plan": "single" \| "debug" \| "month" \| "sixmo" \| "year" }` → `{ "url" }` (**Bearer**; signed-in users)
 - `POST /billing/guest-checkout-session` — JSON `{ "plan": "single" \| "debug", "email": "…" }` + **X-Guest-Billing-Id** → one-time Paddle checkout without an account
+- `POST /billing/guest-claim-transaction` — JSON `{ "transaction_id": "txn_…" }` + **X-Guest-Billing-Id** → verifies payment with Paddle and grants guest credits (webhook backup)
 - `POST /billing/portal-session` — `{ "url" }` for **Paddle customer portal** (subscriptions, etc.); requires a prior successful checkout so a Paddle customer exists
 - `POST /billing/webhook` — Paddle notifications (raw body; header `Paddle-Signature`)
 

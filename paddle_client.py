@@ -76,6 +76,13 @@ def _request(
         raise PaddleAPIError(msg, status=e.code, body=err_body) from e
 
 
+def paddle_get_transaction(transaction_id: str) -> dict[str, Any]:
+    tid = (transaction_id or "").strip()
+    if not tid:
+        raise ValueError("transaction_id is required")
+    return _request("GET", f"/transactions/{tid}")
+
+
 def paddle_post_transaction(body: dict[str, Any]) -> dict[str, Any]:
     # Do not use query include=checkout — Paddle only allows include values like
     # customer, address, discount, etc. Checkout URL is returned on data.checkout for
