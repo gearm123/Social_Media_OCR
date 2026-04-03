@@ -83,11 +83,21 @@ def paddle_get_subscription(subscription_id: str) -> dict[str, Any]:
     return _request("GET", f"/subscriptions/{subscription_id}")
 
 
-def paddle_create_customer(email: str, name: Optional[str], user_id: str) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "email": email,
-        "custom_data": {"user_id": str(user_id)},
-    }
+def paddle_create_customer(
+    email: str,
+    name: Optional[str],
+    *,
+    user_id: Optional[str] = None,
+    guest_key: Optional[str] = None,
+) -> dict[str, Any]:
+    if not user_id and not guest_key:
+        raise ValueError("paddle_create_customer requires user_id or guest_key")
+    custom: dict[str, str] = {}
+    if user_id:
+        custom["user_id"] = str(user_id)
+    if guest_key:
+        custom["guest_key"] = str(guest_key)
+    payload: dict[str, Any] = {"email": email, "custom_data": custom}
     if name and name.strip():
         payload["name"] = name.strip()
     return _request("POST", "/customers", json_body=payload)

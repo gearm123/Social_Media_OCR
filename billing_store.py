@@ -13,7 +13,18 @@ from typing import Any, Optional, Tuple
 # Anonymous free tier: client generates id (e.g. UUID hex), sends as X-Guest-Billing-Id
 _GUEST_KEY_RE = re.compile(r"^[a-fA-F0-9]{8,64}$")
 
-FREE_RUNS_MAX = 3
+# Signed-in users: free single-image tries (separate from anonymous guest trials).
+USER_FREE_RUNS_MAX = 1
+# Anonymous guests: free single-image tries before one-time purchase.
+GUEST_FREE_RUNS_MAX = 1
+
+
+def subscription_runs_cap() -> int:
+    """Max successful jobs per calendar month while subscription is active (~$2.50 COGS at default)."""
+    try:
+        return max(1, int(os.environ.get("BILLING_SUBSCRIPTION_RUNS_PER_MONTH", "7").strip()))
+    except ValueError:
+        return 7
 
 
 def _utc_now() -> datetime:
@@ -120,6 +131,7 @@ class BillingStore:
                     """
                 )
                 self._migrate_entitlements(conn)
+                self._migrate_guest_entitlements(conn)
                 conn.commit()
 
     def _migrate_entitlements(self, conn: sqlite3.Connection) -> None:
@@ -147,6 +159,31 @@ class BillingStore:
             "ON billing_entitlements(paddle_customer_id) "
             "WHERE paddle_customer_id IS NOT NULL"
         )
+        if "sub_quota_month" not in cols:
+            conn.execute(
+                "ALTER TABLE billing_entitlements ADD COLUMN sub_quota_month TEXT"
+            )
+        if "sub_quota_used" not in cols:
+            conn.execute(
+                "ALTER TABLE billing_entitlements ADD COLUMN sub_quota_used INTEGER NOT NULL DEFAULT 0"
+            )
+
+    def _migrate_guest_entitlements(self, conn: sqlite3.Connection) -> None:
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(billing_guest_entitlements)").fetchall()
+        }
+        if "paid_job_credits" not in cols:
+            conn.execute(
+                "ALTER TABLE billing_guest_entitlements ADD COLUMN paid_job_credits INTEGER NOT NULL DEFAULT 0"
+            )
+        if "paddle_customer_id" not in cols:
+            conn.execute(
+                "ALTER TABLE billing_guest_entitlements ADD COLUMN paddle_customer_id TEXT"
+            )
+        if "paddle_address_id" not in cols:
+            conn.execute(
+                "ALTER TABLE billing_guest_entitlements ADD COLUMN paddle_address_id TEXT"
+            )
 
     def ensure_row(self, user_id: str) -> None:
         now = _utc_now_iso()
@@ -173,7 +210,8 @@ class BillingStore:
                     """
                     SELECT user_id, stripe_customer_id, stripe_subscription_id,
                            paddle_customer_id, paddle_address_id, paddle_subscription_id,
-                           access_until, paid_job_credits, free_runs_used, updated_at
+                           access_until, paid_job_credits, free_runs_used, updated_at,
+                           sub_quota_month, sub_quota_used
                     FROM billing_entitlements WHERE user_id = ?
                     """,
                     (user_id,),
@@ -184,8 +222,23 @@ class BillingStore:
         d["paddle_customer_id"] = d.get("paddle_customer_id") or d.get("stripe_customer_id")
         d["paddle_address_id"] = d.get("paddle_address_id")
         d["paddle_subscription_id"] = d.get("paddle_subscription_id") or d.get("stripe_subscription_id")
-        d["has_unlimited"] = access_until_active(d.get("access_until"))
-        d["free_runs_remaining"] = max(0, FREE_RUNS_MAX - int(d.get("free_runs_used") or 0))
+        au = d.get("access_until")
+        cap = subscription_runs_cap()
+        ym = _utc_now().strftime("%Y-%m")
+        sm = d.get("sub_quota_month")
+        su = int(d.get("sub_quota_used") or 0)
+        sub_active = access_until_active(au)
+        eff_used = 0 if (not sm or sm != ym) else su
+        rem = max(0, cap - eff_used) if sub_active else 0
+        d["has_unlimited"] = False
+        d["subscription_active"] = sub_active
+        d["subscription_runs_cap"] = cap
+        d["subscription_runs_used_this_month"] = eff_used
+        d["subscription_runs_remaining"] = rem if sub_active else 0
+        d["subscription_quota_month"] = ym if sub_active else None
+        d["free_runs_remaining"] = max(
+            0, USER_FREE_RUNS_MAX - int(d.get("free_runs_used") or 0)
+        )
         return d
 
     def get_user_id_by_paddle_customer(self, customer_id: str) -> Optional[str]:
@@ -402,37 +455,50 @@ class BillingStore:
             with self._connect() as conn:
                 row = conn.execute(
                     """
-                    SELECT guest_key, free_runs_used, updated_at
+                    SELECT guest_key, free_runs_used, paid_job_credits,
+                           paddle_customer_id, paddle_address_id, updated_at
                     FROM billing_guest_entitlements WHERE guest_key = ?
                     """,
                     (guest_key,),
                 ).fetchone()
         used = int(row["free_runs_used"] or 0) if row else 0
+        credits = int(row["paid_job_credits"] or 0) if row else 0
         return {
             "guest_key": guest_key,
             "free_runs_used": used,
-            "free_runs_remaining": max(0, FREE_RUNS_MAX - used),
+            "free_runs_remaining": max(0, GUEST_FREE_RUNS_MAX - used),
+            "paid_job_credits": credits,
+            "paddle_customer_id": (row["paddle_customer_id"] if row else None) or None,
+            "paddle_address_id": (row["paddle_address_id"] if row else None) or None,
         }
 
     def guest_can_start_job(self, guest_key: str, image_count: int) -> Tuple[bool, str, str]:
-        """Guests: free tier only — one image, up to FREE_RUNS_MAX successful runs."""
+        """Guests: paid credits (multi-image ok) or one free single-image run per guest key."""
         if image_count < 1:
             return False, "", "no_files"
-        if image_count > 1:
-            return False, "", "multi_requires_plan"
         self.ensure_guest_row(guest_key)
         with self._lock:
             with self._connect() as conn:
                 row = conn.execute(
-                    "SELECT free_runs_used FROM billing_guest_entitlements WHERE guest_key = ?",
+                    """
+                    SELECT free_runs_used, paid_job_credits
+                    FROM billing_guest_entitlements WHERE guest_key = ?
+                    """,
                     (guest_key,),
                 ).fetchone()
         used = int(row["free_runs_used"] or 0) if row else 0
-        if used >= FREE_RUNS_MAX:
+        credits = int(row["paid_job_credits"] or 0) if row else 0
+        if credits > 0:
+            return True, "guest_credit", ""
+        if image_count > 1:
+            return False, "", "multi_requires_plan"
+        if used >= GUEST_FREE_RUNS_MAX:
             return False, "", "free_exhausted"
         return True, "guest_free", ""
 
-    def guest_apply_successful_job(self, guest_key: str) -> None:
+    def guest_add_job_credits(self, guest_key: str, delta: int) -> None:
+        if delta == 0:
+            return
         now = _utc_now_iso()
         self.ensure_guest_row(guest_key)
         with self._lock:
@@ -440,58 +506,144 @@ class BillingStore:
                 conn.execute(
                     """
                     UPDATE billing_guest_entitlements
-                    SET free_runs_used = MIN(?, free_runs_used + 1), updated_at = ?
+                    SET paid_job_credits = MAX(0, paid_job_credits + ?), updated_at = ?
                     WHERE guest_key = ?
                     """,
-                    (FREE_RUNS_MAX, now, guest_key),
+                    (delta, now, guest_key),
                 )
+                conn.commit()
+
+    def set_guest_paddle_customer(self, guest_key: str, customer_id: str) -> None:
+        now = _utc_now_iso()
+        self.ensure_guest_row(guest_key)
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE billing_guest_entitlements
+                    SET paddle_customer_id = ?, updated_at = ?
+                    WHERE guest_key = ?
+                    """,
+                    (customer_id, now, guest_key),
+                )
+                conn.commit()
+
+    def set_guest_paddle_address(self, guest_key: str, address_id: str) -> None:
+        now = _utc_now_iso()
+        self.ensure_guest_row(guest_key)
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE billing_guest_entitlements
+                    SET paddle_address_id = ?, updated_at = ?
+                    WHERE guest_key = ?
+                    """,
+                    (address_id, now, guest_key),
+                )
+                conn.commit()
+
+    def guest_apply_successful_job(self, guest_key: str, consumption: str) -> None:
+        consumption = (consumption or "").strip().lower()
+        if consumption not in ("guest_free", "guest_credit"):
+            return
+        now = _utc_now_iso()
+        self.ensure_guest_row(guest_key)
+        with self._lock:
+            with self._connect() as conn:
+                if consumption == "guest_credit":
+                    conn.execute(
+                        """
+                        UPDATE billing_guest_entitlements
+                        SET paid_job_credits = MAX(0, paid_job_credits - 1), updated_at = ?
+                        WHERE guest_key = ?
+                        """,
+                        (now, guest_key),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE billing_guest_entitlements
+                        SET free_runs_used = MIN(?, free_runs_used + 1), updated_at = ?
+                        WHERE guest_key = ?
+                        """,
+                        (GUEST_FREE_RUNS_MAX, now, guest_key),
+                    )
                 conn.commit()
 
     def can_start_job(self, user_id: str, image_count: int) -> Tuple[bool, str, str]:
         """
         Returns (ok, consumption, error_code).
-        consumption: unlimited | credit | free
-        error_code: '' | free_exhausted | multi_requires_plan
+        consumption: sub_quota | credit | free | guest_free (guest handled elsewhere)
+        error_code: '' | free_exhausted | multi_requires_plan | quota_exhausted
         """
         if image_count < 1:
             return False, "", "no_files"
 
         self.ensure_row(user_id)
+        now_iso = _utc_now_iso()
+        cap = subscription_runs_cap()
+        ym = _utc_now().strftime("%Y-%m")
+
         with self._lock:
             with self._connect() as conn:
                 row = conn.execute(
                     """
-                    SELECT access_until, paid_job_credits, free_runs_used
+                    SELECT access_until, paid_job_credits, free_runs_used,
+                           sub_quota_month, sub_quota_used
                     FROM billing_entitlements WHERE user_id = ?
                     """,
                     (user_id,),
                 ).fetchone()
-        au = row["access_until"] if row else None
-        credits = int(row["paid_job_credits"] or 0) if row else 0
-        free_used = int(row["free_runs_used"] or 0) if row else 0
+                if not row:
+                    return False, "", "free_exhausted"
+                au = row["access_until"]
+                credits = int(row["paid_job_credits"] or 0)
+                free_used = int(row["free_runs_used"] or 0)
+                sm = row["sub_quota_month"]
+                used = int(row["sub_quota_used"] or 0)
 
-        if access_until_active(au):
-            return True, "unlimited", ""
+                if access_until_active(au):
+                    if sm != ym:
+                        conn.execute(
+                            """
+                            UPDATE billing_entitlements
+                            SET sub_quota_month = ?, sub_quota_used = 0, updated_at = ?
+                            WHERE user_id = ?
+                            """,
+                            (ym, now_iso, user_id),
+                        )
+                        used = 0
+                    if used >= cap:
+                        conn.commit()
+                        return False, "", "quota_exhausted"
+                    conn.commit()
+                    return True, "sub_quota", ""
 
-        free_left = max(0, FREE_RUNS_MAX - free_used)
+                free_left = max(0, USER_FREE_RUNS_MAX - free_used)
 
-        if image_count > 1:
-            if credits > 0:
-                return True, "credit", ""
-            return False, "", "multi_requires_plan"
+                if image_count > 1:
+                    if credits > 0:
+                        conn.commit()
+                        return True, "credit", ""
+                    conn.commit()
+                    return False, "", "multi_requires_plan"
 
-        # Single image
-        if free_left > 0:
-            return True, "free", ""
-        if credits > 0:
-            return True, "credit", ""
-        return False, "", "free_exhausted"
+                if free_left > 0:
+                    conn.commit()
+                    return True, "free", ""
+                if credits > 0:
+                    conn.commit()
+                    return True, "credit", ""
+                conn.commit()
+                return False, "", "free_exhausted"
 
     def apply_successful_job(self, user_id: str, consumption: str) -> None:
         consumption = (consumption or "").strip().lower()
-        if consumption == "unlimited" or not consumption:
+        if consumption in ("unlimited", "") or not consumption:
             return
         now = _utc_now_iso()
+        ym = _utc_now().strftime("%Y-%m")
         self.ensure_row(user_id)
         with self._lock:
             with self._connect() as conn:
@@ -512,8 +664,36 @@ class BillingStore:
                             updated_at = ?
                         WHERE user_id = ?
                         """,
-                        (FREE_RUNS_MAX, now, user_id),
+                        (USER_FREE_RUNS_MAX, now, user_id),
                     )
+                elif consumption == "sub_quota":
+                    row = conn.execute(
+                        """
+                        SELECT sub_quota_month, sub_quota_used
+                        FROM billing_entitlements WHERE user_id = ?
+                        """,
+                        (user_id,),
+                    ).fetchone()
+                    sm = row["sub_quota_month"] if row else None
+                    used = int(row["sub_quota_used"] or 0) if row else 0
+                    if sm != ym:
+                        conn.execute(
+                            """
+                            UPDATE billing_entitlements
+                            SET sub_quota_month = ?, sub_quota_used = 1, updated_at = ?
+                            WHERE user_id = ?
+                            """,
+                            (ym, now, user_id),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            UPDATE billing_entitlements
+                            SET sub_quota_used = sub_quota_used + 1, updated_at = ?
+                            WHERE user_id = ?
+                            """,
+                            (now, user_id),
+                        )
                 conn.commit()
 
 

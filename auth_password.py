@@ -1,4 +1,4 @@
-"""Password hashing (stdlib only — PBKDF2-SHA256)."""
+i"""Password hashing (stdlib only — PBKDF2-SHA256)."""
 
 from __future__ import annotations
 

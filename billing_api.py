@@ -14,7 +14,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from auth_deps import get_current_user_required
-from billing_store import get_billing_store, normalize_guest_key
+from billing_store import (
+    GUEST_FREE_RUNS_MAX,
+    USER_FREE_RUNS_MAX,
+    get_billing_store,
+    normalize_guest_key,
+    subscription_runs_cap,
+)
 from paddle_client import (
     PaddleAPIError,
     paddle_configured,
@@ -30,15 +36,18 @@ BASE_DIR = Path(__file__).resolve().parent
 
 router = APIRouter()
 
-VALID_PLANS = frozenset({"single", "day", "month", "sixmo"})
-PAYMENT_PLANS = frozenset({"single", "day"})
-SUBSCRIPTION_PLANS = frozenset({"month", "sixmo"})
+VALID_PLANS = frozenset({"single", "debug", "month", "sixmo", "year"})
+# One-time checkout only — no saved subscription.
+PAYMENT_PLANS = frozenset({"single", "debug"})
+# Recurring in Paddle: monthly, every 6 months, every 12 months (year billed annually).
+SUBSCRIPTION_PLANS = frozenset({"month", "sixmo", "year"})
 
 _PRICE_ENV = {
     "single": "PADDLE_PRICE_SINGLE",
-    "day": "PADDLE_PRICE_DAY",
+    "debug": "PADDLE_PRICE_DEBUG",
     "month": "PADDLE_PRICE_MONTH",
     "sixmo": "PADDLE_PRICE_SIXMO",
+    "year": "PADDLE_PRICE_YEAR",
 }
 
 
@@ -52,6 +61,11 @@ def _price_id(plan: str) -> Optional[str]:
 
 def _frontend_base() -> str:
     return os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
+
+
+def _paddle_checkout_page_url() -> str:
+    """Paddle appends ?_ptxn=… to this URL; domain must be allowlisted in Paddle."""
+    return f"{_frontend_base()}/pay"
 
 
 def _checkout_country() -> str:
@@ -74,6 +88,11 @@ def _checkout_city() -> Optional[str]:
 
 class CheckoutBody(BaseModel):
     plan: str = Field(..., min_length=3, max_length=16)
+
+
+class GuestCheckoutBody(BaseModel):
+    plan: str = Field(..., min_length=3, max_length=16)
+    email: str = Field(..., min_length=3, max_length=320)
 
 
 class CheckoutResponse(BaseModel):
@@ -130,7 +149,7 @@ def _ensure_paddle_customer_and_address(store, user: UserRecord) -> tuple[str, s
     display = (user.username or user.email.split("@")[0] or "Customer").strip()
     if not cid:
         try:
-            cres = paddle_create_customer(user.email, display, user.id)
+            cres = paddle_create_customer(user.email, display, user_id=user.id)
         except PaddleAPIError as e:
             raise HTTPException(status_code=502, detail=f"Paddle customer error: {e}") from e
         cdata = cres.get("data") or cres
@@ -157,6 +176,47 @@ def _ensure_paddle_customer_and_address(store, user: UserRecord) -> tuple[str, s
     return cid, aid
 
 
+def _ensure_guest_paddle_customer_and_address(
+    store, guest_key: str, email: str
+) -> tuple[str, str]:
+    g = store.get_guest_entitlements(guest_key)
+    cid = g.get("paddle_customer_id")
+    aid = g.get("paddle_address_id")
+    if cid and aid:
+        return str(cid), str(aid)
+    em = email.strip()
+    if not em or "@" not in em:
+        raise HTTPException(status_code=400, detail="Valid email is required for checkout")
+    display = (em.split("@")[0] or "Guest").strip() or "Guest"
+    if not cid:
+        try:
+            cres = paddle_create_customer(em, display, guest_key=guest_key)
+        except PaddleAPIError as e:
+            raise HTTPException(status_code=502, detail=f"Paddle customer error: {e}") from e
+        cdata = cres.get("data") or cres
+        cid = cdata.get("id")
+        if not cid:
+            raise HTTPException(status_code=502, detail="Paddle did not return customer id")
+        store.set_guest_paddle_customer(guest_key, cid)
+    if not aid:
+        try:
+            ares = paddle_create_address(
+                cid,
+                _checkout_country(),
+                _checkout_postal(),
+                region=_checkout_region(),
+                city=_checkout_city(),
+            )
+        except PaddleAPIError as e:
+            raise HTTPException(status_code=502, detail=f"Paddle address error: {e}") from e
+        adata = ares.get("data") or ares
+        aid = adata.get("id")
+        if not aid:
+            raise HTTPException(status_code=502, detail="Paddle did not return address id")
+        store.set_guest_paddle_address(guest_key, aid)
+    return cid, aid
+
+
 @router.get("/status")
 def billing_status():
     return {
@@ -166,6 +226,7 @@ def billing_status():
         in ("1", "true", "yes", "on"),
         "webhook_configured": bool(_webhook_secret()),
         "prices": {k: bool(os.environ.get(v, "").strip()) for k, v in _PRICE_ENV.items()},
+        "subscription_runs_per_month": subscription_runs_cap(),
     }
 
 
@@ -185,8 +246,9 @@ def billing_guest_status(
         "guest_key": gk,
         "free_runs_used": g["free_runs_used"],
         "free_runs_remaining": g["free_runs_remaining"],
-        "free_runs_max": 3,
-        "note": "Guests: one image per job; sign in + checkout for multi-image or paid plans.",
+        "free_runs_max": GUEST_FREE_RUNS_MAX,
+        "paid_job_credits": int(g.get("paid_job_credits") or 0),
+        "note": "Guests: one free single-image try; then one-time purchase (no account). Credits allow multi-image runs.",
     }
 
 
@@ -200,10 +262,15 @@ def billing_me(
         "user_id": user.id,
         "access_until": e.get("access_until"),
         "has_unlimited": bool(e.get("has_unlimited")),
+        "subscription_active": bool(e.get("subscription_active")),
+        "subscription_runs_cap": int(e.get("subscription_runs_cap") or 0),
+        "subscription_runs_used_this_month": int(e.get("subscription_runs_used_this_month") or 0),
+        "subscription_runs_remaining": int(e.get("subscription_runs_remaining") or 0),
+        "subscription_quota_month": e.get("subscription_quota_month"),
         "paid_job_credits": int(e.get("paid_job_credits") or 0),
         "free_runs_used": int(e.get("free_runs_used") or 0),
         "free_runs_remaining": int(e.get("free_runs_remaining") or 0),
-        "free_runs_max": 3,
+        "free_runs_max": USER_FREE_RUNS_MAX,
         "paddle_customer_id": e.get("paddle_customer_id"),
         "paddle_subscription_id": e.get("paddle_subscription_id"),
     }
@@ -236,6 +303,7 @@ def create_checkout_session(
         "collection_mode": "automatic",
         "items": [{"price_id": price, "quantity": 1}],
         "custom_data": {"user_id": str(user.id), "plan": plan},
+        "checkout": {"url": _paddle_checkout_page_url()},
     }
     try:
         res = paddle_post_transaction(txn_body)
@@ -248,7 +316,61 @@ def create_checkout_session(
     if not url:
         raise HTTPException(
             status_code=502,
-            detail="Paddle did not return checkout.url — check price IDs and sandbox/live mode",
+            detail="Paddle did not return checkout.url — check FRONTEND_URL (allowed in Paddle), price IDs, and API key",
+        )
+    return CheckoutResponse(url=url)
+
+
+@router.post("/guest-checkout-session", response_model=CheckoutResponse)
+def create_guest_checkout_session(
+    body: GuestCheckoutBody,
+    x_guest_billing_id: Annotated[Optional[str], Header(alias="X-Guest-Billing-Id")] = None,
+):
+    gk = normalize_guest_key(x_guest_billing_id)
+    if not gk:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing or invalid X-Guest-Billing-Id (8–64 hex characters)",
+        )
+    plan = body.plan.strip().lower()
+    if plan not in PAYMENT_PLANS:
+        raise HTTPException(
+            status_code=400,
+            detail="Guests may only purchase one-time plans (single or debug)",
+        )
+    price = _price_id(plan)
+    if not price:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Price not configured for plan {plan} (set {_PRICE_ENV[plan]})",
+        )
+    if not paddle_configured():
+        raise HTTPException(status_code=503, detail="Paddle is not configured (PADDLE_API_KEY)")
+
+    store = get_billing_store(BASE_DIR)
+    store.ensure_guest_row(gk)
+    customer_id, address_id = _ensure_guest_paddle_customer_and_address(store, gk, body.email)
+
+    txn_body: dict[str, Any] = {
+        "customer_id": customer_id,
+        "address_id": address_id,
+        "collection_mode": "automatic",
+        "items": [{"price_id": price, "quantity": 1}],
+        "custom_data": {"guest_key": gk, "plan": plan},
+        "checkout": {"url": _paddle_checkout_page_url()},
+    }
+    try:
+        res = paddle_post_transaction(txn_body)
+    except PaddleAPIError as e:
+        raise HTTPException(status_code=502, detail=f"Paddle transaction error: {e}") from e
+
+    data = res.get("data") or res
+    checkout = data.get("checkout") or {}
+    url = checkout.get("url")
+    if not url:
+        raise HTTPException(
+            status_code=502,
+            detail="Paddle did not return checkout.url — check FRONTEND_URL (allowed in Paddle), price IDs, and API key",
         )
     return CheckoutResponse(url=url)
 
@@ -285,19 +407,28 @@ def create_portal_session(
 def _apply_transaction_completed(data: dict[str, Any]) -> None:
     store = get_billing_store(BASE_DIR)
     custom = data.get("custom_data") or {}
+    gk = _custom_str(custom, "guest_key")
     uid = _custom_str(custom, "user_id")
     plan = (_custom_str(custom, "plan") or "").lower()
     cid = data.get("customer_id")
+    if isinstance(cid, str):
+        cid = cid.strip() or None
+
+    if gk:
+        if cid:
+            store.set_guest_paddle_customer(gk, cid)
+        if plan in ("single", "debug"):
+            store.guest_add_job_credits(gk, 1)
+        return
+
     if cid and uid:
         store.set_paddle_customer(uid, cid)
 
     if not uid:
         return
 
-    if plan == "single":
+    if plan in ("single", "debug"):
         store.add_job_credits(uid, 1)
-    elif plan == "day":
-        store.extend_access_hours(uid, 24)
 
     sub_id = data.get("subscription_id")
     if sub_id:

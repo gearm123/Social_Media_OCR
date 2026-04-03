@@ -23,16 +23,21 @@ services:
         sync: false
       - key: PADDLE_WEBHOOK_SECRET
         sync: false
+      # 0 = live Paddle. Omit this key entirely if you prefer (same effect as 0).
       - key: PADDLE_SANDBOX
         value: "0"
       - key: PADDLE_PRICE_SINGLE
         sync: false
-      - key: PADDLE_PRICE_DAY
+      - key: PADDLE_PRICE_DEBUG
         sync: false
       - key: PADDLE_PRICE_MONTH
         sync: false
       - key: PADDLE_PRICE_SIXMO
         sync: false
+      - key: PADDLE_PRICE_YEAR
+        sync: false
+      - key: BILLING_SUBSCRIPTION_RUNS_PER_MONTH
+        value: "7"
       - key: FRONTEND_URL
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_ID

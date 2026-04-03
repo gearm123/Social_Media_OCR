@@ -105,8 +105,8 @@ def _run_job(
             artifact_urls=_artifact_urls(job_id, result.get("artifacts") or {}),
         )
         store = get_billing_store(BASE_DIR)
-        if billing_guest_key and billing_consumption == "guest_free":
-            store.guest_apply_successful_job(billing_guest_key)
+        if billing_guest_key and billing_consumption in ("guest_free", "guest_credit"):
+            store.guest_apply_successful_job(billing_guest_key, billing_consumption)
         elif billing_user_id and billing_consumption:
             store.apply_successful_job(billing_user_id, billing_consumption)
     except Exception as exc:
@@ -122,7 +122,8 @@ def _run_job(
 def _billing_block_detail(code: str) -> dict:
     messages = {
         "free_exhausted": "No free runs remaining; purchase a plan or credits.",
-        "multi_requires_plan": "Multiple images require an active pass or job credits.",
+        "multi_requires_plan": "Multiple images require an active subscription, quota, or job credits.",
+        "quota_exhausted": "Monthly plan runs used. Try again next calendar month or buy a single-run credit.",
         "no_files": "At least one image is required.",
     }
     return {"code": code, "message": messages.get(code, code)}
@@ -153,7 +154,7 @@ def root():
         },
         "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text)",
         "job_auth": "Set REQUIRE_AUTH_FOR_JOBS=1 to require Bearer token; jobs are scoped to the user",
-        "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/portal-session (Paddle customer portal), POST /billing/webhook. BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id (8–64 hex) for free guest runs",
+        "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/guest-checkout-session (one-time, guest + email), POST /billing/portal-session, POST /billing/webhook. BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id",
         "legal": "GET /legal/terms — Terms of Service (set PUBLIC_CONTACT_EMAIL)",
         "smoke_test": "POST /test/smoke (optional Form: language; Header X-Smoke-Secret if env SMOKE_TEST_SECRET is set)",
     }
