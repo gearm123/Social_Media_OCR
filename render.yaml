@@ -1,3 +1,5 @@
+# For durable SQLite across deploys: upgrade to a paid instance, add a persistent disk in the Render
+# dashboard, and set USER_DB_PATH to the mount (e.g. /data/users.sqlite3). See README.
 services:
   - type: web
     name: translate-chat-backend
@@ -40,6 +42,14 @@ services:
         value: "7"
       - key: FRONTEND_URL
         sync: false
+      # Comma-separated if multiple (e.g. prod + preview). Falls back to FRONTEND_URL only if unset.
+      - key: CORS_ORIGINS
+        sync: false
+      # Optional error monitoring
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0"
       - key: GOOGLE_OAUTH_CLIENT_ID
         sync: false
       - key: FACEBOOK_APP_ID

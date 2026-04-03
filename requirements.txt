@@ -10,3 +10,4 @@ requests
 deep-translator
 Pillow
 torch
+sentry-sdk[fastapi]>=2.0.0

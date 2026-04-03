@@ -18,22 +18,46 @@ from auth_api import router as auth_router
 from auth_deps import assert_job_readable, get_current_user_optional, get_job_user
 from billing_api import router as billing_router
 from billing_store import billing_enforce_enabled, get_billing_store, normalize_guest_key
+from rate_limit import RateLimitMiddleware
 from user_store import UserRecord
 
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
+
+_sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0") or "0"),
+    )
+
 TERMS_HTML_PATH = BASE_DIR / "legal" / "terms.html"
+PRIVACY_HTML_PATH = BASE_DIR / "legal" / "privacy.html"
 JOBS_DIR = BASE_DIR / "jobs"
 SERVER_TEST_INPUTS = BASE_DIR / "server_test_inputs"
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def _cors_allow_origins() -> list[str]:
+    raw = os.environ.get("CORS_ORIGINS", "").strip()
+    if raw:
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    fu = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
+    if fu:
+        return [fu]
+    return ["*"]
+
+
 app = FastAPI(title="Translate Chat API", version="0.1.0")
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_allow_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -214,7 +238,7 @@ def root():
         "cancel_job": "POST /jobs/{job_id}/cancel — request cooperative cancel (checked between pipeline stages)",
         "job_auth": "Set REQUIRE_AUTH_FOR_JOBS=1 to require Bearer token; jobs are scoped to the user",
         "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/guest-checkout-session (one-time, guest + email), POST /billing/guest-claim-transaction, POST /billing/user-claim-transaction (Bearer + txn, single/debug), POST /billing/portal-session, POST /billing/webhook. BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id",
-        "legal": "GET /legal/terms — Terms of Service (set PUBLIC_CONTACT_EMAIL)",
+        "legal": "GET /legal/terms, GET /legal/privacy (set PUBLIC_CONTACT_EMAIL)",
         "smoke_test": "POST /test/smoke (optional Form: language; Header X-Smoke-Secret if env SMOKE_TEST_SECRET is set)",
     }
 
@@ -234,6 +258,33 @@ def terms_of_service():
     return html.replace("{{CONTACT_EMAIL}}", contact)
 
 
+@app.get("/legal/privacy", response_class=HTMLResponse)
+def privacy_policy():
+    """Public privacy policy (starter template)."""
+    if not PRIVACY_HTML_PATH.is_file():
+        raise HTTPException(status_code=404, detail="Privacy page not found")
+    html = PRIVACY_HTML_PATH.read_text(encoding="utf-8")
+    contact = os.environ.get("PUBLIC_CONTACT_EMAIL", "").strip() or "UPDATE_YOUR_EMAIL@example.com"
+    return html.replace("{{CONTACT_EMAIL}}", contact)
+
+
+def _max_job_files() -> int:
+    try:
+        n = int(os.environ.get("MAX_JOB_FILES", "30"))
+    except ValueError:
+        n = 30
+    return max(1, min(n, 80))
+
+
+def _max_job_upload_bytes() -> int:
+    try:
+        mb = int(os.environ.get("MAX_JOB_UPLOAD_MB", "80"))
+    except ValueError:
+        mb = 80
+    mb = max(1, min(mb, 500))
+    return mb * 1024 * 1024
+
+
 @app.post("/jobs")
 async def create_job(
     job_user: Annotated[Optional[UserRecord], Depends(get_job_user)],
@@ -244,6 +295,13 @@ async def create_job(
 ):
     if not files:
         raise HTTPException(status_code=400, detail="At least one image file is required")
+
+    max_files = _max_job_files()
+    if len(files) > max_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many images in one job (maximum {max_files}).",
+        )
 
     billing_consumption: Optional[str] = None
     billing_guest_key: Optional[str] = None
@@ -289,19 +347,36 @@ async def create_job(
     job_id = uuid4().hex
     job_dir = _job_dir(job_id)
     input_dir = job_dir / "input_images"
-    input_dir.mkdir(parents=True, exist_ok=True)
+    max_bytes = _max_job_upload_bytes()
+    image_paths: list[str] = []
+    intake_rows: list[tuple[int, str, int]] = []
+    total_written = 0
 
-    image_paths = []
-    intake_rows = []
-    for idx, upload in enumerate(files):
-        orig_name = upload.filename or f"image_{idx}.png"
-        suffix = Path(orig_name).suffix or ".png"
-        safe_name = f"{idx:03d}{suffix.lower()}"
-        dest = input_dir / safe_name
-        with dest.open("wb") as f:
-            shutil.copyfileobj(upload.file, f)
-        image_paths.append(str(dest))
-        intake_rows.append((idx, orig_name, dest.stat().st_size))
+    try:
+        input_dir.mkdir(parents=True, exist_ok=True)
+        for idx, upload in enumerate(files):
+            orig_name = upload.filename or f"image_{idx}.png"
+            suffix = Path(orig_name).suffix or ".png"
+            safe_name = f"{idx:03d}{suffix.lower()}"
+            dest = input_dir / safe_name
+            with dest.open("wb") as f:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total_written += len(chunk)
+                    if total_written > max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Total upload exceeds {max_bytes // (1024 * 1024)} MB limit.",
+                        )
+                    f.write(chunk)
+            nbytes = dest.stat().st_size
+            image_paths.append(str(dest))
+            intake_rows.append((idx, orig_name, nbytes))
+    except HTTPException:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
 
     bubble_preview = (bubble_summary_text or "").strip()
     bubble_line_count = len([ln for ln in bubble_preview.splitlines() if ln.strip()])

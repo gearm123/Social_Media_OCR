@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -36,6 +37,7 @@ from user_store import UserRecord
 BASE_DIR = Path(__file__).resolve().parent
 
 router = APIRouter()
+_log = logging.getLogger("translate_chat.billing")
 
 VALID_PLANS = frozenset({"single", "debug", "month", "sixmo", "year"})
 # One-time checkout only — no saved subscription.
@@ -656,6 +658,7 @@ async def paddle_webhook(request: Request):
     raw = await request.body()
     sig = request.headers.get("Paddle-Signature") or request.headers.get("paddle-signature")
     if not _verify_paddle_signature(raw, sig):
+        _log.warning("paddle_webhook reject reason=bad_signature len_body=%s", len(raw))
         raise HTTPException(status_code=400, detail="Invalid Paddle-Signature")
 
     try:
@@ -665,24 +668,42 @@ async def paddle_webhook(request: Request):
 
     event_id = payload.get("event_id") or payload.get("notification_id")
     if not event_id:
+        _log.info("paddle_webhook skip reason=no_event_id")
         return {"received": True}
 
     store = get_billing_store(BASE_DIR)
     if not store.try_claim_webhook_event(event_id):
+        _log.info("paddle_webhook duplicate event_id=%s", event_id)
         return {"received": True, "duplicate": True}
 
     etype = (payload.get("event_type") or "").strip().lower()
     data = payload.get("data") or {}
+    txn = (data.get("id") if isinstance(data, dict) else None) or ""
 
     try:
         if etype in ("transaction.completed", "transaction.paid"):
             _apply_transaction_completed(data)
-        elif etype in ("subscription.updated", "subscription.created", "subscription.canceled", "subscription.activated"):
+            _log.info(
+                "paddle_webhook ok event=%s event_id=%s transaction_id=%s",
+                etype,
+                event_id,
+                txn,
+            )
+        elif etype in (
+            "subscription.updated",
+            "subscription.created",
+            "subscription.canceled",
+            "subscription.activated",
+        ):
             _apply_subscription_entity(data)
+            _log.info("paddle_webhook ok event=%s event_id=%s", etype, event_id)
+        else:
+            _log.info("paddle_webhook ignored event=%s event_id=%s", etype, event_id)
     except Exception:
         import traceback
 
         traceback.print_exc()
+        _log.exception("paddle_webhook handler_error event=%s event_id=%s", etype, event_id)
         store.release_webhook_event(event_id)
         raise HTTPException(status_code=500, detail="Webhook handler error")
 

@@ -111,3 +111,12 @@ After a successful pipeline run, the server decrements credits or increments fre
 1. In Paddle, create catalog **prices**: one-time **single**; optional one-time **debug** (≥ **$0.70 USD** — Paddle minimum) for `PADDLE_PRICE_DEBUG`; recurring **month**, **every 6 months**, **every 12 months** (year). Copy each **Price ID** into the `PADDLE_PRICE_*` env vars.
 2. Under **Developer tools** → **Notifications**, add destination URL `https://<your-api>/billing/webhook` and subscribe to at least: **`transaction.completed`** (or **`transaction.paid`** for faster provisioning — the server handles both idempotently), **`subscription.created`**, **`subscription.updated`**, **`subscription.activated`**, **`subscription.canceled`**. Copy the signing secret into `PADDLE_WEBHOOK_SECRET`.
 3. **Live only (typical):** use your **live** API key, **live** client token on the frontend, leave `PADDLE_SANDBOX` unset or `0`, and **live** price IDs. Sandbox is optional and only if you explicitly create a sandbox seller account.
+
+### Production hardening (API)
+
+- **CORS:** Set `FRONTEND_URL` (single origin) or `CORS_ORIGINS` (comma-separated). If both are empty, the API allows `*` (fine for local dev only).
+- **Rate limits:** In-memory per IP on `POST` (`RATE_LIMIT_*` env vars; disable with `RATE_LIMIT_ENABLED=0`). `/billing/webhook` has a high limit; tune if Paddle shares egress IPs.
+- **Job caps:** `MAX_JOB_FILES` (default 30), `MAX_JOB_UPLOAD_MB` (default 80 total per job).
+- **SQLite:** Default `data/users.sqlite3`. For Render, use a **persistent disk** on a paid instance and set `USER_DB_PATH` to the mount path. Backups: `python scripts/backup_sqlite.py` (see script docstring).
+- **Monitoring:** Optional `SENTRY_DSN` + `SENTRY_TRACES_SAMPLE_RATE`. Paddle webhooks log to stdout at `INFO` (`translate_chat.billing`).
+- **Legal:** `GET /legal/terms`, `GET /legal/privacy` (set `PUBLIC_CONTACT_EMAIL`).
