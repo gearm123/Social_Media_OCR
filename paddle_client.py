@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Optional
@@ -84,6 +85,89 @@ def paddle_post_transaction(body: dict[str, Any]) -> dict[str, Any]:
 
 def paddle_get_subscription(subscription_id: str) -> dict[str, Any]:
     return _request("GET", f"/subscriptions/{subscription_id}")
+
+
+def paddle_list_customers(*, email: str) -> dict[str, Any]:
+    """List customers; use email= for exact match (Paddle allows comma-separated list)."""
+    return _request("GET", "/customers", query={"email": email.strip()})
+
+
+def paddle_list_customer_addresses(customer_id: str) -> dict[str, Any]:
+    return _request("GET", f"/customers/{customer_id}/addresses")
+
+
+def _paddle_customer_id_from_error_body(body: str) -> Optional[str]:
+    """Parse ctm_* from customer_already_exists and similar responses."""
+    if not body:
+        return None
+    m = re.search(r"\b(ctm_[0-9a-z]+)\b", body, flags=re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def paddle_get_or_create_customer_id_for_checkout(
+    email: str,
+    name: Optional[str],
+    *,
+    user_id: Optional[str] = None,
+    guest_key: Optional[str] = None,
+) -> str:
+    """
+    Return Paddle customer id for checkout. Reuses an existing customer with the same
+    email (Paddle enforces unique emails across customers).
+    """
+    em = email.strip()
+    if not em:
+        raise ValueError("email is required")
+    try:
+        listed = paddle_list_customers(email=em)
+        rows = listed.get("data") or []
+        if rows and rows[0].get("id"):
+            return str(rows[0]["id"])
+    except PaddleAPIError:
+        pass
+
+    try:
+        cres = paddle_create_customer(em, name, user_id=user_id, guest_key=guest_key)
+    except PaddleAPIError as e:
+        cid = _paddle_customer_id_from_error_body(e.body or "")
+        if cid:
+            return cid
+        raise
+    cdata = cres.get("data") or cres
+    cid = cdata.get("id")
+    if not cid:
+        raise PaddleAPIError("Paddle did not return customer id")
+    return str(cid)
+
+
+def paddle_get_or_create_address_id_for_checkout(
+    customer_id: str,
+    country_code: str,
+    postal_code: str,
+    *,
+    region: Optional[str] = None,
+    city: Optional[str] = None,
+) -> str:
+    """Reuse first existing address on the customer, or create checkout defaults."""
+    try:
+        listed = paddle_list_customer_addresses(customer_id)
+        addrs = listed.get("data") or []
+        if addrs and addrs[0].get("id"):
+            return str(addrs[0]["id"])
+    except PaddleAPIError:
+        pass
+    ares = paddle_create_address(
+        customer_id,
+        country_code,
+        postal_code,
+        region=region,
+        city=city,
+    )
+    adata = ares.get("data") or ares
+    aid = adata.get("id")
+    if not aid:
+        raise PaddleAPIError("Paddle did not return address id")
+    return str(aid)
 
 
 def paddle_create_customer(

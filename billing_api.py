@@ -24,9 +24,9 @@ from billing_store import (
 from paddle_client import (
     PaddleAPIError,
     paddle_configured,
-    paddle_create_address,
-    paddle_create_customer,
     paddle_create_portal_session,
+    paddle_get_or_create_address_id_for_checkout,
+    paddle_get_or_create_customer_id_for_checkout,
     paddle_get_subscription,
     paddle_post_transaction,
 )
@@ -149,17 +149,15 @@ def _ensure_paddle_customer_and_address(store, user: UserRecord) -> tuple[str, s
     display = (user.username or user.email.split("@")[0] or "Customer").strip()
     if not cid:
         try:
-            cres = paddle_create_customer(user.email, display, user_id=user.id)
+            cid = paddle_get_or_create_customer_id_for_checkout(
+                user.email, display, user_id=user.id
+            )
         except PaddleAPIError as e:
             raise HTTPException(status_code=502, detail=f"Paddle customer error: {e}") from e
-        cdata = cres.get("data") or cres
-        cid = cdata.get("id")
-        if not cid:
-            raise HTTPException(status_code=502, detail="Paddle did not return customer id")
         store.set_paddle_customer(user.id, cid)
     if not aid:
         try:
-            ares = paddle_create_address(
+            aid = paddle_get_or_create_address_id_for_checkout(
                 cid,
                 _checkout_country(),
                 _checkout_postal(),
@@ -168,10 +166,6 @@ def _ensure_paddle_customer_and_address(store, user: UserRecord) -> tuple[str, s
             )
         except PaddleAPIError as e:
             raise HTTPException(status_code=502, detail=f"Paddle address error: {e}") from e
-        adata = ares.get("data") or ares
-        aid = adata.get("id")
-        if not aid:
-            raise HTTPException(status_code=502, detail="Paddle did not return address id")
         store.set_paddle_address(user.id, aid)
     return cid, aid
 
@@ -190,17 +184,15 @@ def _ensure_guest_paddle_customer_and_address(
     display = (em.split("@")[0] or "Guest").strip() or "Guest"
     if not cid:
         try:
-            cres = paddle_create_customer(em, display, guest_key=guest_key)
+            cid = paddle_get_or_create_customer_id_for_checkout(
+                em, display, guest_key=guest_key
+            )
         except PaddleAPIError as e:
             raise HTTPException(status_code=502, detail=f"Paddle customer error: {e}") from e
-        cdata = cres.get("data") or cres
-        cid = cdata.get("id")
-        if not cid:
-            raise HTTPException(status_code=502, detail="Paddle did not return customer id")
         store.set_guest_paddle_customer(guest_key, cid)
     if not aid:
         try:
-            ares = paddle_create_address(
+            aid = paddle_get_or_create_address_id_for_checkout(
                 cid,
                 _checkout_country(),
                 _checkout_postal(),
@@ -209,10 +201,6 @@ def _ensure_guest_paddle_customer_and_address(
             )
         except PaddleAPIError as e:
             raise HTTPException(status_code=502, detail=f"Paddle address error: {e}") from e
-        adata = ares.get("data") or ares
-        aid = adata.get("id")
-        if not aid:
-            raise HTTPException(status_code=502, detail="Paddle did not return address id")
         store.set_guest_paddle_address(guest_key, aid)
     return cid, aid
 
