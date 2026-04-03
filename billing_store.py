@@ -117,6 +117,14 @@ class BillingStore:
                     """
                 )
                 conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS billing_one_time_txn_credits (
+                        transaction_id TEXT PRIMARY KEY,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_billing_customer "
                     "ON billing_entitlements(stripe_customer_id) "
                     "WHERE stripe_customer_id IS NOT NULL"
@@ -184,6 +192,51 @@ class BillingStore:
             conn.execute(
                 "ALTER TABLE billing_guest_entitlements ADD COLUMN paddle_address_id TEXT"
             )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_guest_paddle_customer "
+            "ON billing_guest_entitlements(paddle_customer_id) "
+            "WHERE paddle_customer_id IS NOT NULL"
+        )
+
+    def try_claim_one_time_txn_credit(self, transaction_id: Optional[str]) -> bool:
+        """Return True if we should apply one-time credits for this Paddle transaction (first event only)."""
+        if not transaction_id or not str(transaction_id).strip():
+            return True
+        tid = str(transaction_id).strip()
+        now = _utc_now_iso()
+        with self._lock:
+            with self._connect() as conn:
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO billing_one_time_txn_credits (transaction_id, created_at)
+                        VALUES (?, ?)
+                        """,
+                        (tid, now),
+                    )
+                    conn.commit()
+                    return True
+                except sqlite3.IntegrityError:
+                    return False
+
+    def get_guest_key_by_paddle_customer_id(self, customer_id: Optional[str]) -> Optional[str]:
+        if not customer_id or not str(customer_id).strip():
+            return None
+        cid = str(customer_id).strip()
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT guest_key FROM billing_guest_entitlements
+                    WHERE paddle_customer_id = ?
+                    LIMIT 1
+                    """,
+                    (cid,),
+                ).fetchone()
+        if not row:
+            return None
+        gk = row["guest_key"]
+        return str(gk).strip() or None
 
     def ensure_row(self, user_id: str) -> None:
         now = _utc_now_iso()

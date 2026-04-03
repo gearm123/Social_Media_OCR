@@ -162,6 +162,28 @@ def _custom_str(data: dict[str, Any], key: str) -> Optional[str]:
     return str(v).strip() or None
 
 
+def _normalize_custom_data(raw: Any) -> dict[str, Any]:
+    """Paddle may send JSON object or string; dashboard/API may use camelCase keys."""
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return {}
+        try:
+            raw = json.loads(s)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = dict(raw)
+    if "guest_key" not in out and out.get("guestKey") is not None:
+        out["guest_key"] = out.get("guestKey")
+    if "user_id" not in out and out.get("userId") is not None:
+        out["user_id"] = out.get("userId")
+    return out
+
+
 def _ensure_paddle_customer_and_address(store, user: UserRecord) -> tuple[str, str]:
     ent = store.get_entitlements(user.id)
     cid = ent.get("paddle_customer_id")
@@ -412,18 +434,29 @@ def create_portal_session(
 
 def _apply_transaction_completed(data: dict[str, Any]) -> None:
     store = get_billing_store(BASE_DIR)
-    custom = data.get("custom_data") or {}
-    gk = _custom_str(custom, "guest_key")
+    custom = _normalize_custom_data(data.get("custom_data"))
+    gk_raw = _custom_str(custom, "guest_key")
+    gk = normalize_guest_key(gk_raw) if gk_raw else None
     uid = _custom_str(custom, "user_id")
     plan = (_custom_str(custom, "plan") or "").lower()
+    tid = data.get("id")
+    tid = str(tid).strip() if tid else None
+
     cid = data.get("customer_id")
     if isinstance(cid, str):
         cid = cid.strip() or None
 
+    if not gk and cid:
+        gk = store.get_guest_key_by_paddle_customer_id(cid)
+
     if gk:
         if cid:
             store.set_guest_paddle_customer(gk, cid)
-        if plan in ("single", "debug"):
+        # Guest checkout only sells one-time run products; credit if plan matches or webhook omitted plan.
+        grant = plan in ("single", "debug") or not plan
+        if grant:
+            if not store.try_claim_one_time_txn_credit(tid):
+                return
             store.guest_add_job_credits(gk, 1)
         return
 
@@ -434,6 +467,8 @@ def _apply_transaction_completed(data: dict[str, Any]) -> None:
         return
 
     if plan in ("single", "debug"):
+        if not store.try_claim_one_time_txn_credit(tid):
+            return
         store.add_job_credits(uid, 1)
 
     sub_id = data.get("subscription_id")
@@ -486,7 +521,7 @@ async def paddle_webhook(request: Request):
     data = payload.get("data") or {}
 
     try:
-        if etype == "transaction.completed":
+        if etype in ("transaction.completed", "transaction.paid"):
             _apply_transaction_completed(data)
         elif etype in ("subscription.updated", "subscription.created", "subscription.canceled", "subscription.activated"):
             _apply_subscription_entity(data)
