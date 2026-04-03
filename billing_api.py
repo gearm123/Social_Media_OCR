@@ -78,7 +78,11 @@ def _checkout_url_from_transaction_response(res: dict[str, Any]) -> Optional[str
 
 
 def _frontend_base() -> str:
-    return os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
+    """Site origin for Paddle checkout return URL; must be an absolute http(s) URL."""
+    u = os.environ.get("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
+    if u and not u.lower().startswith(("http://", "https://")):
+        u = f"https://{u}"
+    return u
 
 
 def _paddle_checkout_page_url() -> str:
