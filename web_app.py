@@ -250,32 +250,34 @@ async def create_job(
     bill = get_billing_store(BASE_DIR)
     guest_key_opt = normalize_guest_key(x_guest_billing_id) if job_user is None else None
 
-    if billing_enforce_enabled():
-        if job_user is not None:
-            ok, consumption, err = bill.can_start_job(job_user.id, len(files))
-            if not ok:
-                raise HTTPException(
-                    status_code=402,
-                    detail=_billing_block_detail(err),
-                )
-            billing_consumption = consumption
-        else:
-            if not guest_key_opt:
-                raise HTTPException(
-                    status_code=401,
-                    detail=(
-                        "Sign in with Authorization: Bearer, or send header X-Guest-Billing-Id "
-                        "(8–64 hex characters, e.g. UUID without dashes) for guest free runs"
-                    ),
-                )
-            ok, consumption, err = bill.guest_can_start_job(guest_key_opt, len(files))
-            if not ok:
-                raise HTTPException(
-                    status_code=402,
-                    detail=_billing_block_detail(err),
-                )
-            billing_guest_key = guest_key_opt
-            billing_consumption = consumption
+    # Signed-in: always run entitlement checks and set billing_consumption so successful jobs
+    # call apply_successful_job (free_runs_used, credits, sub quota). This applies even when
+    # BILLING_ENFORCE is off — otherwise accounts could run unlimited single-image jobs.
+    if job_user is not None:
+        ok, consumption, err = bill.can_start_job(job_user.id, len(files))
+        if not ok:
+            raise HTTPException(
+                status_code=402,
+                detail=_billing_block_detail(err),
+            )
+        billing_consumption = consumption
+    elif billing_enforce_enabled():
+        if not guest_key_opt:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Sign in with Authorization: Bearer, or send header X-Guest-Billing-Id "
+                    "(8–64 hex characters, e.g. UUID without dashes) for guest free runs"
+                ),
+            )
+        ok, consumption, err = bill.guest_can_start_job(guest_key_opt, len(files))
+        if not ok:
+            raise HTTPException(
+                status_code=402,
+                detail=_billing_block_detail(err),
+            )
+        billing_guest_key = guest_key_opt
+        billing_consumption = consumption
     elif guest_key_opt:
         # Guest jobs: record Paddle-style consumption on success even when BILLING_ENFORCE is off,
         # so the SPA and GET /billing/guest-status stay aligned with completed runs.
