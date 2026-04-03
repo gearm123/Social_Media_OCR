@@ -76,7 +76,10 @@ def _request(
 
 
 def paddle_post_transaction(body: dict[str, Any]) -> dict[str, Any]:
-    return _request("POST", "/transactions", json_body=body, query={"include": "checkout"})
+    # Do not use query include=checkout — Paddle only allows include values like
+    # customer, address, discount, etc. Checkout URL is returned on data.checkout for
+    # automatic collection_mode transactions.
+    return _request("POST", "/transactions", json_body=body)
 
 
 def paddle_get_subscription(subscription_id: str) -> dict[str, Any]:
