@@ -6,6 +6,10 @@ import argparse
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
+
+
+class JobCancelledError(Exception):
+    """Raised when ``cancel_check`` returns True between pipeline stages."""
 import cv2
 import numpy as np
 
@@ -962,8 +966,14 @@ def run_pipeline_job(
     bubble_summary_text=None,
     allow_interactive_bubble_summary=False,
     on_stage: Optional[Callable[[str], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ):
+    def _check_cancel() -> None:
+        if cancel_check is not None and cancel_check():
+            raise JobCancelledError("Job cancelled by user request")
+
     def _emit_stage(stage_name: str) -> None:
+        _check_cancel()
         if on_stage is None:
             return
         try:
@@ -996,11 +1006,15 @@ def run_pipeline_job(
     if not images:
         raise ValueError("No input images were provided.")
 
+    _check_cancel()
+
     with _override_runtime_dirs(input_dir, output_dir, json_dir, render_dir, debug_dir):
         print(f"[JOB] Pipeline start job_dir={work_dir}", flush=True)
         crop_infos = [prepare_image_crop_info(str(path)) for path in images]
         if not crop_infos:
             raise RuntimeError("No usable images after preprocessing.")
+
+        _check_cancel()
 
         contact_name = _extract_contact_name(crop_infos[0]) if crop_infos else ""
         page_images = extract_page_segment_images(crop_infos)
@@ -1008,6 +1022,8 @@ def run_pipeline_job(
         combined_img, _page_ranges = build_combined_image(crop_infos, global_first_page_index=0)
         if combined_img is None:
             raise RuntimeError("Empty combined image.")
+
+        _check_cancel()
 
         ocr_hints = None
         ocr_hints_format = "none"
@@ -1047,11 +1063,15 @@ def run_pipeline_job(
         if not ok or not all_meta:
             raise RuntimeError("Gemini did not return a usable conversation.")
 
+        _check_cancel()
+
         print("[JOB] Pass 1 multimodal OK; running page OCR for pass 2 hints…", flush=True)
         pass2_ocr_text, _pass2_ocr_entries = collect_page_ocr_debug(page_images)
         pass2_ocr_debug_path = os.path.join(OUTPUT_DIR, "pass2_ocr_debug.txt")
         with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
             f.write(pass2_ocr_text)
+
+        _check_cancel()
 
         print("[JOB] Starting Gemini pass 2 (OCR hints refine)…", flush=True)
         _emit_stage("polishing")
@@ -1074,6 +1094,8 @@ def run_pipeline_job(
         for i, item in enumerate(all_meta or []):
             item["order"] = i
 
+        _check_cancel()
+
         print("[JOB] Starting Gemini pass 3 (reference resolution)…", flush=True)
         _emit_stage("bringing_together")
         final_messages, contact_name3, pass3_reference_debug = _gemini_reference_resolution_pass(
@@ -1091,6 +1113,8 @@ def run_pipeline_job(
             (pass_debug or {}).get("pass1_system_messages") or [],
         )
 
+        _check_cancel()
+
         print("[JOB] Pass 3 reference done; starting status-bar pass…", flush=True)
         _emit_stage("final_touches")
         status_bar_info = _gemini_status_bar_pass(
@@ -1103,6 +1127,8 @@ def run_pipeline_job(
         final_contact_name = (translate_to_en(final_contact_name_src) or final_contact_name_src).strip() or "Person A"
         final_status_text = (translate_to_en(final_status_text_src) or final_status_text_src).strip()
         profile_image = None
+
+        _check_cancel()
 
         print("[JOB] Status-bar pass done; writing JSON debug + translated_conversation.json…", flush=True)
         pass1_source_debug_path = os.path.join(JSON_DIR, "pass1_transcript_debug.json")
@@ -1123,6 +1149,8 @@ def run_pipeline_job(
         combined_json_path = os.path.join(JSON_DIR, "translated_conversation.json")
         with open(combined_json_path, "w", encoding="utf-8") as f:
             json.dump(final_render_meta, f, indent=2, ensure_ascii=False)
+
+        _check_cancel()
 
         print("[JOB] Rendering PNGs (OpenCV: pass1/2/3, compare, final)…", flush=True)
         pass1_chat = render_chat(pass1_meta)

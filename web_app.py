@@ -8,6 +8,8 @@ from threading import Thread
 from typing import Annotated, Optional
 from uuid import uuid4
 
+from dotenv import load_dotenv
+
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
@@ -16,11 +18,12 @@ from auth_api import router as auth_router
 from auth_deps import assert_job_readable, get_current_user_optional, get_job_user
 from billing_api import router as billing_router
 from billing_store import billing_enforce_enabled, get_billing_store, normalize_guest_key
-from main import run_pipeline_job
+from main import JobCancelledError, run_pipeline_job
 from user_store import UserRecord
 
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 TERMS_HTML_PATH = BASE_DIR / "legal" / "terms.html"
 JOBS_DIR = BASE_DIR / "jobs"
 SERVER_TEST_INPUTS = BASE_DIR / "server_test_inputs"
@@ -79,6 +82,10 @@ def _artifact_urls(job_id: str, artifacts: dict) -> dict:
     return out
 
 
+def _cancel_flag_path(job_id: str) -> Path:
+    return _job_dir(job_id) / ".cancel_requested"
+
+
 def _run_job(
     job_id: str,
     image_paths: list[str],
@@ -96,6 +103,7 @@ def _run_job(
             language=language,
             bubble_summary_text=bubble_summary_text,
             on_stage=lambda s: _write_status(job_id, status="running", stage=s),
+            cancel_check=lambda: _cancel_flag_path(job_id).exists(),
         )
         _write_status(
             job_id,
@@ -109,6 +117,19 @@ def _run_job(
             store.guest_apply_successful_job(billing_guest_key, billing_consumption)
         elif billing_user_id and billing_consumption:
             store.apply_successful_job(billing_user_id, billing_consumption)
+    except JobCancelledError:
+        _write_status(
+            job_id,
+            status="cancelled",
+            stage="cancelled",
+            error="Cancelled by user",
+        )
+        flag = _cancel_flag_path(job_id)
+        if flag.exists():
+            try:
+                flag.unlink()
+            except OSError:
+                pass
     except Exception as exc:
         _write_status(
             job_id,
@@ -153,6 +174,7 @@ def root():
             "me": "GET /auth/me Authorization: Bearer <token>",
         },
         "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text)",
+        "cancel_job": "POST /jobs/{job_id}/cancel — request cooperative cancel (checked between pipeline stages)",
         "job_auth": "Set REQUIRE_AUTH_FOR_JOBS=1 to require Bearer token; jobs are scoped to the user",
         "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/guest-checkout-session (one-time, guest + email), POST /billing/portal-session, POST /billing/webhook. BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id",
         "legal": "GET /legal/terms — Terms of Service (set PUBLIC_CONTACT_EMAIL)",
@@ -344,6 +366,22 @@ def get_job(
     status = _load_status(job_id)
     assert_job_readable(status, user, x_guest_billing_id)
     return status
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(
+    job_id: str,
+    user: Annotated[Optional[UserRecord], Depends(get_current_user_optional)],
+    x_guest_billing_id: Annotated[Optional[str], Header(alias="X-Guest-Billing-Id")] = None,
+):
+    """Signal the worker thread to stop at the next cancel check (between major pipeline stages)."""
+    status = _load_status(job_id)
+    assert_job_readable(status, user, x_guest_billing_id)
+    st = status.get("status")
+    if st in ("completed", "failed", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"Job already finished ({st})")
+    _cancel_flag_path(job_id).touch()
+    return {"job_id": job_id, "status": "cancelling"}
 
 
 @app.get("/jobs/{job_id}/results")
