@@ -46,19 +46,14 @@ def _pv(*args, **kwargs) -> None:
 def gemini_pass_timeout_sec(pass_num: int) -> int:
     """HTTP client read timeout (seconds) for each Gemini ``generateContent`` call.
 
-    This is only a **client-side** maximum wait; it does not speed up the API. Typical multimodal
-    jobs often finish in tens of seconds — defaults below favor failing fast if something stalls,
-    while still allowing slower vision + JSON. If you hit read timeouts, raise
-    ``GEMINI_PASS{n}_TIMEOUT_SEC`` or ``GEMINI_REQUEST_TIMEOUT_SEC``.
-
-    Wall-clock slowness on 2.5 Pro is often **thinking tokens**; tune
-    ``GEMINI_PASS{n}_THINKING_BUDGET`` (not just HTTP timeout).
+    Matches **pre–backend** behavior (commit ``0357c31``): one legacy ceiling for the whole
+    pipeline unless overridden per pass.
 
     Resolution order:
 
     1. ``GEMINI_PASS{n}_TIMEOUT_SEC`` for *n* = 1…4 when set and valid.
-    2. Else ``GEMINI_REQUEST_TIMEOUT_SEC`` (legacy: same ceiling for every pass).
-    3. Else tiered defaults: **1** = 240s, **2** and **3** = 150s, **4** = 90s.
+    2. Else ``GEMINI_REQUEST_TIMEOUT_SEC`` (historical default **600** for all passes).
+    3. Else **600** for every pass (same as old ``main.py`` / ``translate_conversation``).
 
     Minimum 30 seconds.
     """
@@ -75,62 +70,33 @@ def gemini_pass_timeout_sec(pass_num: int) -> int:
             return max(30, int(legacy))
         except ValueError:
             pass
-    defaults = {1: 240, 2: 150, 3: 150, 4: 90}
-    return max(30, defaults.get(n, 120))
+    return max(30, 600)
 
 
 def _gemini_thinking_budget_for_pass(pass_num: int, model_name: str) -> Optional[int]:
-    """Resolve ``thinkingConfig.thinkingBudget`` for pipeline pass 1–4, or None if unchanged.
+    """Resolve ``thinkingConfig.thinkingBudget`` for **Gemini 2.5 Flash / Flash-Lite** only.
 
-    *None* means: keep legacy behavior (single global env knob) for callers that do not set
-    ``pass_num`` on :func:`_gemini_generate`.
+    **2.5 Pro** does not use this: pre–backend behavior omits ``thinkingConfig`` entirely on Pro.
 
-    **Gemini 2.5 Pro** (128–32768): per-pass env ``GEMINI_PASS{n}_THINKING_BUDGET``, else global
-    ``GEMINI_PRO_THINKING_BUDGET``, else tiered defaults (pass 1 largest, pass 4 smallest).
-
-    **Gemini 2.5 Flash / Flash-Lite**: per-pass ``GEMINI_PASS{n}_THINKING_BUDGET``, else
-    ``GEMINI_THINKING_BUDGET``, else 0 for every pass (JSON-friendly).
+    Per-pass ``GEMINI_PASS{n}_THINKING_BUDGET``, else ``GEMINI_THINKING_BUDGET``, else 0.
     """
     n = int(pass_num)
     m = (model_name or "").lower()
-    _is_25_pro = "2.5" in m and "pro" in m and "flash" not in m
-    _is_25_non_pro = "2.5" in m and "pro" not in m
-
-    if _is_25_pro:
-        spec = os.environ.get(f"GEMINI_PASS{n}_THINKING_BUDGET", "").strip()
-        if spec:
-            try:
-                return max(128, min(int(spec), 32768))
-            except ValueError:
-                pass
-        legacy = os.environ.get("GEMINI_PRO_THINKING_BUDGET", "").strip()
-        if legacy:
-            try:
-                return max(128, min(int(legacy), 32768))
-            except ValueError:
-                pass
-        # Moderate explicit caps: enough for vision + JSON, but low enough to avoid long thinking stalls.
-        # (Still always explicit thinkingConfig on Pro — never unbounded dynamic thinking.)
-        tiered = {1: 6144, 2: 4096, 3: 4096, 4: 2560}
-        v = tiered.get(n, 4096)
-        return max(128, min(int(v), 32768))
-
-    if _is_25_non_pro:
-        spec = os.environ.get(f"GEMINI_PASS{n}_THINKING_BUDGET", "").strip()
-        if spec:
-            try:
-                return max(0, min(int(spec), 24576))
-            except ValueError:
-                pass
-        legacy = os.environ.get("GEMINI_THINKING_BUDGET", "").strip()
-        if legacy:
-            try:
-                return max(0, min(int(legacy), 24576))
-            except ValueError:
-                pass
-        return 0
-
-    return None
+    if "2.5" not in m or "pro" in m:
+        return None
+    spec = os.environ.get(f"GEMINI_PASS{n}_THINKING_BUDGET", "").strip()
+    if spec:
+        try:
+            return max(0, min(int(spec), 24576))
+        except ValueError:
+            pass
+    legacy = os.environ.get("GEMINI_THINKING_BUDGET", "").strip()
+    if legacy:
+        try:
+            return max(0, min(int(legacy), 24576))
+        except ValueError:
+            pass
+    return 0
 
 
 def collect_vision_ocr_hints(page_images):
@@ -148,7 +114,7 @@ def collect_vision_ocr_hints(page_images):
         try:
             txt = ocr_engine.document_plain_text(img)
         except Exception as e:
-            print(f"[OCR HINT] Page {i + 1} Vision failed: {e}")
+            _pv(f"[OCR HINT] Page {i + 1} Vision failed: {e}")
             continue
         if txt:
             parts.append(
@@ -192,7 +158,7 @@ def collect_vision_ocr_structured_hints(page_images):
         try:
             paras = ocr_engine.document_paragraph_boxes(img)
         except Exception as e:
-            print(f"[OCR STRUCT] Page {pi + 1} Vision failed: {e}")
+            _pv(f"[OCR STRUCT] Page {pi + 1} Vision failed: {e}")
             continue
         _h, w = img.shape[:2]
         parts.append(f"\n### Page {pi + 1} (image width {w}px)\n")
@@ -246,7 +212,7 @@ def collect_vision_ocr_stitch_high_confidence_hints(
     ranges = list(page_ranges or [])
     if len(pages) != len(ranges):
         n = min(len(pages), len(ranges))
-        print(
+        _pv(
             f"[OCR STITCH] page_images ({len(pages)}) vs page_ranges ({len(ranges)}) "
             f"— using first {n} pairs"
         )
@@ -268,7 +234,7 @@ def collect_vision_ocr_stitch_high_confidence_hints(
         try:
             detections = ocr_engine.predict(img)
         except Exception as e:
-            print(f"[OCR STITCH] Page {pi + 1} Vision failed: {e}")
+            _pv(f"[OCR STITCH] Page {pi + 1} Vision failed: {e}")
             continue
 
         for det in detections:
@@ -429,7 +395,7 @@ def collect_vision_ocr_stitch_by_message_index(
     try:
         detections = ocr_engine.predict(combined_img)
     except Exception as e:
-        print(f"[OCR BY-MSG] Vision on stitched image failed: {e}")
+        _pv(f"[OCR BY-MSG] Vision on stitched image failed: {e}")
         return ""
 
     for det in detections:
@@ -514,7 +480,7 @@ def collect_vision_ocr_crop_by_message_index(crop_images):
         try:
             detections = ocr_engine.predict(crop)
         except Exception as e:
-            print(f"[OCR BY-MSG] Vision on crop {midx} failed: {e}")
+            _pv(f"[OCR BY-MSG] Vision on crop {midx} failed: {e}")
             continue
 
         items = []
@@ -600,7 +566,7 @@ def collect_vision_ocr_page_by_message_index(page_images, page_ranges, craft_obj
         try:
             detections = ocr_engine.predict(page_img)
         except Exception as e:
-            print(f"[OCR BY-MSG] Vision on page {page_idx} failed: {e}")
+            _pv(f"[OCR BY-MSG] Vision on page {page_idx} failed: {e}")
             continue
 
         rows_here = page_rows.get(page_idx, [])
@@ -804,7 +770,7 @@ def _gemini_discover_if_needed() -> bool:
             _gemini_active_model = (model, ver)
             _pv(f"[GEMINI] Using model: {model} (API {ver})")
         else:
-            print("[GEMINI] No generateContent-capable model found — refinement disabled")
+            _pv("[GEMINI] No generateContent-capable model found — refinement disabled")
             _gemini_api_key = ""
             return False
     return True
@@ -820,13 +786,13 @@ def _gemini_candidate_finish_reason(api_payload: Optional[Dict[str, Any]]) -> Op
 
 
 def _gemini_pass_summary_enabled() -> bool:
-    """One-line [gemini] pass summary after each pipeline call (disable with GEMINI_PASS_SUMMARY=0)."""
-    return os.environ.get("GEMINI_PASS_SUMMARY", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
+    """One-line [gemini] pass summary; on if GEMINI_PASS_SUMMARY=1 or (unset and PIPELINE_VERBOSE)."""
+    v = os.environ.get("GEMINI_PASS_SUMMARY", "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return _pipeline_verbose()
 
 
 def _gemini_log_pass_summary(
@@ -855,15 +821,15 @@ def _gemini_log_pass_summary(
 
 
 def _gemini_wait_ui_enabled() -> bool:
-    """Animated wait line on TTY during Gemini HTTP call. Disable with GEMINI_WAIT_UI=0."""
+    """TTY spinner during Gemini HTTP wait. On if GEMINI_WAIT_UI=1 or (unset and PIPELINE_VERBOSE)."""
     if not sys.stdout.isatty():
         return False
-    return os.environ.get("GEMINI_WAIT_UI", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
+    v = os.environ.get("GEMINI_WAIT_UI", "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return _pipeline_verbose()
 
 
 @contextmanager
@@ -874,12 +840,14 @@ def _gemini_pipeline_http_wait(pass_num: Optional[int], http_timeout: int):
         return
 
     t0 = time.time()
-    print(
-        f"[pipeline] Pass {pass_num} — awaiting Gemini HTTP response "
-        f"(request in flight; model thinking/generating until the API returns). "
-        f"HTTP read max {http_timeout}s.",
-        flush=True,
-    )
+    _show_http_wait_log = _pipeline_verbose()
+    if _show_http_wait_log:
+        print(
+            f"[pipeline] Pass {pass_num} — awaiting Gemini HTTP response "
+            f"(request in flight; model thinking/generating until the API returns). "
+            f"HTTP read max {http_timeout}s.",
+            flush=True,
+        )
 
     stop = threading.Event()
     last_len_holder = [96]
@@ -917,19 +885,21 @@ def _gemini_pipeline_http_wait(pass_num: Optional[int], http_timeout: int):
         yield
     except BaseException:
         elapsed = time.time() - t0
-        print(
-            f"[pipeline] Pass {pass_num} — wait ended after {elapsed:.1f}s "
-            f"(timeout, HTTP error, or parse failure — see messages above).",
-            flush=True,
-        )
+        if _show_http_wait_log:
+            print(
+                f"[pipeline] Pass {pass_num} — wait ended after {elapsed:.1f}s "
+                f"(timeout, HTTP error, or parse failure — see messages above).",
+                flush=True,
+            )
         raise
     else:
         elapsed = time.time() - t0
-        print(
-            f"[pipeline] Pass {pass_num} — Gemini HTTP response finished in {elapsed:.1f}s "
-            f"(status OK, body read and JSON parsed).",
-            flush=True,
-        )
+        if _show_http_wait_log:
+            print(
+                f"[pipeline] Pass {pass_num} — Gemini HTTP response finished in {elapsed:.1f}s "
+                f"(status OK, body read and JSON parsed).",
+                flush=True,
+            )
     finally:
         stop.set()
         for w in workers:
@@ -953,8 +923,9 @@ def _gemini_generate(
     Pass *image_b64* (single JPEG base64) or *image_b64_list* (several JPEGs in order)
     before the text prompt.
 
-    *pass_num* (1–4) selects per-pass **thinking budget** for Gemini 2.5 models so reasoning
-    is capped by the API instead of relying on a short HTTP timeout. Omit for legacy helpers.
+    *pass_num* is used for logging / HTTP wait UI only. **Gemini 2.5 Pro**: omits
+    ``thinkingConfig`` (pre–backend ``0357c31``). **2.5 Flash / Flash-Lite**: sends
+    ``thinkingBudget`` from env (default 0).
 
     Returns ``GeminiApiResult(text, response_json)``, or ``None`` if the API key / model
     is not configured. *response_json* is the full API object (for empty/blocked replies).
@@ -992,36 +963,11 @@ def _gemini_generate(
         "topP": 1.0,
     }
     _mname = (model or "").lower()
-    # Thinking tokens and answer tokens share the generation budget.
-    #
-    # Default stays **explicit** thinkingBudget on Pro (no unbounded dynamic thinking). Budgets are
-    # intentionally moderate (see _gemini_thinking_budget_for_pass) for snappy runs; raise per-pass
-    # env vars if quality drops. Optional GEMINI_PRO_THINKING_CONFIG=omit matches pre-4a00246 (risky).
-    # API: thinkingBudget 128–32768 for 2.5 Pro. Gemini 3 Pro may use other controls.
+    # Pre–backend: 2.5 Pro omits thinkingConfig; 2.5 Flash sends thinkingBudget (default 0).
     _is_25_pro = "2.5" in _mname and "pro" in _mname and "flash" not in _mname
-    _pro_thinking_mode = os.environ.get("GEMINI_PRO_THINKING_CONFIG", "explicit").strip().lower()
     if _is_25_pro:
-        if _pro_thinking_mode in ("omit", "legacy", "none", "off", "dynamic"):
-            # Match pre-4a00246: omit thinkingConfig; may be quicker but less predictable.
-            _pv(
-                "[GEMINI] 2.5 Pro: thinkingConfig omitted (GEMINI_PRO_THINKING_CONFIG="
-                f"{_pro_thinking_mode!r}) — legacy / dynamic thinking",
-            )
-        else:
-            if pass_num is not None:
-                pro_thinking = _gemini_thinking_budget_for_pass(int(pass_num), model)
-                if pro_thinking is None:
-                    pro_thinking = 6144
-            else:
-                _ptb = os.environ.get("GEMINI_PRO_THINKING_BUDGET", "6144").strip()
-                try:
-                    pro_thinking = int(_ptb)
-                except ValueError:
-                    pro_thinking = 6144
-            pro_thinking = max(128, min(int(pro_thinking), 32768))
-            gen_cfg["thinkingConfig"] = {"thinkingBudget": pro_thinking}
+        _pv("[GEMINI] 2.5 Pro: thinkingConfig omitted (historical pipeline default).")
     elif "2.5" in _mname and "pro" not in _mname:
-        # Gemini 2.5 Flash / Flash-Lite: can disable thinking (0) so JSON is not truncated.
         if pass_num is not None:
             thinking_budget = _gemini_thinking_budget_for_pass(int(pass_num), model)
             if thinking_budget is None:
@@ -1079,7 +1025,7 @@ def _gemini_generate(
         if pass_num is not None and _gemini_pass_summary_enabled():
             print(
                 f"[gemini] pass {pass_num} stopped: HTTP timeout after {timeout}s "
-                f"(raise GEMINI_PASS{pass_num}_TIMEOUT_SEC or GEMINI_REQUEST_TIMEOUT_SEC; not a thinkingBudget cut)",
+                f"(raise GEMINI_PASS{pass_num}_TIMEOUT_SEC or GEMINI_REQUEST_TIMEOUT_SEC)",
                 flush=True,
             )
         raise
@@ -1307,7 +1253,7 @@ def _prepare_stitch_slices_for_gemini(combined_img):
                 )
                 if slice_notes:
                     meta += "\n".join(slice_notes)
-            print(f"[GEMINI] Stitch prepared as {n} vertical band(s)")
+            _pv(f"[GEMINI] Stitch prepared as {n} vertical band(s)")
             return prepared, meta.strip(), n, ""
 
     return (
@@ -1427,9 +1373,9 @@ def _write_gemini_prompt_file(filename: str, label: str, prompt: str):
             f.write(f"{label}\n")
             f.write("=" * 60 + "\n\n")
             f.write(prompt)
-        print(f"[GEMINI] Prompt file → {path}")
+        _pv(f"[GEMINI] Prompt file → {path}")
     except Exception as exc:
-        print(f"[GEMINI] Could not write prompt file {filename}: {exc}")
+        _pv(f"[GEMINI] Could not write prompt file {filename}: {exc}")
 
 
 def _extract_json_object(text: str) -> Optional[str]:
@@ -1499,7 +1445,7 @@ def _parse_gemini_full_vision_json(raw: str):
         raw_role = (m.get("role") or m.get("speaker") or "").strip().lower()
         role = _canonicalize_gemini_role(raw_role)
         if role not in ("contact", "user", "system"):
-            print(
+            _pv(
                 f"[GEMINI] Unknown message role {raw_role!r} → treating as 'system' "
                 f"(check gemini_debug.txt)"
             )
@@ -1654,7 +1600,7 @@ INPUT JSON:
         return messages, contact_name
 
     if not msgs2 or len(msgs2) != len(messages):
-        print(
+        _pv(
             f"[GEMINI] Pass 2 message count mismatch ({len(msgs2)} vs {len(messages)}) — keeping source transcript"
         )
         _append_gemini_debug_pass2(prompt, raw)
@@ -1666,7 +1612,7 @@ INPUT JSON:
         if r2 not in ("contact", "user", "system"):
             r2 = "system"
         if r2 != messages[i]["role"]:
-            print(
+            _pv(
                 f"[GEMINI] Pass 2 role mismatch at index {i}: pass1={messages[i]['role']!r} "
                 f"pass2={m.get('role')!r} — discarding entire pass 2, keeping pass 1"
             )
@@ -1681,9 +1627,9 @@ INPUT JSON:
     final_name = (name2 or contact_name or "").strip() or contact_name
     _append_gemini_debug_pass2(prompt, raw)
     if _conversation_has_ref_placeholders(merged):
-        print("[GEMINI] Pass 2 left some ⟦REF⟧ tokens — check gemini_debug.txt")
+        _pv("[GEMINI] Pass 2 left some ⟦REF⟧ tokens — check gemini_debug.txt")
     else:
-        print("[GEMINI] Pass 2 applied (final English translation).")
+        _pv("[GEMINI] Pass 2 applied (final English translation).")
     return merged, final_name
 
 
@@ -1699,7 +1645,7 @@ def _append_gemini_debug_ocr_refine(prompt: str, response: str):
             f.write("\n\n=== RAW RESPONSE ===\n")
             f.write(response or "(empty)\n")
     except Exception as exc:
-        print(f"[GEMINI] Could not append OCR-refine debug: {exc}")
+        _pv(f"[GEMINI] Could not append OCR-refine debug: {exc}")
 
 
 def _append_gemini_debug_crop_refine(prompt: str, response: str, batch_label: str):
@@ -1714,7 +1660,7 @@ def _append_gemini_debug_crop_refine(prompt: str, response: str, batch_label: st
             f.write("\n\n=== RAW RESPONSE ===\n")
             f.write(response or "(empty)\n")
     except Exception as exc:
-        print(f"[GEMINI] Could not append crop-refine debug: {exc}")
+        _pv(f"[GEMINI] Could not append crop-refine debug: {exc}")
 
 
 def _gemini_crop_refine_pass(
@@ -1994,7 +1940,7 @@ def _gemini_ocr_context_refine_pass(
         return pass1_messages, contact_name, ambiguity_ledger or []
 
     if not msgs2 or len(msgs2) != len(pass1_messages):
-        print(
+        _pv(
             f"[GEMINI] Pass 3 message count mismatch ({len(msgs2)} vs {len(pass1_messages)}) — "
             "keeping source transcript"
         )
@@ -2010,7 +1956,7 @@ def _gemini_ocr_context_refine_pass(
             role_drift_indices.append(i)
 
     if role_drift_indices:
-        print(
+        _pv(
             f"[GEMINI] Pass 3 role drift at indices {role_drift_indices[:8]} "
             f"(keeping Pass 1 roles, using Pass 3 text)"
         )
@@ -2081,7 +2027,7 @@ def _gemini_ocr_hints_refine_pass(
         return text[:limit].rstrip() + "\n\n[... OCR hints truncated ...]"
 
     def _build_prompt(hints_text: str, retry_note: str = "") -> str:
-        return f"""You are PASS 2 of 4.
+        return f"""You are PASS 2 of 3.
 
 You receive:
 1. A conversation transcript from Pass 1.
@@ -2121,7 +2067,7 @@ Output JSON only:
         return pass1_messages, contact_name
 
     if not raw.strip():
-        print("[GEMINI] Pass 2 empty — retrying once with shorter OCR hints")
+        _pv("[GEMINI] Pass 2 empty — retrying once with shorter OCR hints")
         retry_hints = _truncate_hints(hints_full, retry_hint_chars)
         retry_prompt = _build_prompt(
             retry_hints,
@@ -2148,7 +2094,7 @@ Output JSON only:
         return pass1_messages, contact_name
 
     if not msgs2 or len(msgs2) != len(pass1_messages):
-        print(
+        _pv(
             f"[GEMINI] Pass 2 message count mismatch ({len(msgs2)} vs {len(pass1_messages)}) — "
             "keeping Pass 1 transcript"
         )
@@ -2169,7 +2115,7 @@ Output JSON only:
             raw + f"\n[ROLE DRIFT IGNORED: {role_drift_indices}]\n",
             "PASS 2 — OCR-guided rewrite",
         )
-        print(
+        _pv(
             f"[GEMINI] Pass 2 role drift at indices {role_drift_indices[:8]} "
             f"(keeping Pass 1 roles, using Pass 2 text)"
         )
@@ -2194,14 +2140,57 @@ Output JSON only:
     return merged, final_name
 
 
+def _default_status_bar_info(contact_hint: str) -> dict:
+    """Shape matches :func:`_gemini_status_bar_pass` output for render pipeline."""
+    return {
+        "contact_name": (contact_hint or "").strip(),
+        "status_text": "",
+        "avatar_image_index": 0,
+        "avatar_bbox": None,
+    }
+
+
+def _status_bar_info_from_pass3_merged_response(data: Optional[dict], contact_hint: str) -> dict:
+    """Read header fields from Pass 3 merged JSON (same request as reference resolution)."""
+    if not isinstance(data, dict):
+        return _default_status_bar_info(contact_hint)
+    name = str(
+        data.get("header_contact_name")
+        or data.get("header_name")
+        or ""
+    ).strip()
+    st = str(
+        data.get("header_status_text")
+        or data.get("header_status")
+        or ""
+    ).strip()
+    bbox = data.get("header_avatar_bbox")
+    if bbox is None:
+        bbox = data.get("avatar_bbox")
+    cleaned = None
+    if isinstance(bbox, list) and len(bbox) >= 4:
+        try:
+            cleaned = [int(bbox[i]) for i in range(4)]
+        except (TypeError, ValueError):
+            cleaned = None
+    fb = (contact_hint or "").strip()
+    return {
+        "contact_name": name or fb,
+        "status_text": st,
+        "avatar_image_index": 0,
+        "avatar_bbox": cleaned,
+    }
+
+
 def _gemini_reference_resolution_pass(
     contact_name: str,
     pass2_messages: list,
     timeout: int,
+    status_bar_b64: Optional[str] = None,
 ):
-    """Pass 3: resolve references from Pass 2 source text, then produce final English."""
+    """Pass 3: reference resolution + final English; optionally same call reads one status-bar crop."""
     if not pass2_messages:
-        return pass2_messages, contact_name, []
+        return pass2_messages, contact_name, [], _default_status_bar_info(contact_name)
 
     def _normalize_reference_text(text: str) -> list:
         return re.findall(r"[a-z0-9']+", (text or "").lower())
@@ -2271,9 +2260,26 @@ def _gemini_reference_resolution_pass(
     payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
     expected_n = len(pass2_messages)
 
-    prompt = f"""You are PASS 3 of 4.
+    _header_section = ""
+    _header_json_suffix = ""
+    if status_bar_b64:
+        _header_section = """
+## Attached image: Messenger status/header bar
+The **first attached image** (JPEG) is a **crop of the top status/header bar** from the **first** screenshot of this chat. It is **not** a message bubble.
 
-You receive a chat transcript after OCR correction. Your task is to translate it to English and resolve references only when the context clearly supports it.
+Add these keys to the **same** root JSON object as `contact_name` and `messages`. Fill them **only** from that image. They must **not** change your reference-resolution or translation work on `messages` in any way.
+- `header_contact_name` (string): chat title or contact name visible in the bar — empty if unreadable.
+- `header_status_text` (string): short status line (Active now, Online, last seen, etc.) — empty if none.
+- `header_avatar_bbox` (array of four integers, or `null`): pixel box `[x1,y1,x2,y2]` **within that crop** around the circular profile photo, or `null` if unclear.
+"""
+        _header_json_suffix = (
+            ',"header_contact_name":"<string>","header_status_text":"<string>",'
+            '"header_avatar_bbox":[x1,y1,x2,y2]'
+        )
+
+    _p3_intro = "You are PASS 3 of 3.\n" + (_header_section + "\n" if status_bar_b64 else "")
+
+    prompt = f"""{_p3_intro}You receive a chat transcript after OCR correction. Your task is to translate it to English and resolve references only when the context clearly supports it.
 
 Input JSON:
 {payload_json}
@@ -2311,21 +2317,17 @@ For each message, also return:
 - `note`: short explanation if useful
 
 Output JSON only:
-{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<source reading>","literal_gloss_en":"<cautious English gloss>","resolved_text_en":"<reference-resolved English>","resolution_confidence":"high|medium|low","subject_role":"contact|user|third_party|unknown","target_role":"contact|user|third_party|unknown","ambiguity":"none|low|medium|high","note":"<short note>"}}]}}"""
+{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<source reading>","literal_gloss_en":"<cautious English gloss>","resolved_text_en":"<reference-resolved English>","resolution_confidence":"high|medium|low","subject_role":"contact|user|third_party|unknown","target_role":"contact|user|third_party|unknown","ambiguity":"none|low|medium|high","note":"<short note>"}}]{_header_json_suffix}}}"""
 
-    _write_gemini_prompt_file("gemini_prompt_pass3_reference.txt", "Pass 3 (reference resolution)", prompt)
-    try:
-        gres = _gemini_generate(prompt, timeout=timeout, pass_num=3)
-        raw = (gres.text if gres else "") or ""
-    except Exception as e:
-        print(f"[GEMINI] Pass 3 reference failed: {e}")
-        _append_gemini_debug_pass2(prompt, f"ERROR: {e}", "PASS 3 — Reference resolution")
-        return pass2_messages, contact_name, []
+    _pass3_dbg = "PASS 3 — Reference + header (merged)" if status_bar_b64 else "PASS 3 — Reference resolution"
+    _write_gemini_prompt_file(
+        "gemini_prompt_pass3_reference_header.txt" if status_bar_b64 else "gemini_prompt_pass3_reference.txt",
+        "Pass 3 (reference + header)" if status_bar_b64 else "Pass 3 (reference resolution)",
+        prompt,
+    )
 
-    if not raw.strip():
-        print("[GEMINI] Pass 3 reference empty — keeping Pass 2 translation fallback")
-        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Reference resolution")
-        fallback = [
+    def _pass3_fallback_rows():
+        return [
             {
                 "role": m.get("role"),
                 "text_src": (m.get("text_src") or "").strip(),
@@ -2333,41 +2335,50 @@ Output JSON only:
             }
             for m in pass2_messages
         ]
-        return fallback, contact_name, []
+
+    img_list = [status_bar_b64] if status_bar_b64 else None
+    try:
+        gres = _gemini_generate(
+            prompt,
+            image_b64_list=img_list,
+            timeout=timeout,
+            pass_num=3,
+        )
+        raw = (gres.text if gres else "") or ""
+    except Exception as e:
+        print(f"[GEMINI] Pass 3 reference failed: {e}")
+        _append_gemini_debug_pass2(prompt, f"ERROR: {e}", _pass3_dbg)
+        return pass2_messages, contact_name, [], _default_status_bar_info(contact_name)
+
+    if not raw.strip():
+        _pv("[GEMINI] Pass 3 reference empty — keeping Pass 2 translation fallback")
+        _append_gemini_debug_pass2(prompt, raw, _pass3_dbg)
+        return _pass3_fallback_rows(), contact_name, [], _default_status_bar_info(contact_name)
 
     try:
         payload_text = _extract_json_object(raw) or raw.strip()
         data = json.loads(payload_text)
     except json.JSONDecodeError as e:
         print(f"[GEMINI] Pass 3 reference JSON parse failed: {e}")
-        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Reference resolution")
-        fallback = [
-            {
-                "role": m.get("role"),
-                "text_src": (m.get("text_src") or "").strip(),
-                "text_en": translate_to_en(m.get("text_src") or "") or (m.get("text_src") or ""),
-            }
-            for m in pass2_messages
-        ]
-        return fallback, contact_name, []
+        _append_gemini_debug_pass2(prompt, raw, _pass3_dbg)
+        return _pass3_fallback_rows(), contact_name, [], _default_status_bar_info(contact_name)
 
     name2 = (data.get("contact_name") or contact_name or "").strip() or contact_name
     msgs2 = data.get("messages") or []
     if not isinstance(msgs2, list) or len(msgs2) != len(pass2_messages):
-        print(
+        _pv(
             f"[GEMINI] Pass 3 reference message count mismatch ({len(msgs2)} vs {len(pass2_messages)}) — "
             "keeping Pass 2 translation fallback"
         )
-        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Reference resolution")
-        fallback = [
-            {
-                "role": m.get("role"),
-                "text_src": (m.get("text_src") or "").strip(),
-                "text_en": translate_to_en(m.get("text_src") or "") or (m.get("text_src") or ""),
-            }
-            for m in pass2_messages
-        ]
-        return fallback, contact_name, []
+        _append_gemini_debug_pass2(prompt, raw, _pass3_dbg)
+        return (
+            _pass3_fallback_rows(),
+            contact_name,
+            [],
+            _status_bar_info_from_pass3_merged_response(data, contact_name),
+        )
+
+    status_info = _status_bar_info_from_pass3_merged_response(data, name2 or contact_name)
 
     role_drift_indices = []
     resolved = []
@@ -2426,11 +2437,11 @@ Output JSON only:
         _append_gemini_debug_pass2(
             prompt,
             raw + f"\n[ROLE DRIFT IGNORED: {role_drift_indices}]\n",
-            "PASS 3 — Reference resolution",
+            _pass3_dbg,
         )
     else:
-        _append_gemini_debug_pass2(prompt, raw, "PASS 3 — Reference resolution")
-    return resolved, name2, debug_rows
+        _append_gemini_debug_pass2(prompt, raw, _pass3_dbg)
+    return resolved, name2, debug_rows, status_info
 
 
 def _parse_gemini_status_bar_json(raw: str) -> dict:
@@ -2583,7 +2594,7 @@ def _append_gemini_debug_pass2(prompt: str, response: str, label: str = "PASS 3 
             f.write("\n\n=== RAW RESPONSE ===\n")
             f.write(response or "(empty)\n")
     except Exception as exc:
-        print(f"[GEMINI] Could not append pass-2 debug: {exc}")
+        _pv(f"[GEMINI] Could not append pass-2 debug: {exc}")
 
 
 _ROLE_TO_RENDER_TYPE = {
@@ -2641,9 +2652,9 @@ def _write_gemini_debug_vision_only(prompt, response, footer="", api_payload=Non
             if footer:
                 f.write("\n=== NOTE ===\n")
                 f.write(footer)
-        print(f"[GEMINI] Debug file → {path}")
+        _pv(f"[GEMINI] Debug file → {path}")
     except Exception as exc:
-        print(f"[GEMINI] Could not write debug file: {exc}")
+        _pv(f"[GEMINI] Could not write debug file: {exc}")
 
 
 def translate_conversation_gemini_multimodal(
@@ -2720,9 +2731,22 @@ output json only."""
     _write_gemini_prompt_file("gemini_prompt_pass1.txt", "Pass 1 (vision)", prompt)
 
     pass1_started = time.time()
+
+    def _finish_warn(pay):
+        fr = _gemini_candidate_finish_reason(pay)
+        if fr == "MAX_TOKENS":
+            _pv(
+                f"[GEMINI] Pass 1 finishReason={fr!r} — if JSON fails, internal "
+                "thinking may have consumed the output token budget (see PIPELINE.md)."
+            )
+        return fr
+
     try:
         gres = _gemini_generate(
-            prompt, image_b64_list=b64_list, timeout=timeout, pass_num=1
+            prompt,
+            image_b64_list=b64_list,
+            timeout=timeout,
+            pass_num=1,
         )
         raw = (gres.text if gres else "") or ""
         api_payload = gres.response_json if gres else None
@@ -2736,17 +2760,7 @@ output json only."""
         _write_gemini_debug_vision_only(prompt, raw or "", "", api_payload=api_payload)
         return False, hint or "", [], [], {}
 
-    def _finish_warn(pay):
-        fr = _gemini_candidate_finish_reason(pay)
-        if fr == "MAX_TOKENS":
-            _pv(
-                f"[GEMINI] Pass 1 finishReason={fr!r} — if JSON fails, internal "
-                "thinking may have consumed the output token budget (see PIPELINE.md)."
-            )
-        return fr
-
     _finish_warn(api_payload)
-
     parse_err = None
     try:
         gname, gmsgs, amb_ledger = _parse_gemini_full_vision_json(raw)
@@ -2874,7 +2888,7 @@ output json only."""
             "pass3_messages": [],
         }
 
-    print(f"[GEMINI] Pass 1 final output OK → {len(meta)} chat rows, contact={contact_name!r}")
+    _pv(f"[GEMINI] Pass 1 final output OK → {len(meta)} chat rows, contact={contact_name!r}")
     return True, contact_name, meta, pre_ocr_meta, {
         "pass1_count": non_system_count,
         "pass1_total_count": len(pass1_source_msgs),
@@ -3053,15 +3067,15 @@ def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""
             image_b64 = _b64.b64encode(buf.tobytes()).decode("utf-8")
             _gw = img_to_encode.shape[1]
             _gh = img_to_encode.shape[0]
-            print(f"[GEMINI] Image attached: {_gw}x{_gh}px "
+            _pv(f"[GEMINI] Image attached: {_gw}x{_gh}px "
                   f"({len(image_b64)//1024}KB base64)")
             if _gw < 600:
-                print(
+                _pv(
                     "[GEMINI] WARN: image width is very small — bubble text may be unreadable; "
                     "check combined_ocr_input.png and consider fewer pages per run."
                 )
         except Exception as e:
-            print(f"[GEMINI] Could not encode image, falling back to text-only: {e}")
+            _pv(f"[GEMINI] Could not encode image, falling back to text-only: {e}")
             image_b64 = None
 
     # Display / contact name (may be junk from status-bar OCR)
@@ -3211,12 +3225,12 @@ def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""
     _write_gemini_debug(prompt, None, slots)
 
     if image_b64:
-        print(
+        _pv(
             f"[GEMINI] Call 1: {len(slots)} scaffold rows — speaker role + order only "
             f"(no OCR text in prompt); bubble content read from image"
         )
     else:
-        print(
+        _pv(
             f"[GEMINI] Sending {len(slots)} scaffold rows with OCR text per line (no image)"
         )
     t_gemini_start = time.time()
@@ -3230,15 +3244,15 @@ def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""
                 raise ValueError("Empty response")
             raw = raw.strip()
             elapsed = time.time() - t_attempt
-            print(f"[GEMINI] Response received in {elapsed:.1f}s  ({len(raw)} chars)")
+            _pv(f"[GEMINI] Response received in {elapsed:.1f}s  ({len(raw)} chars)")
 
             gemini_name, context_line, parsed = _parse_gemini_slots_response(raw)
             if gemini_name:
-                print(f"[GEMINI] Contact name identified: {gemini_name}")
+                _pv(f"[GEMINI] Contact name identified: {gemini_name}")
             if context_line:
-                print(f"[GEMINI] Conversation context: {context_line}")
+                _pv(f"[GEMINI] Conversation context: {context_line}")
 
-            print(f"[GEMINI] Response preview:\n{raw[:500]}")
+            _pv(f"[GEMINI] Response preview:\n{raw[:500]}")
 
             if not parsed:
                 raise ValueError(f"Could not parse any lines from response:\n{raw[:400]}")
@@ -3251,7 +3265,7 @@ def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""
                 not in ("0", "false", "no", "off")
             )
             if _recovery_on:
-                print("[GEMINI] Recovery pass: comparing draft to image...")
+                _pv("[GEMINI] Recovery pass: comparing draft to image...")
                 t_rec = time.time()
                 rec_raw, recovery_prompt_text = _gemini_recovery_pass(
                     image_b64, raw, len(slots), person_a_label
@@ -3264,12 +3278,12 @@ def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""
                         gemini_name = gn2 or gemini_name
                         context_line = ctx2 or context_line
                         parsed = parsed2
-                        print(
+                        _pv(
                             f"[GEMINI] Recovery pass applied in {time.time()-t_rec:.1f}s "
                             f"({len(parsed2)} slots)"
                         )
                     else:
-                        print(
+                        _pv(
                             f"[GEMINI] Recovery pass skipped "
                             f"(draft {len(parsed)} slots vs recovery {len(parsed2)})"
                         )
@@ -3277,14 +3291,14 @@ def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""
                         recovery_prompt_text, rec_raw or ""
                     )
                 else:
-                    print("[GEMINI] Recovery pass returned empty — keeping draft")
+                    _pv("[GEMINI] Recovery pass returned empty — keeping draft")
                     _append_gemini_debug_recovery_section(
                         recovery_prompt_text, "(empty response)"
                     )
 
             _apply_gemini_parsed_to_objects(objects, slots, parsed)
 
-            print(f"[GEMINI] Parsed {len(parsed)}/{len(slots)} items  "
+            _pv(f"[GEMINI] Parsed {len(parsed)}/{len(slots)} items  "
                   f"(total Gemini time: {time.time()-t_gemini_start:.1f}s)")
 
             # Write debug file with the full round-trip
@@ -3297,7 +3311,7 @@ def refine_and_translate_with_gemini(objects, combined_img=None, contact_name=""
             suggested = int(delay_match.group(1)) if delay_match else 0
             wait = max(suggested + 5, 15)
             if attempt < 2:
-                print(f"[GEMINI] Attempt {attempt+1} failed ({err[:120]}), "
+                _pv(f"[GEMINI] Attempt {attempt+1} failed ({err[:120]}), "
                       f"retrying in {wait}s...")
                 time.sleep(wait)
             else:
@@ -3341,9 +3355,9 @@ def _write_gemini_debug(prompt, response, slots, parsed=None, context_line=""):
                     f.write(f"    SRC : {src_text}\n")
                     f.write(f"    EN  : {en}\n\n")
 
-        print(f"[GEMINI] Debug file → {debug_path}")
+        _pv(f"[GEMINI] Debug file → {debug_path}")
     except Exception as exc:
-        print(f"[GEMINI] Could not write debug file: {exc}")
+        _pv(f"[GEMINI] Could not write debug file: {exc}")
 
 
 def refine_thai_with_gemini(objects):

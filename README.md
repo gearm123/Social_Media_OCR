@@ -11,16 +11,14 @@ Given a folder of input chat screenshots, the pipeline:
 1. Cleans the images and prepares them for analysis.
 2. Uses Gemini vision to transcribe the conversation structure from the screenshots.
 3. Uses OCR hints to refine the source-language message text.
-4. Runs a reference-resolution pass to improve who is speaking about whom before final English translation.
-5. Extracts status-bar/header information separately.
-6. Renders the final conversation as a clean chat image, along with debug comparison outputs.
+4. Runs one Gemini pass for reference resolution, final English, **and** status-bar/header fields (using a crop of the first screenshot’s top bar).
+5. Renders the final conversation as a clean chat image, along with debug comparison outputs.
 
 ## Current Pass Structure
 
 1. `Pass 1`: source transcription and conversation structure
 2. `Pass 2`: OCR-guided source-text polishing
-3. `Pass 3`: reference resolution plus final English translation
-4. `Pass 4`: status bar extraction for the rendered header
+3. `Pass 3`: reference resolution, final English translation, **and** header/status-bar extraction (first image’s status bar attached to the same request; independent JSON fields so it does not alter the transcript task)
 
 System metadata such as timestamps and call notices is handled separately from normal chat bubbles and merged back in only at the final rendering stage.
 

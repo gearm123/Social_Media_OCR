@@ -30,7 +30,7 @@ from ocr_translate import (
     translate_conversation_gemini_multimodal,
     _gemini_ocr_hints_refine_pass,
     _gemini_reference_resolution_pass,
-    _gemini_status_bar_pass,
+    _jpeg_b64_from_bgr,
     _meta_from_gemini_messages,
     _set_source_language,
     gemini_pass_timeout_sec,
@@ -706,6 +706,15 @@ def _parse_args():
         description="Gemini vision chat translator (stitched + per-page screenshots)"
     )
     parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help=(
+            "Full pipeline and Gemini logs (HTTP wait lines, pass summaries, debug paths). "
+            "Same as PIPELINE_VERBOSE=1. When unset, GEMINI_PASS_SUMMARY and GEMINI_WAIT_UI "
+            "follow verbose unless you set them explicitly."
+        ),
+    )
+    parser.add_argument(
         "-l", "--language",
         metavar="CODE",
         default=None,
@@ -1019,8 +1028,16 @@ def run_pipeline_job(
 
     pipeline_start = time.time()
 
+    _quiet_phase_stdout = {
+        "pass_1": "Pass 1…",
+        "pass_2": "Pass 2…",
+        "pass_3": "Pass 3…",
+        "rendering": "Generating image…",
+        "completed": "Done.",
+    }
+
     def _emit_phase(phase_id: str, label: str, progress: float) -> None:
-        """Notify API/UI and print one minimal status line (progress = approximate completion 0–1)."""
+        """Notify API/UI and print status (full line if verbose; short milestones otherwise)."""
         _check_cancel()
         elapsed = round(time.time() - pipeline_start, 1)
         prog = max(0.0, min(1.0, float(progress)))
@@ -1030,7 +1047,15 @@ def run_pipeline_job(
             "progress": prog,
             "elapsed_sec": elapsed,
         }
-        print(f"[pipeline] {label}  progress={int(round(prog * 100))}%  elapsed={elapsed}s", flush=True)
+        if _pipeline_verbose():
+            print(
+                f"[pipeline] {label}  progress={int(round(prog * 100))}%  elapsed={elapsed}s",
+                flush=True,
+            )
+        else:
+            quiet = _quiet_phase_stdout.get(phase_id)
+            if quiet:
+                print(quiet, flush=True)
         if on_stage is not None:
             try:
                 on_stage(payload)
@@ -1061,6 +1086,8 @@ def run_pipeline_job(
             "(the CLI loads .env automatically; Google Vision is optional)."
         )
 
+    gemini_pass_sec: Dict[str, float] = {}
+
     images = [Path(p) for p in image_paths]
     if not images:
         raise ValueError("No input images were provided.")
@@ -1074,6 +1101,8 @@ def run_pipeline_job(
             f"pass2={gemini_pass_timeout_sec(2)}s pass3={gemini_pass_timeout_sec(3)}s "
             f"pass4={gemini_pass_timeout_sec(4)}s"
         )
+        if not _pipeline_verbose():
+            print("Starting up…", flush=True)
 
         _emit_phase("artifact_cleaning", "Cleaning artifacts…", 0.06)
         crop_infos = [prepare_image_crop_info(str(path)) for path in images]
@@ -1091,10 +1120,9 @@ def run_pipeline_job(
             raise RuntimeError("Empty combined image.")
 
         ch, cw = combined_img.shape[0], combined_img.shape[1]
-        print(
+        _vprint(
             f"[pipeline] Input ready: {len(images)} file(s) loaded, "
             f"{len(page_images)} page segment(s), combined canvas {cw}×{ch} px — OK to use",
-            flush=True,
         )
 
         _check_cancel()
@@ -1121,11 +1149,11 @@ def run_pipeline_job(
                 f.write(pass1_bubble_context)
 
         _emit_phase("pass_1", "Pass 1 — vision transcription…", 0.18)
-        print(
+        _vprint(
             "[pipeline] Pass 1 — waiting for Gemini (vision). "
             "The next line shows a live timer until the API responds.",
-            flush=True,
         )
+        _t_g1 = time.time()
         ok, g_contact, all_meta, pre_ocr_meta, pass_debug = translate_conversation_gemini_multimodal(
             page_images,
             combined_img,
@@ -1139,6 +1167,7 @@ def run_pipeline_job(
             craft_expected_message_rows=craft_expected_n,
             ocr_pass2_by_message=ocr_pass2_by_message,
         )
+        gemini_pass_sec["pass1"] = round(time.time() - _t_g1, 2)
         if not ok or not all_meta:
             raise RuntimeError("Gemini did not return a usable conversation.")
 
@@ -1153,10 +1182,9 @@ def run_pipeline_job(
         _check_cancel()
 
         _emit_phase("pass_2", "Pass 2 — OCR-guided transcript refine…", 0.56)
-        print(
+        _vprint(
             "[pipeline] Pass 2 — waiting for Gemini (OCR-guided refine). "
             "Live timer on the line below.",
-            flush=True,
         )
         contact_name = (g_contact or contact_name or "Person A").strip() or "Person A"
         pass1_meta = list(all_meta or [])
@@ -1165,12 +1193,14 @@ def run_pipeline_job(
         for i, item in enumerate(pass1_meta):
             item["order"] = i
 
+        _t_g2 = time.time()
         pass2_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
             contact_name,
             (pass_debug or {}).get("pass1_messages") or [],
             pass2_ocr_text,
             timeout=gemini_pass_timeout_sec(2),
         )
+        gemini_pass_sec["pass2"] = round(time.time() - _t_g2, 2)
         if contact_name2:
             contact_name = contact_name2
         all_meta = _meta_from_gemini_messages(pass2_messages)
@@ -1179,17 +1209,27 @@ def run_pipeline_job(
 
         _check_cancel()
 
-        _emit_phase("pass_3", "Pass 3 — reference resolution…", 0.72)
-        print(
-            "[pipeline] Pass 3 — waiting for Gemini (reference resolution). "
+        _emit_phase("pass_3", "Pass 3 — reference resolution & header…", 0.78)
+        _vprint(
+            "[pipeline] Pass 3 — waiting for Gemini (reference resolution + status bar from first image). "
             "Live timer on the line below.",
-            flush=True,
         )
-        final_messages, contact_name3, pass3_reference_debug = _gemini_reference_resolution_pass(
-            contact_name,
-            pass2_messages,
-            timeout=gemini_pass_timeout_sec(3),
+        status_bar_b64 = None
+        if status_bar_images:
+            _sb0 = status_bar_images[0]
+            if _sb0 is not None and getattr(_sb0, "size", 0) != 0:
+                _sb_b64 = _jpeg_b64_from_bgr(_sb0, quality=92)
+                status_bar_b64 = _sb_b64 if _sb_b64 else None
+        _t_g3 = time.time()
+        final_messages, contact_name3, pass3_reference_debug, status_bar_info = (
+            _gemini_reference_resolution_pass(
+                contact_name,
+                pass2_messages,
+                timeout=gemini_pass_timeout_sec(3),
+                status_bar_b64=status_bar_b64,
+            )
         )
+        gemini_pass_sec["pass3"] = round(time.time() - _t_g3, 2)
         if contact_name3:
             contact_name = contact_name3
         final_chat_meta = _meta_from_gemini_messages(final_messages)
@@ -1201,18 +1241,6 @@ def run_pipeline_job(
         )
 
         _check_cancel()
-
-        _emit_phase("pass_4", "Pass 4 — header & status bar (vision)…", 0.86)
-        print(
-            "[pipeline] Pass 4 — waiting for Gemini (status bar / header). "
-            "Live timer on the line below.",
-            flush=True,
-        )
-        status_bar_info = _gemini_status_bar_pass(
-            status_bar_images,
-            contact_hint=contact_name,
-            timeout=gemini_pass_timeout_sec(4),
-        )
         final_contact_name_src = (status_bar_info.get("contact_name") or contact_name or "Person A").strip() or "Person A"
         final_status_text_src = (status_bar_info.get("status_text") or "").strip()
         final_contact_name = (translate_to_en(final_contact_name_src) or final_contact_name_src).strip() or "Person A"
@@ -1272,6 +1300,15 @@ def run_pipeline_job(
         cv2.imwrite(combined_path, final_chat)
         _emit_phase("completed", "Final image generated", 1.0)
         _vprint(f"[JOB] messages={len(final_render_meta)} final_image={combined_path}")
+        p1 = gemini_pass_sec.get("pass1")
+        p2 = gemini_pass_sec.get("pass2")
+        p3 = gemini_pass_sec.get("pass3")
+        if p1 is not None and p2 is not None and p3 is not None:
+            _vprint(
+                f"[pipeline] Gemini pass wall times (this run): "
+                f"pass1={p1:.1f}s  pass2={p2:.1f}s  pass3={p3:.1f}s  "
+                f"(sum={p1 + p2 + p3:.1f}s; see [gemini] lines for API thinkingBudget / thoughts_tokens)",
+            )
 
     return {
         "job_dir": str(work_dir),
@@ -1281,6 +1318,7 @@ def run_pipeline_job(
         "images_processed": len(images),
         "messages_rendered": len(final_render_meta),
         "total_runtime_sec": round(time.time() - pipeline_start, 2),
+        "gemini_pass_sec": dict(gemini_pass_sec),
         "artifacts": {
             "json": str(json_dir / "translated_conversation.json"),
             "pass1_debug": str(json_dir / "pass1_transcript_debug.json"),
@@ -1301,17 +1339,19 @@ _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 def main():
     args = _parse_args()
-    print("\n[pipeline] Gemini full-vision chat translator\n")
+    if args.verbose:
+        os.environ["PIPELINE_VERBOSE"] = "1"
+    _vprint("\n[pipeline] Gemini full-vision chat translator\n")
     if args.language:
-        print(f"[pipeline] Source language hint: {args.language}")
+        _vprint(f"[pipeline] Source language hint: {args.language}")
     else:
-        print("[pipeline] Source language: infer from screenshots")
+        _vprint("[pipeline] Source language: infer from screenshots")
     images = sorted(
         p
         for p in Path(INPUT_DIR).glob("*")
         if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES
     )
-    print(f"[pipeline] Found {len(images)} image(s) under {INPUT_DIR}")
+    _vprint(f"[pipeline] Found {len(images)} image(s) under {INPUT_DIR}")
     if not images:
         print(
             "[pipeline] Add .png / .jpg / .webp / .bmp files to input_images/ (see README).",
@@ -1324,16 +1364,21 @@ def main():
         language=args.language,
         allow_interactive_bubble_summary=not args.no_interactive,
     )
-    print(f"[pipeline] Output JSON → {result['artifacts']['json']}")
-    print(f"[pipeline] Output image → {result['artifacts']['final_image']}")
-    print(f"[pipeline] Output compare → {result['artifacts']['compare_image']}")
-    print(f"""
+    _vprint(f"[pipeline] Output JSON → {result['artifacts']['json']}")
+    _vprint(f"[pipeline] Output image → {result['artifacts']['final_image']}")
+    _vprint(f"[pipeline] Output compare → {result['artifacts']['compare_image']}")
+    gps = result.get("gemini_pass_sec") or {}
+    g1, g2, g3 = gps.get("pass1"), gps.get("pass2"), gps.get("pass3")
+    gemini_line = ""
+    if g1 is not None and g2 is not None and g3 is not None:
+        gemini_line = f"\n  Gemini passes    : pass1={g1:.1f}s  pass2={g2:.1f}s  pass3={g3:.1f}s"
+    _vprint(f"""
 ╔══════════════════════════════════════════╗
   Pipeline summary (full-vision Gemini)
   Images processed : {result['images_processed']}
   Messages rendered: {result['messages_rendered']}
   Contact name     : {result['contact_name']}
-  Total runtime    : {result['total_runtime_sec']:.1f}s
+  Total runtime    : {result['total_runtime_sec']:.1f}s{gemini_line}
 ╚══════════════════════════════════════════╝""")
 
 if __name__ == "__main__":
