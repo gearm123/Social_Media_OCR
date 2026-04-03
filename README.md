@@ -100,6 +100,7 @@ Stored in the same database file as users (`data/users.sqlite3` by default, or `
 - `POST /billing/checkout-session` — JSON `{ "plan": "single" \| "debug" \| "month" \| "sixmo" \| "year" }` → `{ "url" }` (**Bearer**; signed-in users)
 - `POST /billing/guest-checkout-session` — JSON `{ "plan": "single" \| "debug", "email": "…" }` + **X-Guest-Billing-Id** → one-time Paddle checkout without an account
 - `POST /billing/guest-claim-transaction` — JSON `{ "transaction_id": "txn_…" }` + **X-Guest-Billing-Id** → verifies payment with Paddle and grants guest credits (webhook backup)
+- `POST /billing/user-claim-transaction` — same JSON + **Bearer** → grants **single** / **debug** job credits to the signed-in user (webhook backup for `/pay` overlay)
 - `POST /billing/portal-session` — `{ "url" }` for **Paddle customer portal** (subscriptions, etc.); requires a prior successful checkout so a Paddle customer exists
 - `POST /billing/webhook` — Paddle notifications (raw body; header `Paddle-Signature`)
 

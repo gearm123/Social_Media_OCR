@@ -667,11 +667,15 @@ class BillingStore:
                             (ym, now_iso, user_id),
                         )
                         used = 0
-                    if used >= cap:
+                    if used < cap:
                         conn.commit()
-                        return False, "", "quota_exhausted"
+                        return True, "sub_quota", ""
+                    # Monthly included runs used — still allow one-time purchased credits (multi-image).
+                    if credits > 0:
+                        conn.commit()
+                        return True, "credit", ""
                     conn.commit()
-                    return True, "sub_quota", ""
+                    return False, "", "quota_exhausted"
 
                 free_left = max(0, USER_FREE_RUNS_MAX - free_used)
 

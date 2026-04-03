@@ -120,7 +120,7 @@ class GuestCheckoutBody(BaseModel):
     email: str = Field(..., min_length=3, max_length=320)
 
 
-class GuestClaimTransactionBody(BaseModel):
+class ClaimTransactionBody(BaseModel):
     """After Paddle checkout completes in the browser; provisions credits if webhooks are slow or missing."""
 
     transaction_id: str = Field(..., min_length=10, max_length=64)
@@ -414,7 +414,7 @@ def create_guest_checkout_session(
 
 @router.post("/guest-claim-transaction")
 def guest_claim_paid_transaction(
-    body: GuestClaimTransactionBody,
+    body: ClaimTransactionBody,
     x_guest_billing_id: Annotated[Optional[str], Header(alias="X-Guest-Billing-Id")] = None,
 ):
     """
@@ -485,6 +485,75 @@ def guest_claim_paid_transaction(
         "free_runs_max": GUEST_FREE_RUNS_MAX,
         "paid_job_credits": int(g.get("paid_job_credits") or 0),
         "note": "Guests: one free single-image try; then one-time purchase (no account). Credits allow multi-image runs.",
+    }
+
+
+@router.post("/user-claim-transaction")
+def user_claim_paid_transaction(
+    body: ClaimTransactionBody,
+    user: Annotated[UserRecord, Depends(get_current_user_required)],
+):
+    """
+    Same as guest-claim for signed-in users who bought ``single`` / ``debug`` via Paddle
+    (checkout overlay on ``/pay``). Subscription purchases are handled by webhooks only.
+    """
+    tid = body.transaction_id.strip()
+    if not tid.startswith("txn_"):
+        raise HTTPException(
+            status_code=400,
+            detail="transaction_id must be a Paddle id (txn_…)",
+        )
+    if not paddle_configured():
+        raise HTTPException(status_code=503, detail="Paddle is not configured (PADDLE_API_KEY)")
+
+    try:
+        res = paddle_get_transaction(tid)
+    except PaddleAPIError as e:
+        raise HTTPException(status_code=502, detail=f"Paddle error: {e}") from e
+
+    pdata = res.get("data") if isinstance(res.get("data"), dict) else res
+    if not isinstance(pdata, dict):
+        raise HTTPException(status_code=502, detail="Invalid Paddle transaction response")
+
+    status = str(pdata.get("status") or "").strip().lower()
+    if status not in _PADDLE_TX_PAID_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transaction not ready for billing yet (status={status or 'unknown'})",
+        )
+
+    store = get_billing_store(BASE_DIR)
+    custom = _normalize_custom_data(pdata.get("custom_data"))
+    uid_raw = _custom_str(custom, "user_id")
+    uid_from_custom = str(uid_raw).strip() if uid_raw else None
+    cid = pdata.get("customer_id")
+    if isinstance(cid, str):
+        cid = cid.strip() or None
+    uid_from_customer = store.get_user_id_by_paddle_customer(cid) if cid else None
+    resolved_uid = uid_from_custom or uid_from_customer
+    if not resolved_uid or resolved_uid != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Transaction does not match this signed-in account",
+        )
+
+    plan = (_custom_str(custom, "plan") or "").lower()
+    if plan not in ("single", "debug"):
+        raise HTTPException(
+            status_code=409,
+            detail="Not a one-time single/debug purchase on this transaction",
+        )
+
+    if cid:
+        store.set_paddle_customer(user.id, cid)
+
+    if store.try_claim_one_time_txn_credit(tid):
+        store.add_job_credits(user.id, 1)
+
+    ent = store.get_entitlements(user.id)
+    return {
+        "ok": True,
+        "paid_job_credits": int(ent.get("paid_job_credits") or 0),
     }
 
 
