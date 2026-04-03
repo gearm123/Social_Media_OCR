@@ -247,8 +247,10 @@ async def create_job(
 
     billing_consumption: Optional[str] = None
     billing_guest_key: Optional[str] = None
+    bill = get_billing_store(BASE_DIR)
+    guest_key_opt = normalize_guest_key(x_guest_billing_id) if job_user is None else None
+
     if billing_enforce_enabled():
-        bill = get_billing_store(BASE_DIR)
         if job_user is not None:
             ok, consumption, err = bill.can_start_job(job_user.id, len(files))
             if not ok:
@@ -258,8 +260,7 @@ async def create_job(
                 )
             billing_consumption = consumption
         else:
-            gk = normalize_guest_key(x_guest_billing_id)
-            if not gk:
+            if not guest_key_opt:
                 raise HTTPException(
                     status_code=401,
                     detail=(
@@ -267,13 +268,20 @@ async def create_job(
                         "(8–64 hex characters, e.g. UUID without dashes) for guest free runs"
                     ),
                 )
-            ok, consumption, err = bill.guest_can_start_job(gk, len(files))
+            ok, consumption, err = bill.guest_can_start_job(guest_key_opt, len(files))
             if not ok:
                 raise HTTPException(
                     status_code=402,
                     detail=_billing_block_detail(err),
                 )
-            billing_guest_key = gk
+            billing_guest_key = guest_key_opt
+            billing_consumption = consumption
+    elif guest_key_opt:
+        # Guest jobs: record Paddle-style consumption on success even when BILLING_ENFORCE is off,
+        # so the SPA and GET /billing/guest-status stay aligned with completed runs.
+        ok, consumption, _err = bill.guest_can_start_job(guest_key_opt, len(files))
+        billing_guest_key = guest_key_opt
+        if ok:
             billing_consumption = consumption
 
     job_id = uuid4().hex
