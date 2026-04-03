@@ -18,7 +18,6 @@ from auth_api import router as auth_router
 from auth_deps import assert_job_readable, get_current_user_optional, get_job_user
 from billing_api import router as billing_router
 from billing_store import billing_enforce_enabled, get_billing_store, normalize_guest_key
-from main import JobCancelledError, run_pipeline_job
 from user_store import UserRecord
 
 
@@ -95,6 +94,10 @@ def _run_job(
     billing_consumption: Optional[str] = None,
     billing_guest_key: Optional[str] = None,
 ):
+    # Import here so the web process binds to $PORT quickly (Render port scan).
+    # Loading ``main`` pulls CV2, Gemini, Vision — too slow for module-level import.
+    from main import JobCancelledError, run_pipeline_job
+
     try:
         _write_status(job_id, status="running", stage="starting")
         result = run_pipeline_job(
