@@ -62,6 +62,29 @@ def _load_status(job_id: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _make_pipeline_stage_writer(job_id: str):
+    """Emit structured pipeline phases; refresh phase_started_at when phase id changes."""
+    last_phase = {"v": None}
+
+    def _cb(payload: dict) -> None:
+        phase = str(payload.get("phase") or "running")
+        extra: dict = {}
+        if phase != last_phase["v"]:
+            last_phase["v"] = phase
+            extra["phase_started_at"] = _utc_now()
+        _write_status(
+            job_id,
+            status="running",
+            stage=phase,
+            stage_label=payload.get("label"),
+            progress=payload.get("progress"),
+            pipeline_elapsed_sec=payload.get("elapsed_sec"),
+            **extra,
+        )
+
+    return _cb
+
+
 def _write_status(job_id: str, **fields) -> dict:
     path = _status_path(job_id)
     current = {}
@@ -99,19 +122,30 @@ def _run_job(
     from main import JobCancelledError, run_pipeline_job
 
     try:
-        _write_status(job_id, status="running", stage="starting")
+        _write_status(
+            job_id,
+            status="running",
+            stage="starting",
+            stage_label="Starting…",
+            progress=0.0,
+            pipeline_elapsed_sec=0.0,
+            phase_started_at=_utc_now(),
+        )
         result = run_pipeline_job(
             image_paths=image_paths,
             work_dir=_job_dir(job_id),
             language=language,
             bubble_summary_text=bubble_summary_text,
-            on_stage=lambda s: _write_status(job_id, status="running", stage=s),
+            on_stage=_make_pipeline_stage_writer(job_id),
             cancel_check=lambda: _cancel_flag_path(job_id).exists(),
         )
         _write_status(
             job_id,
             status="completed",
             stage="completed",
+            stage_label="Final image ready",
+            progress=1.0,
+            pipeline_elapsed_sec=result.get("total_runtime_sec"),
             result=result,
             artifact_urls=_artifact_urls(job_id, result.get("artifacts") or {}),
         )
@@ -277,6 +311,10 @@ async def create_job(
         job_id,
         status="queued",
         stage="queued",
+        stage_label="Queued — waiting to start…",
+        progress=0.0,
+        pipeline_elapsed_sec=0.0,
+        phase_started_at=_utc_now(),
         created_at=_utc_now(),
         language=language,
         images_count=len(image_paths),

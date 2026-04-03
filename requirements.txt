@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+python-dotenv>=1.0.0
 python-multipart
 PyJWT>=2.8.0
 google-auth>=2.0.0

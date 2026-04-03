@@ -45,10 +45,13 @@ The generated runtime folders are git-ignored so the repository stays clean. `in
 
 Typical flow:
 
-1. Put screenshots into `input_images/`
-2. Update `pass1_bubble_input.txt` if needed
-3. Run `python main.py`
-4. Check `rendered_chat/`, `result/`, and `result_json/`
+1. Copy `.env.example` to `.env` in the project root and set **`GEMINI_API_KEY`** (required). **`GOOGLE_VISION_API_KEY`** is optional but improves hints. You do **not** need to `export` variables in the shell — `python main.py` loads `.env` automatically (same as `web_app.py`).
+2. Put screenshots into `input_images/` (only image files are used; `.gitkeep` is ignored).
+3. Update `pass1_bubble_input.txt` if needed (or answer prompts when the CLI asks for bubble counts).
+4. From the project root, run `python main.py`
+5. Check `rendered_chat/`, `result/`, and `result_json/`
+
+The full vision pipeline **cannot** run without a Gemini key; there is no offline translation mode.
 
 ## Goal
 

@@ -4,6 +4,8 @@ import cv2
 import time
 import sys
 import re
+import threading
+from contextlib import contextmanager
 from difflib import SequenceMatcher
 from typing import NamedTuple, Optional, Any, Dict
 import numpy as np
@@ -28,6 +30,107 @@ def _set_source_language(code: str, name: str):
     global _source_lang_code, _source_lang_name
     _source_lang_code = code
     _source_lang_name = name
+
+
+def _pipeline_verbose() -> bool:
+    return os.environ.get("PIPELINE_VERBOSE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _pv(*args, **kwargs) -> None:
+    """Gemini/OCR detail logs — enable with PIPELINE_VERBOSE=1."""
+    if _pipeline_verbose():
+        kwargs.setdefault("flush", True)
+        print(*args, **kwargs)
+
+
+def gemini_pass_timeout_sec(pass_num: int) -> int:
+    """HTTP client read timeout (seconds) for each Gemini ``generateContent`` call.
+
+    This is only a **client-side** maximum wait; it does not speed up the API. Typical multimodal
+    jobs often finish in tens of seconds — defaults below favor failing fast if something stalls,
+    while still allowing slower vision + JSON. If you hit read timeouts, raise
+    ``GEMINI_PASS{n}_TIMEOUT_SEC`` or ``GEMINI_REQUEST_TIMEOUT_SEC``.
+
+    Wall-clock slowness on 2.5 Pro is often **thinking tokens**; tune
+    ``GEMINI_PASS{n}_THINKING_BUDGET`` (not just HTTP timeout).
+
+    Resolution order:
+
+    1. ``GEMINI_PASS{n}_TIMEOUT_SEC`` for *n* = 1…4 when set and valid.
+    2. Else ``GEMINI_REQUEST_TIMEOUT_SEC`` (legacy: same ceiling for every pass).
+    3. Else tiered defaults: **1** = 240s, **2** and **3** = 150s, **4** = 90s.
+
+    Minimum 30 seconds.
+    """
+    n = int(pass_num)
+    specific = os.environ.get(f"GEMINI_PASS{n}_TIMEOUT_SEC", "").strip()
+    if specific:
+        try:
+            return max(30, int(specific))
+        except ValueError:
+            pass
+    legacy = os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "").strip()
+    if legacy:
+        try:
+            return max(30, int(legacy))
+        except ValueError:
+            pass
+    defaults = {1: 240, 2: 150, 3: 150, 4: 90}
+    return max(30, defaults.get(n, 120))
+
+
+def _gemini_thinking_budget_for_pass(pass_num: int, model_name: str) -> Optional[int]:
+    """Resolve ``thinkingConfig.thinkingBudget`` for pipeline pass 1–4, or None if unchanged.
+
+    *None* means: keep legacy behavior (single global env knob) for callers that do not set
+    ``pass_num`` on :func:`_gemini_generate`.
+
+    **Gemini 2.5 Pro** (128–32768): per-pass env ``GEMINI_PASS{n}_THINKING_BUDGET``, else global
+    ``GEMINI_PRO_THINKING_BUDGET``, else tiered defaults (pass 1 largest, pass 4 smallest).
+
+    **Gemini 2.5 Flash / Flash-Lite**: per-pass ``GEMINI_PASS{n}_THINKING_BUDGET``, else
+    ``GEMINI_THINKING_BUDGET``, else 0 for every pass (JSON-friendly).
+    """
+    n = int(pass_num)
+    m = (model_name or "").lower()
+    _is_25_pro = "2.5" in m and "pro" in m and "flash" not in m
+    _is_25_non_pro = "2.5" in m and "pro" not in m
+
+    if _is_25_pro:
+        spec = os.environ.get(f"GEMINI_PASS{n}_THINKING_BUDGET", "").strip()
+        if spec:
+            try:
+                return max(128, min(int(spec), 32768))
+            except ValueError:
+                pass
+        legacy = os.environ.get("GEMINI_PRO_THINKING_BUDGET", "").strip()
+        if legacy:
+            try:
+                return max(128, min(int(legacy), 32768))
+            except ValueError:
+                pass
+        # Moderate explicit caps: enough for vision + JSON, but low enough to avoid long thinking stalls.
+        # (Still always explicit thinkingConfig on Pro — never unbounded dynamic thinking.)
+        tiered = {1: 6144, 2: 4096, 3: 4096, 4: 2560}
+        v = tiered.get(n, 4096)
+        return max(128, min(int(v), 32768))
+
+    if _is_25_non_pro:
+        spec = os.environ.get(f"GEMINI_PASS{n}_THINKING_BUDGET", "").strip()
+        if spec:
+            try:
+                return max(0, min(int(spec), 24576))
+            except ValueError:
+                pass
+        legacy = os.environ.get("GEMINI_THINKING_BUDGET", "").strip()
+        if legacy:
+            try:
+                return max(0, min(int(legacy), 24576))
+            except ValueError:
+                pass
+        return 0
+
+    return None
 
 
 def collect_vision_ocr_hints(page_images):
@@ -675,7 +778,7 @@ def _gemini_discover_model(api_key):
             # Fallback: first capable model
             return capable[0], ver
         except Exception as e:
-            print(f"[GEMINI] ListModels error ({ver}): {e}")
+            _pv(f"[GEMINI] ListModels error ({ver}): {e}")
     return None, None
 
 
@@ -695,11 +798,11 @@ def _gemini_discover_if_needed() -> bool:
     if not _gemini_api_key:
         return False
     if _gemini_active_model is None:
-        print("[GEMINI] Discovering available models...")
+        _pv("[GEMINI] Discovering available models...")
         model, ver = _gemini_discover_model(_gemini_api_key)
         if model:
             _gemini_active_model = (model, ver)
-            print(f"[GEMINI] Using model: {model} (API {ver})")
+            _pv(f"[GEMINI] Using model: {model} (API {ver})")
         else:
             print("[GEMINI] No generateContent-capable model found — refinement disabled")
             _gemini_api_key = ""
@@ -716,17 +819,142 @@ def _gemini_candidate_finish_reason(api_payload: Optional[Dict[str, Any]]) -> Op
     return cands[0].get("finishReason")
 
 
+def _gemini_pass_summary_enabled() -> bool:
+    """One-line [gemini] pass summary after each pipeline call (disable with GEMINI_PASS_SUMMARY=0)."""
+    return os.environ.get("GEMINI_PASS_SUMMARY", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _gemini_log_pass_summary(
+    pass_num: Optional[int],
+    wall_sec: float,
+    thinking_budget_cap: Any,
+    thoughts_used: Any,
+    total_tokens: Any,
+    finish_reason: Any,
+    out_chars: int,
+    note: str,
+) -> None:
+    if pass_num is None or not _gemini_pass_summary_enabled():
+        return
+    th = thoughts_used if thoughts_used is not None else "n/a"
+    tt = total_tokens if total_tokens is not None else "n/a"
+    fr = finish_reason if finish_reason is not None else "n/a"
+    cap = thinking_budget_cap if thinking_budget_cap is not None else "n/a"
+    extra = f" note={note}" if note else ""
+    print(
+        f"[gemini] pass {pass_num}: {wall_sec:.1f}s wall "
+        f"thinkingBudget_cap={cap} thoughts_tokens={th} total_tokens={tt} "
+        f"finish={fr} json_chars={out_chars}{extra}",
+        flush=True,
+    )
+
+
+def _gemini_wait_ui_enabled() -> bool:
+    """Animated wait line on TTY during Gemini HTTP call. Disable with GEMINI_WAIT_UI=0."""
+    if not sys.stdout.isatty():
+        return False
+    return os.environ.get("GEMINI_WAIT_UI", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+@contextmanager
+def _gemini_pipeline_http_wait(pass_num: Optional[int], http_timeout: int):
+    """While blocking on generateContent: one status line, then TTY live progress (spinner bar)."""
+    if pass_num is None:
+        yield
+        return
+
+    t0 = time.time()
+    print(
+        f"[pipeline] Pass {pass_num} — awaiting Gemini HTTP response "
+        f"(request in flight; model thinking/generating until the API returns). "
+        f"HTTP read max {http_timeout}s.",
+        flush=True,
+    )
+
+    stop = threading.Event()
+    last_len_holder = [96]
+
+    def _spinner() -> None:
+        if not _gemini_wait_ui_enabled():
+            return
+        spin = "|/-\\"
+        width = 22
+        block = 6
+        i = 0
+        while not stop.wait(0.12):
+            elapsed = time.time() - t0
+            off = i % (width - block + 1)
+            inner = "".join("=" if off <= j < off + block else "·" for j in range(width))
+            bar = f"[{inner}]"
+            sp = spin[i % len(spin)]
+            msg = (
+                f"[pipeline] Pass {pass_num} — live wait  {elapsed:5.1f}s  {bar} {sp}  "
+                f"(HTTP max {http_timeout}s)"
+            )
+            pad = max(0, last_len_holder[0] - len(msg))
+            sys.stdout.write("\r" + msg + " " * pad)
+            sys.stdout.flush()
+            last_len_holder[0] = max(last_len_holder[0], len(msg))
+            i += 1
+
+    workers = []
+    if _gemini_wait_ui_enabled():
+        ws = threading.Thread(target=_spinner, daemon=True)
+        ws.start()
+        workers.append(ws)
+
+    try:
+        yield
+    except BaseException:
+        elapsed = time.time() - t0
+        print(
+            f"[pipeline] Pass {pass_num} — wait ended after {elapsed:.1f}s "
+            f"(timeout, HTTP error, or parse failure — see messages above).",
+            flush=True,
+        )
+        raise
+    else:
+        elapsed = time.time() - t0
+        print(
+            f"[pipeline] Pass {pass_num} — Gemini HTTP response finished in {elapsed:.1f}s "
+            f"(status OK, body read and JSON parsed).",
+            flush=True,
+        )
+    finally:
+        stop.set()
+        for w in workers:
+            w.join(timeout=3.0)
+        if _gemini_wait_ui_enabled():
+            clear = max(last_len_holder[0], 100)
+            sys.stdout.write("\r" + " " * clear + "\r")
+            sys.stdout.flush()
+
+
 def _gemini_generate(
     prompt,
     image_b64=None,
     image_b64_list=None,
     timeout=120,
     max_output_tokens_override: Optional[int] = None,
+    pass_num: Optional[int] = None,
 ):
     """Call Gemini REST API directly (text-only or multimodal).
 
     Pass *image_b64* (single JPEG base64) or *image_b64_list* (several JPEGs in order)
     before the text prompt.
+
+    *pass_num* (1–4) selects per-pass **thinking budget** for Gemini 2.5 models so reasoning
+    is capped by the API instead of relying on a short HTTP timeout. Omit for legacy helpers.
 
     Returns ``GeminiApiResult(text, response_json)``, or ``None`` if the API key / model
     is not configured. *response_json* is the full API object (for empty/blocked replies).
@@ -755,34 +983,56 @@ def _gemini_generate(
     if max_output_tokens_override is not None:
         max_out = int(max_output_tokens_override)
     else:
-        # Pro + thinking can need a large combined ceiling (thoughts + visible JSON).
-        max_out = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "65536"))
+        # Default 32768 keeps total generation (thinking + visible) closer to historical runtime;
+        # set GEMINI_MAX_OUTPUT_TOKENS=65536 for very long transcripts if you hit MAX_TOKENS.
+        max_out = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "32768"))
     gen_cfg: Dict[str, Any] = {
         "maxOutputTokens": max(1024, min(max_out, 65536)),
         "temperature": 0.0,
         "topP": 1.0,
     }
     _mname = (model or "").lower()
-    # Thinking tokens and answer tokens share the generation budget. If thinkingConfig is omitted,
-    # 2.5 Pro defaults to dynamic thinking and can spend ~32k on thoughts → MAX_TOKENS with empty text.
-    # API allows thinkingBudget 128–32768 for 2.5 Pro (cannot set 0). Cap leaves room for long JSON.
-    # Only 2.5 Pro documented here; Gemini 3 Pro uses different thinking controls.
+    # Thinking tokens and answer tokens share the generation budget.
+    #
+    # Default stays **explicit** thinkingBudget on Pro (no unbounded dynamic thinking). Budgets are
+    # intentionally moderate (see _gemini_thinking_budget_for_pass) for snappy runs; raise per-pass
+    # env vars if quality drops. Optional GEMINI_PRO_THINKING_CONFIG=omit matches pre-4a00246 (risky).
+    # API: thinkingBudget 128–32768 for 2.5 Pro. Gemini 3 Pro may use other controls.
     _is_25_pro = "2.5" in _mname and "pro" in _mname and "flash" not in _mname
+    _pro_thinking_mode = os.environ.get("GEMINI_PRO_THINKING_CONFIG", "explicit").strip().lower()
     if _is_25_pro:
-        _ptb = os.environ.get("GEMINI_PRO_THINKING_BUDGET", "8192").strip()
-        try:
-            pro_thinking = int(_ptb)
-        except ValueError:
-            pro_thinking = 8192
-        pro_thinking = max(128, min(pro_thinking, 32768))
-        gen_cfg["thinkingConfig"] = {"thinkingBudget": pro_thinking}
+        if _pro_thinking_mode in ("omit", "legacy", "none", "off", "dynamic"):
+            # Match pre-4a00246: omit thinkingConfig; may be quicker but less predictable.
+            _pv(
+                "[GEMINI] 2.5 Pro: thinkingConfig omitted (GEMINI_PRO_THINKING_CONFIG="
+                f"{_pro_thinking_mode!r}) — legacy / dynamic thinking",
+            )
+        else:
+            if pass_num is not None:
+                pro_thinking = _gemini_thinking_budget_for_pass(int(pass_num), model)
+                if pro_thinking is None:
+                    pro_thinking = 6144
+            else:
+                _ptb = os.environ.get("GEMINI_PRO_THINKING_BUDGET", "6144").strip()
+                try:
+                    pro_thinking = int(_ptb)
+                except ValueError:
+                    pro_thinking = 6144
+            pro_thinking = max(128, min(int(pro_thinking), 32768))
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": pro_thinking}
     elif "2.5" in _mname and "pro" not in _mname:
         # Gemini 2.5 Flash / Flash-Lite: can disable thinking (0) so JSON is not truncated.
-        _tb = os.environ.get("GEMINI_THINKING_BUDGET", "0").strip()
-        try:
-            thinking_budget = int(_tb)
-        except ValueError:
-            thinking_budget = 0
+        if pass_num is not None:
+            thinking_budget = _gemini_thinking_budget_for_pass(int(pass_num), model)
+            if thinking_budget is None:
+                thinking_budget = 0
+        else:
+            _tb = os.environ.get("GEMINI_THINKING_BUDGET", "0").strip()
+            try:
+                thinking_budget = int(_tb)
+            except ValueError:
+                thinking_budget = 0
+        thinking_budget = max(0, min(int(thinking_budget), 24576))
         gen_cfg["thinkingConfig"] = {"thinkingBudget": thinking_budget}
     # Optional: force JSON body (no markdown fence). Disable if the API rejects your model/payload.
     _jm = os.environ.get("GEMINI_JSON_OUTPUT", "0").strip().lower()
@@ -804,50 +1054,75 @@ def _gemini_generate(
 
     image_count = len(image_b64_list or ([] if not image_b64 else [image_b64]))
     prompt_chars = len(prompt or "")
-    print(
-        f"[GEMINI] Request start: model={model} images={image_count} "
-        f"prompt_chars={prompt_chars} max_tokens={gen_cfg['maxOutputTokens']} timeout={timeout}s",
-        flush=True,
+    _tc = gen_cfg.get("thinkingConfig") or {}
+    _tb_disp = _tc.get("thinkingBudget")
+    _pv(
+        f"[GEMINI] generateContent POST: model={model} pass={pass_num!r} "
+        f"images_in_payload={image_count} prompt_chars={prompt_chars} "
+        f"max_tokens={gen_cfg['maxOutputTokens']} thinkingBudget={_tb_disp!r} timeout={timeout}s",
     )
-    t_http = time.time()
-    r = _req.post(url, json=payload, timeout=timeout)
-    print(
-        f"[GEMINI] HTTP response received in {time.time()-t_http:.1f}s with status {r.status_code}",
-        flush=True,
-    )
-    r.raise_for_status()
-    t_json = time.time()
-    data = r.json()
-    print(
-        f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
-        flush=True,
-    )
+    t_pass_wall = time.time()
+    try:
+        with _gemini_pipeline_http_wait(pass_num, int(timeout)):
+            t_http = time.time()
+            r = _req.post(url, json=payload, timeout=timeout)
+            _pv(
+                f"[GEMINI] HTTP response received in {time.time()-t_http:.1f}s with status {r.status_code}",
+            )
+            r.raise_for_status()
+            t_json = time.time()
+            data = r.json()
+            _pv(
+                f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
+            )
+    except _req.exceptions.Timeout as e:
+        if pass_num is not None and _gemini_pass_summary_enabled():
+            print(
+                f"[gemini] pass {pass_num} stopped: HTTP timeout after {timeout}s "
+                f"(raise GEMINI_PASS{pass_num}_TIMEOUT_SEC or GEMINI_REQUEST_TIMEOUT_SEC; not a thinkingBudget cut)",
+                flush=True,
+            )
+        raise
+    except _req.exceptions.RequestException as e:
+        if pass_num is not None and _gemini_pass_summary_enabled():
+            print(f"[gemini] pass {pass_num} stopped: request error: {e}", flush=True)
+        raise
 
     pf = data.get("promptFeedback")
     if pf:
-        print(f"[GEMINI] promptFeedback: {pf}")
+        _pv(f"[GEMINI] promptFeedback: {pf}")
 
     candidates = data.get("candidates") or []
+    usage = data.get("usageMetadata") or {}
+    thoughts_tokens = usage.get("thoughtsTokenCount")
+    total_tokens = usage.get("totalTokenCount")
+
     if not candidates:
         print(
             "[GEMINI] No candidates in API response — often prompt blocked or request too large. "
             "See result/gemini_debug.txt (=== GEMINI API ===)."
         )
+        _gemini_log_pass_summary(
+            pass_num=pass_num,
+            wall_sec=time.time() - t_pass_wall,
+            thinking_budget_cap=_tb_disp,
+            thoughts_used=thoughts_tokens,
+            total_tokens=total_tokens,
+            finish_reason=None,
+            out_chars=0,
+            note="no_candidates",
+        )
         return GeminiApiResult("", data)
 
     c0 = candidates[0]
     fr = c0.get("finishReason")
-    usage = data.get("usageMetadata") or {}
-    thoughts_tokens = usage.get("thoughtsTokenCount")
-    total_tokens = usage.get("totalTokenCount")
-    print(
+    _pv(
         f"[GEMINI] Candidate summary: finishReason={fr or 'unknown'} "
         f"totalTokens={total_tokens if total_tokens is not None else 'n/a'} "
         f"thoughtsTokens={thoughts_tokens if thoughts_tokens is not None else 'n/a'}",
-        flush=True,
     )
     if fr and fr not in ("STOP", "MAX_TOKENS", "FINISH_REASON_STOP", "FINISH_REASON_MAX_TOKENS"):
-        print(f"[GEMINI] finishReason: {fr}")
+        _pv(f"[GEMINI] finishReason: {fr}")
 
     content = c0.get("content") or {}
     resp_parts = content.get("parts") or []
@@ -856,12 +1131,22 @@ def _gemini_generate(
     )
     sr = c0.get("safetyRatings")
     if sr and not text.strip():
-        print(f"[GEMINI] safetyRatings: {sr}")
+        _pv(f"[GEMINI] safetyRatings: {sr}")
     if not text.strip():
         print(
             "[GEMINI] Empty model text — check finishReason / promptFeedback in "
             "result/gemini_debug.txt (=== GEMINI API ===)."
         )
+    _gemini_log_pass_summary(
+        pass_num=pass_num,
+        wall_sec=time.time() - t_pass_wall,
+        thinking_budget_cap=_tb_disp,
+        thoughts_used=thoughts_tokens,
+        total_tokens=total_tokens,
+        finish_reason=fr,
+        out_chars=len(text),
+        note="",
+    )
     return GeminiApiResult(text, data)
 
 
@@ -1828,7 +2113,7 @@ Output JSON only:
     prompt = _build_prompt(hints)
     _write_gemini_prompt_file("gemini_prompt_pass2.txt", "Pass 2 (OCR-guided rewrite)", prompt)
     try:
-        gres = _gemini_generate(prompt, timeout=timeout)
+        gres = _gemini_generate(prompt, timeout=timeout, pass_num=2)
         raw = (gres.text if gres else "") or ""
     except Exception as e:
         print(f"[GEMINI] Pass 2 failed: {e}")
@@ -1843,7 +2128,7 @@ Output JSON only:
             retry_note="- If OCR support is weak, keep the original wording and only fix lines where the OCR clearly helps.",
         )
         try:
-            gres = _gemini_generate(retry_prompt, timeout=timeout)
+            gres = _gemini_generate(retry_prompt, timeout=timeout, pass_num=2)
             raw = (gres.text if gres else "") or ""
             prompt = retry_prompt
         except Exception as e:
@@ -2030,7 +2315,7 @@ Output JSON only:
 
     _write_gemini_prompt_file("gemini_prompt_pass3_reference.txt", "Pass 3 (reference resolution)", prompt)
     try:
-        gres = _gemini_generate(prompt, timeout=timeout)
+        gres = _gemini_generate(prompt, timeout=timeout, pass_num=3)
         raw = (gres.text if gres else "") or ""
     except Exception as e:
         print(f"[GEMINI] Pass 3 reference failed: {e}")
@@ -2245,7 +2530,9 @@ Return JSON only:
     _write_gemini_prompt_file("gemini_prompt_pass4_statusbar.txt", "Pass 4 status bar", prompt)
 
     try:
-        gres = _gemini_generate(prompt, image_b64_list=img_b64_list, timeout=timeout)
+        gres = _gemini_generate(
+            prompt, image_b64_list=img_b64_list, timeout=timeout, pass_num=4
+        )
         raw = (gres.text if gres else "") or ""
     except Exception as e:
         print(f"[GEMINI] Pass 4 status-bar failed: {e}")
@@ -2382,7 +2669,7 @@ def translate_conversation_gemini_multimodal(
     if not _gemini_discover_if_needed():
         return False, "", [], [], {}
 
-    timeout = int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600"))
+    timeout = gemini_pass_timeout_sec(1)
     b64_list = []
     pass1_message_images = list(pass1_message_images or [])
     for page_idx, img in enumerate(list(page_images or [])):
@@ -2391,7 +2678,7 @@ def translate_conversation_gemini_multimodal(
         b64 = _jpeg_b64_from_bgr(img, quality=90)
         if b64:
             b64_list.append(b64)
-            print(
+            _pv(
                 f"[GEMINI] Pass 1 page {page_idx + 1}/{len(page_images)}: "
                 f"{img.shape[1]}x{img.shape[0]}px ({len(b64) // 1024}KB base64)"
             )
@@ -2434,7 +2721,9 @@ output json only."""
 
     pass1_started = time.time()
     try:
-        gres = _gemini_generate(prompt, image_b64_list=b64_list, timeout=timeout)
+        gres = _gemini_generate(
+            prompt, image_b64_list=b64_list, timeout=timeout, pass_num=1
+        )
         raw = (gres.text if gres else "") or ""
         api_payload = gres.response_json if gres else None
     except Exception as e:
@@ -2450,7 +2739,7 @@ output json only."""
     def _finish_warn(pay):
         fr = _gemini_candidate_finish_reason(pay)
         if fr == "MAX_TOKENS":
-            print(
+            _pv(
                 f"[GEMINI] Pass 1 finishReason={fr!r} — if JSON fails, internal "
                 "thinking may have consumed the output token budget (see PIPELINE.md)."
             )
@@ -2497,12 +2786,12 @@ output json only."""
     system_count = len(pass1_system_msgs)
 
     if _n_exp > 0 and non_system_count != _n_exp:
-        print(
+        _pv(
             f"[GEMINI] Pass 1 bubble count mismatch: expected {_n_exp}, got {non_system_count} "
             f"(plus {system_count} system row(s))."
         )
     elif _n_exp > 0:
-        print(f"[GEMINI] Pass 1 bubble count OK: {_n_exp} bubbles, {system_count} system row(s).")
+        _pv(f"[GEMINI] Pass 1 bubble count OK: {_n_exp} bubbles, {system_count} system row(s).")
 
     contact_name = gname or hint or ""
     if not pass1_chat_msgs:
@@ -2524,8 +2813,8 @@ output json only."""
     )
     _write_gemini_debug_vision_only(prompt, raw, pass1_footer, api_payload=api_payload)
 
-    print(f"[GEMINI] Pass 1 (vision): {len(gmsgs)} rows total")
-    print(f"[TIMER] Pass 1 Gemini in {time.time()-pass1_started:.1f}s")
+    _pv(f"[GEMINI] Pass 1 (vision): {len(gmsgs)} rows total")
+    _pv(f"[TIMER] Pass 1 Gemini in {time.time()-pass1_started:.1f}s")
     pass1_source_msgs = [
         {
             "role": m.get("role"),

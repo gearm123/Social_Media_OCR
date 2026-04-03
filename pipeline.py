@@ -22,6 +22,17 @@ from grouping import (
 from ocr_translate import ocr_and_translate, run_ocr_on_region, translate_th_to_en
 from timestamp_detection import parse_timestamp_text
 
+
+def _pipeline_verbose() -> bool:
+    return os.environ.get("PIPELINE_VERBOSE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _pv(*args, **kwargs) -> None:
+    if _pipeline_verbose():
+        kwargs.setdefault("flush", True)
+        print(*args, **kwargs)
+
+
 def draw_rect(img, rect, color, label):
     x1, y1, x2, y2 = rect
 
@@ -56,12 +67,12 @@ def prepare_image_crop_info(path):
     bottom_artifact_info = detect_bottom_artifacts(img)
 
     if status_bar_info:
-        print(
+        _pv(
             f"[ARTIFACT] {Path(path).name}: status bar "
             f"{status_bar_info.get('bbox')} via {status_bar_info.get('method','unknown')}"
         )
     if bottom_artifact_info:
-        print(
+        _pv(
             f"[ARTIFACT] {Path(path).name}: bottom artifact "
             f"{bottom_artifact_info.get('bbox')}"
         )
@@ -93,7 +104,7 @@ def run_craft_and_group_on_combined(combined_img, craft_net, page_ranges):
         "on",
     )
     if _craft_verbose:
-        print("\n[STEP] Running CRAFT text detection per page slice...")
+        _pv("\n[STEP] Running CRAFT text detection per page slice...")
 
     # CRAFT max height — images taller than this cause detail loss
     CRAFT_MAX_HEIGHT = 2000
@@ -144,7 +155,7 @@ def run_craft_and_group_on_combined(combined_img, craft_net, page_ranges):
             local_rects, status_bar_info, bottom_artifact_info
         )
         if _craft_verbose:
-            print(
+            _pv(
                 f"[CRAFT] Page {page_idx}: {len(raw_boxes)} boxes → "
                 f"{len(conv_rects)} conversation, {len(top_art)} top artifacts"
             )
@@ -160,7 +171,7 @@ def run_craft_and_group_on_combined(combined_img, craft_net, page_ranges):
             ))
 
     if _craft_verbose:
-        print(f"[CRAFT] Total: {total_boxes} boxes detected across {len(page_ranges)} pages")
+        _pv(f"[CRAFT] Total: {total_boxes} boxes detected across {len(page_ranges)} pages")
 
     rows = group_rows(all_conversation_rects, img_w, combined_img)
     objects = group_objects(rows, img_w, combined_img)
@@ -175,7 +186,7 @@ def run_craft_and_group_on_combined(combined_img, craft_net, page_ranges):
                 break
 
     if _craft_verbose:
-        print(f"[GROUP] Created {len(objects)} chat objects in combined image")
+        _pv(f"[GROUP] Created {len(objects)} chat objects in combined image")
     return objects
 
 
@@ -266,7 +277,7 @@ def filter_gambling_overlay_objects(objects):
 
 def prepare_image_layout(path, craft_net, keep_status_bar_context=True):
     image_start = time.time()
-    print(f"\n[IMAGE] Processing {Path(path).name}")
+    _pv(f"\n[IMAGE] Processing {Path(path).name}")
 
     img = cv2.imread(path)
     status_bar_info = detect_top_status_bar(img)
@@ -278,20 +289,20 @@ def prepare_image_layout(path, craft_net, keep_status_bar_context=True):
 
     if status_bar_info:
         status_bbox = status_bar_info["bbox"]
-        print(
+        _pv(
             f"[ARTIFACT] UI-based top status/header band detected "
             f"via {status_bar_info.get('method', 'unknown')}: {status_bbox}"
         )
     if bottom_artifact_info:
-        print(
+        _pv(
             f"[ARTIFACT] UI-based bottom artifact band detected "
             f"via {bottom_artifact_info.get('method', 'unknown')}: "
             f"{bottom_artifact_info['bbox']}"
         )
 
-    print("[STEP] Running CRAFT text detection...")
+    _pv("[STEP] Running CRAFT text detection...")
     raw_boxes = detect_text(img, craft_net)
-    print(f"[CRAFT] Detected {len(raw_boxes)} text boxes")
+    _pv(f"[CRAFT] Detected {len(raw_boxes)} text boxes")
 
     rects = [box_to_rect(b) for b in raw_boxes]
     rects, top_artifact_rects, bottom_artifact_rects = split_artifacts_from_conversation(
@@ -302,24 +313,24 @@ def prepare_image_layout(path, craft_net, keep_status_bar_context=True):
 
     if status_bar_info:
         status_bbox = status_bar_info["bbox"]
-        print(
+        _pv(
             f"[ARTIFACT] Top status/header band detected: "
             f"{status_bbox}"
         )
-        print(
+        _pv(
             f"[ARTIFACT] Preserving {len(top_artifact_rects)} top artifact boxes "
             f"and processing {len(rects)} conversation boxes"
         )
     if bottom_artifact_info:
-        print(
+        _pv(
             f"[ARTIFACT] Preserving {len(bottom_artifact_rects)} bottom artifact boxes"
         )
 
     rows = group_rows(rects, img.shape[1], img)
     objects = group_objects(rows, img.shape[1], img)
 
-    print(f"[GROUP] Created {len(objects)} chat objects")
-    print(
+    _pv(f"[GROUP] Created {len(objects)} chat objects")
+    _pv(
         f"[IMAGE] Layout ready for {Path(path).name} in "
         f"{time.time() - image_start:.2f}s"
     )
@@ -397,14 +408,14 @@ def finalize_image_layout(layout):
 def process_image(path, craft_net):
     image_start = time.time()
     layout = prepare_image_layout(path, craft_net)
-    print("[STEP] Running PaddleOCR on extracted regions...")
+    _pv("[STEP] Running PaddleOCR on extracted regions...")
     layout["objects"] = ocr_and_translate(
         layout["objects"],
         layout["img"],
         progress_label=f"OCR {Path(path).name}"
     )
     overlay, results, render_context = finalize_image_layout(layout)
-    print(
+    _pv(
         f"[IMAGE] Finished {Path(path).name} in "
         f"{time.time() - image_start:.2f}s"
     )

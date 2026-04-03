@@ -5,17 +5,22 @@ import time
 import argparse
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Optional
-
-
-class JobCancelledError(Exception):
-    """Raised when ``cancel_check`` returns True between pipeline stages."""
+from typing import Any, Callable, Dict, Optional
 import cv2
 import numpy as np
 
 # Allow Thai / Unicode characters to print on Windows without crashing
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+# Load project `.env` before `config` (same as `web_app.py`) so `python main.py` picks up
+# GEMINI_API_KEY / GOOGLE_VISION_API_KEY without exporting them in the shell.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 from config import INPUT_DIR, OUTPUT_DIR, JSON_DIR, RENDER_DIR, ocr_engine
 import config as runtime_config
@@ -28,12 +33,27 @@ from ocr_translate import (
     _gemini_status_bar_pass,
     _meta_from_gemini_messages,
     _set_source_language,
+    gemini_pass_timeout_sec,
 )
 from pipeline import prepare_image_crop_info
 from chat_renderer import render_chat
 
 PAGE_GAP_PX = 48
 PASS1_BUBBLE_INPUT_PATH = Path(__file__).resolve().parent / "pass1_bubble_input.txt"
+
+
+class JobCancelledError(Exception):
+    """Raised when a hosted job is cancelled mid-pipeline (see web_app cancel flag)."""
+
+
+def _pipeline_verbose() -> bool:
+    return os.environ.get("PIPELINE_VERBOSE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _vprint(*args, **kwargs) -> None:
+    if _pipeline_verbose():
+        kwargs.setdefault("flush", True)
+        print(*args, **kwargs)
 
 # UI strings that appear in phone status bars but are NOT contact names
 _STATUS_BAR_NOISE = {
@@ -241,14 +261,30 @@ def prompt_manual_bubble_summary(num_images: int):
 
     file_summary = _load_pass1_bubble_summary_file(num_images)
     if file_summary is not None:
-        print(f"\n[STEP 1a] Using Pass 1 bubble summary from {PASS1_BUBBLE_INPUT_PATH.name}…")
+        print(
+            f"\n[pipeline] Using bubble guidance file {PASS1_BUBBLE_INPUT_PATH.name} for Pass 1…",
+            flush=True,
+        )
         return file_summary
 
-    print("\n[STEP 1a] Manual bubble summary for Pass 1…")
-    print(f"[INPUT] You can also prefill {PASS1_BUBBLE_INPUT_PATH.name} to skip prompts.")
-    print("[INPUT] Enter the number of actual text bubbles for each cleaned image.")
-    print("[INPUT] Then enter their order using sender/receiver or s/r, comma-separated.")
-    print("[INPUT] Do not count timestamps, call notices, reactions, headers, or other UI artifacts.")
+    print(
+        "\n[pipeline] Pass 1 bubble guidance — type counts and order in this terminal "
+        "(or use --no-interactive / the bubble file to skip).",
+        flush=True,
+    )
+    print(
+        "[pipeline] If nothing appears, you may have no TTY; add "
+        f"{PASS1_BUBBLE_INPUT_PATH.name} or run with --no-interactive.",
+        flush=True,
+    )
+    print(
+        "[pipeline] For each image: bubble count, then order as sender/receiver (s/r), comma-separated.",
+        flush=True,
+    )
+    print(
+        "[pipeline] Do not count timestamps, call notices, reactions, headers, or other UI chrome.",
+        flush=True,
+    )
 
     lines = []
     total_bubbles = 0
@@ -343,14 +379,14 @@ def _load_pass1_bubble_summary_file(num_images: int):
     try:
         raw_lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
     except Exception as e:
-        print(f"[INPUT] Could not read {path.name}: {e}")
+        print(f"[pipeline] Could not read {path.name}: {e}")
         return None
 
     lines = [line for line in raw_lines if line]
     if not lines:
         return None
     if len(lines) % 2 != 0:
-        print(f"[INPUT] {path.name} is invalid: expected count/order line pairs.")
+        print(f"[pipeline] {path.name} is invalid: expected count/order line pairs.")
         return None
 
     specs = []
@@ -360,7 +396,7 @@ def _load_pass1_bubble_summary_file(num_images: int):
         try:
             count = int(count_line)
         except ValueError:
-            print(f"[INPUT] {path.name} has an invalid count line: '{count_line}'")
+            print(f"[pipeline] {path.name} has an invalid count line: '{count_line}'")
             return None
 
         if "," in order_line:
@@ -372,13 +408,13 @@ def _load_pass1_bubble_summary_file(num_images: int):
         for tok in tokens:
             role = _map_bubble_role_token(tok)
             if role is None:
-                print(f"[INPUT] {path.name} has an invalid role token: '{tok}'")
+                print(f"[pipeline] {path.name} has an invalid role token: '{tok}'")
                 return None
             mapped.append(role)
 
         if count != len(mapped):
             print(
-                f"[INPUT] {path.name}: count {count} does not match order length {len(mapped)} "
+                f"[pipeline] {path.name}: count {count} does not match order length {len(mapped)} "
                 f"for image {(i // 2) + 1}; using order length."
             )
             count = len(mapped)
@@ -387,7 +423,7 @@ def _load_pass1_bubble_summary_file(num_images: int):
 
     if len(specs) != num_images:
         print(
-            f"[INPUT] {path.name} has {len(specs)} image specs but current input has {num_images} images."
+            f"[pipeline] {path.name} has {len(specs)} image specs but current input has {num_images} images."
         )
         return None
 
@@ -622,7 +658,7 @@ def build_combined_image(crop_infos, background=248, global_first_page_index=0):
         page_index = global_first_page_index + local_i
         keep_sb = (page_index == 0)
         crop_top, crop_bottom = _crop_bounds_from_info(info, keep_status_bar=keep_sb)
-        print(
+        _vprint(
             f"[COMBINE] page={page_index} keep_status_bar={keep_sb} "
             f"crop_top={crop_top} crop_bottom={crop_bottom} "
             f"img_h={info['img'].shape[0]} "
@@ -676,6 +712,15 @@ def _parse_args():
         help=(
             "Source language BCP-47 hint passed to Gemini "
             "(e.g. th, zh, ja). Default: infer from screenshots."
+        ),
+    )
+    parser.add_argument(
+        "--no-interactive",
+        action="store_true",
+        help=(
+            "Do not prompt for bubble counts in the terminal. Use pass1_bubble_input.txt if you need counts; "
+            "otherwise Pass 1 runs without bubble guidance (same as the hosted API). "
+            "Without this flag, the process waits on stdin and looks 'hung' if you are not in a real terminal."
         ),
     )
     return parser.parse_args()
@@ -965,23 +1010,33 @@ def run_pipeline_job(
     language=None,
     bubble_summary_text=None,
     allow_interactive_bubble_summary=False,
-    on_stage: Optional[Callable[[str], None]] = None,
+    on_stage: Optional[Callable[[Dict[str, Any]], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
 ):
     def _check_cancel() -> None:
         if cancel_check is not None and cancel_check():
             raise JobCancelledError("Job cancelled by user request")
 
-    def _emit_stage(stage_name: str) -> None:
-        _check_cancel()
-        if on_stage is None:
-            return
-        try:
-            on_stage(stage_name)
-        except Exception:
-            pass
-
     pipeline_start = time.time()
+
+    def _emit_phase(phase_id: str, label: str, progress: float) -> None:
+        """Notify API/UI and print one minimal status line (progress = approximate completion 0–1)."""
+        _check_cancel()
+        elapsed = round(time.time() - pipeline_start, 1)
+        prog = max(0.0, min(1.0, float(progress)))
+        payload: Dict[str, Any] = {
+            "phase": phase_id,
+            "label": label,
+            "progress": prog,
+            "elapsed_sec": elapsed,
+        }
+        print(f"[pipeline] {label}  progress={int(round(prog * 100))}%  elapsed={elapsed}s", flush=True)
+        if on_stage is not None:
+            try:
+                on_stage(payload)
+            except Exception:
+                pass
+
     work_dir = Path(work_dir)
     input_dir = work_dir / "input_images"
     output_dir = work_dir / "result"
@@ -1000,7 +1055,11 @@ def run_pipeline_job(
 
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not gemini_key:
-        raise RuntimeError("GEMINI_API_KEY is required for this pipeline.")
+        raise RuntimeError(
+            "GEMINI_API_KEY is required for this pipeline. "
+            "Copy .env.example to .env in the project root, set GEMINI_API_KEY, then run `python main.py` again "
+            "(the CLI loads .env automatically; Google Vision is optional)."
+        )
 
     images = [Path(p) for p in image_paths]
     if not images:
@@ -1009,19 +1068,34 @@ def run_pipeline_job(
     _check_cancel()
 
     with _override_runtime_dirs(input_dir, output_dir, json_dir, render_dir, debug_dir):
-        print(f"[JOB] Pipeline start job_dir={work_dir}", flush=True)
+        _vprint(f"[JOB] job_dir={work_dir}")
+        _vprint(
+            f"[GEMINI] HTTP timeouts: pass1={gemini_pass_timeout_sec(1)}s "
+            f"pass2={gemini_pass_timeout_sec(2)}s pass3={gemini_pass_timeout_sec(3)}s "
+            f"pass4={gemini_pass_timeout_sec(4)}s"
+        )
+
+        _emit_phase("artifact_cleaning", "Cleaning artifacts…", 0.06)
         crop_infos = [prepare_image_crop_info(str(path)) for path in images]
         if not crop_infos:
             raise RuntimeError("No usable images after preprocessing.")
 
         _check_cancel()
 
+        _emit_phase("status_bar_extract", "Extracting status bar…", 0.12)
         contact_name = _extract_contact_name(crop_infos[0]) if crop_infos else ""
         page_images = extract_page_segment_images(crop_infos)
         status_bar_images = extract_status_bar_images(crop_infos)
         combined_img, _page_ranges = build_combined_image(crop_infos, global_first_page_index=0)
         if combined_img is None:
             raise RuntimeError("Empty combined image.")
+
+        ch, cw = combined_img.shape[0], combined_img.shape[1]
+        print(
+            f"[pipeline] Input ready: {len(images)} file(s) loaded, "
+            f"{len(page_images)} page segment(s), combined canvas {cw}×{ch} px — OK to use",
+            flush=True,
+        )
 
         _check_cancel()
 
@@ -1046,7 +1120,12 @@ def run_pipeline_job(
             with open(bubble_debug_path, "w", encoding="utf-8") as f:
                 f.write(pass1_bubble_context)
 
-        _emit_stage("transcribing")
+        _emit_phase("pass_1", "Pass 1 — vision transcription…", 0.18)
+        print(
+            "[pipeline] Pass 1 — waiting for Gemini (vision). "
+            "The next line shows a live timer until the API responds.",
+            flush=True,
+        )
         ok, g_contact, all_meta, pre_ocr_meta, pass_debug = translate_conversation_gemini_multimodal(
             page_images,
             combined_img,
@@ -1065,7 +1144,7 @@ def run_pipeline_job(
 
         _check_cancel()
 
-        print("[JOB] Pass 1 multimodal OK; running page OCR for pass 2 hints…", flush=True)
+        _emit_phase("pass_2_prep", "Gathering OCR hints for pass 2…", 0.50)
         pass2_ocr_text, _pass2_ocr_entries = collect_page_ocr_debug(page_images)
         pass2_ocr_debug_path = os.path.join(OUTPUT_DIR, "pass2_ocr_debug.txt")
         with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
@@ -1073,8 +1152,12 @@ def run_pipeline_job(
 
         _check_cancel()
 
-        print("[JOB] Starting Gemini pass 2 (OCR hints refine)…", flush=True)
-        _emit_stage("polishing")
+        _emit_phase("pass_2", "Pass 2 — OCR-guided transcript refine…", 0.56)
+        print(
+            "[pipeline] Pass 2 — waiting for Gemini (OCR-guided refine). "
+            "Live timer on the line below.",
+            flush=True,
+        )
         contact_name = (g_contact or contact_name or "Person A").strip() or "Person A"
         pass1_meta = list(all_meta or [])
         for i, item in enumerate(pre_ocr_meta or []):
@@ -1086,7 +1169,7 @@ def run_pipeline_job(
             contact_name,
             (pass_debug or {}).get("pass1_messages") or [],
             pass2_ocr_text,
-            timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
+            timeout=gemini_pass_timeout_sec(2),
         )
         if contact_name2:
             contact_name = contact_name2
@@ -1096,12 +1179,16 @@ def run_pipeline_job(
 
         _check_cancel()
 
-        print("[JOB] Starting Gemini pass 3 (reference resolution)…", flush=True)
-        _emit_stage("bringing_together")
+        _emit_phase("pass_3", "Pass 3 — reference resolution…", 0.72)
+        print(
+            "[pipeline] Pass 3 — waiting for Gemini (reference resolution). "
+            "Live timer on the line below.",
+            flush=True,
+        )
         final_messages, contact_name3, pass3_reference_debug = _gemini_reference_resolution_pass(
             contact_name,
             pass2_messages,
-            timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
+            timeout=gemini_pass_timeout_sec(3),
         )
         if contact_name3:
             contact_name = contact_name3
@@ -1115,12 +1202,16 @@ def run_pipeline_job(
 
         _check_cancel()
 
-        print("[JOB] Pass 3 reference done; starting status-bar pass…", flush=True)
-        _emit_stage("final_touches")
+        _emit_phase("pass_4", "Pass 4 — header & status bar (vision)…", 0.86)
+        print(
+            "[pipeline] Pass 4 — waiting for Gemini (status bar / header). "
+            "Live timer on the line below.",
+            flush=True,
+        )
         status_bar_info = _gemini_status_bar_pass(
             status_bar_images,
             contact_hint=contact_name,
-            timeout=int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SEC", "600")),
+            timeout=gemini_pass_timeout_sec(4),
         )
         final_contact_name_src = (status_bar_info.get("contact_name") or contact_name or "Person A").strip() or "Person A"
         final_status_text_src = (status_bar_info.get("status_text") or "").strip()
@@ -1130,7 +1221,7 @@ def run_pipeline_job(
 
         _check_cancel()
 
-        print("[JOB] Status-bar pass done; writing JSON debug + translated_conversation.json…", flush=True)
+        _emit_phase("finalizing", "Writing outputs & debug JSON…", 0.92)
         pass1_source_debug_path = os.path.join(JSON_DIR, "pass1_transcript_debug.json")
         pass3_reference_debug_path = os.path.join(JSON_DIR, "pass3_reference_debug.json")
         pass1_source_debug = []
@@ -1150,9 +1241,7 @@ def run_pipeline_job(
         with open(combined_json_path, "w", encoding="utf-8") as f:
             json.dump(final_render_meta, f, indent=2, ensure_ascii=False)
 
-        _check_cancel()
-
-        print("[JOB] Rendering PNGs (OpenCV: pass1/2/3, compare, final)…", flush=True)
+        _emit_phase("rendering", "Rendering final images…", 0.96)
         pass1_chat = render_chat(pass1_meta)
         pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
         cv2.imwrite(pass1_path, pass1_chat)
@@ -1181,10 +1270,8 @@ def run_pipeline_job(
             header_status=final_status_text,
         )
         cv2.imwrite(combined_path, final_chat)
-        print(
-            f"[JOB] Complete: messages={len(final_render_meta)} final_image={combined_path}",
-            flush=True,
-        )
+        _emit_phase("completed", "Final image generated", 1.0)
+        _vprint(f"[JOB] messages={len(final_render_meta)} final_image={combined_path}")
 
     return {
         "job_dir": str(work_dir),
@@ -1209,27 +1296,40 @@ def run_pipeline_job(
     }
 
 
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
 def main():
     args = _parse_args()
-    print("\n[PIPELINE] Gemini full-vision chat translator\n")
+    print("\n[pipeline] Gemini full-vision chat translator\n")
     if args.language:
-        print(f"[LANG] Source language hint: {args.language}")
+        print(f"[pipeline] Source language hint: {args.language}")
     else:
-        print("[LANG] Source language: infer from screenshots")
-    images = sorted(Path(INPUT_DIR).glob("*"))
-    print(f"[INPUT] Found {len(images)} images")
+        print("[pipeline] Source language: infer from screenshots")
+    images = sorted(
+        p
+        for p in Path(INPUT_DIR).glob("*")
+        if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES
+    )
+    print(f"[pipeline] Found {len(images)} image(s) under {INPUT_DIR}")
+    if not images:
+        print(
+            "[pipeline] Add .png / .jpg / .webp / .bmp files to input_images/ (see README).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     result = run_pipeline_job(
         images,
         Path(__file__).resolve().parent,
         language=args.language,
-        allow_interactive_bubble_summary=True,
+        allow_interactive_bubble_summary=not args.no_interactive,
     )
-    print(f"[OUTPUT] JSON → {result['artifacts']['json']}")
-    print(f"[OUTPUT] Image → {result['artifacts']['final_image']}")
-    print(f"[OUTPUT] Compare image → {result['artifacts']['compare_image']}")
+    print(f"[pipeline] Output JSON → {result['artifacts']['json']}")
+    print(f"[pipeline] Output image → {result['artifacts']['final_image']}")
+    print(f"[pipeline] Output compare → {result['artifacts']['compare_image']}")
     print(f"""
 ╔══════════════════════════════════════════╗
-  PIPELINE SUMMARY (full-vision Gemini)
+  Pipeline summary (full-vision Gemini)
   Images processed : {result['images_processed']}
   Messages rendered: {result['messages_rendered']}
   Contact name     : {result['contact_name']}
