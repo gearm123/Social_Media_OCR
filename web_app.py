@@ -44,9 +44,13 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _cors_allow_origins() -> list[str]:
+    """Origins for CORSMiddleware. Browsers send Origin without a trailing slash."""
     raw = os.environ.get("CORS_ORIGINS", "").strip()
     if raw:
-        return [x.strip() for x in raw.split(",") if x.strip()]
+        out = [x.strip().rstrip("/") for x in raw.split(",") if x.strip()]
+        if out:
+            return out
+        # e.g. CORS_ORIGINS="," or whitespace-only entries — treat as unset (see README).
     fu = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
     if fu:
         return [fu]
