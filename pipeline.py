@@ -19,7 +19,12 @@ from grouping import (
     classify_sender_receiver,
     side_hint,
 )
-from ocr_translate import ocr_and_translate, run_ocr_on_region, translate_th_to_en
+from ocr_translate import (
+    ocr_and_translate,
+    run_ocr_on_region,
+    translate_th_to_en,
+    _compact_verbose_logs,
+)
 from timestamp_detection import parse_timestamp_text
 
 
@@ -66,12 +71,12 @@ def prepare_image_crop_info(path):
     status_bar_info = detect_top_status_bar(img)
     bottom_artifact_info = detect_bottom_artifacts(img)
 
-    if status_bar_info:
+    if status_bar_info and not _compact_verbose_logs():
         _pv(
             f"[ARTIFACT] {Path(path).name}: status bar "
             f"{status_bar_info.get('bbox')} via {status_bar_info.get('method','unknown')}"
         )
-    if bottom_artifact_info:
+    if bottom_artifact_info and not _compact_verbose_logs():
         _pv(
             f"[ARTIFACT] {Path(path).name}: bottom artifact "
             f"{bottom_artifact_info.get('bbox')}"

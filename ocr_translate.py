@@ -37,6 +37,18 @@ def _pipeline_verbose() -> bool:
     return os.environ.get("PIPELINE_VERBOSE", "").strip().lower() in ("1", "true", "yes")
 
 
+def _compact_verbose_logs() -> bool:
+    """Shorter ``--verbose`` console layout (default when PIPELINE_VERBOSE is on).
+
+    Set ``PIPELINE_VERBOSE_LAYOUT=classic`` (or ``full`` / ``old``) to restore the previous
+    long Gemini / phase lines.
+    """
+    if not _pipeline_verbose():
+        return False
+    v = os.environ.get("PIPELINE_VERBOSE_LAYOUT", "").strip().lower()
+    return v not in ("classic", "full", "old")
+
+
 def _pv(*args, **kwargs) -> None:
     """Gemini/OCR detail logs — enable with PIPELINE_VERBOSE=1."""
     if _pipeline_verbose():
@@ -765,7 +777,8 @@ def _gemini_discover_if_needed() -> bool:
     if not _gemini_api_key:
         return False
     if _gemini_active_model is None:
-        _pv("[GEMINI] Discovering available models...")
+        if not _compact_verbose_logs():
+            _pv("[GEMINI] Discovering available models...")
         model, ver = _gemini_discover_model(_gemini_api_key)
         if model:
             _gemini_active_model = (model, ver)
@@ -787,11 +800,16 @@ def _gemini_candidate_finish_reason(api_payload: Optional[Dict[str, Any]]) -> Op
 
 
 def _gemini_pass_summary_enabled() -> bool:
-    """One-line [gemini] pass summary; on if GEMINI_PASS_SUMMARY=1 or (unset and PIPELINE_VERBOSE)."""
+    """One-line [gemini] pass summary; on if GEMINI_PASS_SUMMARY=1 or (unset and PIPELINE_VERBOSE).
+
+    Compact verbose layout disables this unless GEMINI_PASS_SUMMARY is explicitly on.
+    """
     v = os.environ.get("GEMINI_PASS_SUMMARY", "").strip().lower()
     if v in ("1", "true", "yes", "on"):
         return True
     if v in ("0", "false", "no", "off"):
+        return False
+    if _compact_verbose_logs():
         return False
     return _pipeline_verbose()
 
@@ -843,12 +861,20 @@ def _gemini_pipeline_http_wait(pass_num: Optional[int], http_timeout: int):
     t0 = time.time()
     _show_http_wait_log = _pipeline_verbose()
     if _show_http_wait_log:
-        print(
-            f"[pipeline] Pass {pass_num} — awaiting Gemini HTTP response "
-            f"(request in flight; model thinking/generating until the API returns). "
-            f"HTTP read max {http_timeout}s.",
-            flush=True,
-        )
+        if _compact_verbose_logs():
+            if pass_num == 2:
+                print(
+                    f"[pipeline] Pass {pass_num} — awaiting Gemini HTTP response "
+                    f"HTTP read max {http_timeout}s.",
+                    flush=True,
+                )
+        else:
+            print(
+                f"[pipeline] Pass {pass_num} — awaiting Gemini HTTP response "
+                f"(request in flight; model thinking/generating until the API returns). "
+                f"HTTP read max {http_timeout}s.",
+                flush=True,
+            )
 
     stop = threading.Event()
     last_len_holder = [96]
@@ -895,7 +921,7 @@ def _gemini_pipeline_http_wait(pass_num: Optional[int], http_timeout: int):
         raise
     else:
         elapsed = time.time() - t0
-        if _show_http_wait_log:
+        if _show_http_wait_log and not _compact_verbose_logs():
             print(
                 f"[pipeline] Pass {pass_num} — Gemini HTTP response finished in {elapsed:.1f}s "
                 f"(status OK, body read and JSON parsed).",
@@ -968,7 +994,8 @@ def _gemini_generate(
     _mname = (model or "").lower()
     # Pre–backend: 2.5 Pro omits thinkingConfig; 2.5 Flash sends thinkingBudget (default 0).
     _is_25_pro = "2.5" in _mname and "pro" in _mname and "flash" not in _mname
-    if _is_25_pro:
+    _cp = _compact_verbose_logs()
+    if _is_25_pro and not _cp:
         _pv("[GEMINI] 2.5 Pro: thinkingConfig omitted (historical pipeline default).")
     elif "2.5" in _mname and "pro" not in _mname:
         if pass_num is not None:
@@ -1005,25 +1032,32 @@ def _gemini_generate(
     prompt_chars = len(prompt or "")
     _tc = gen_cfg.get("thinkingConfig") or {}
     _tb_disp = _tc.get("thinkingBudget")
-    _pv(
-        f"[GEMINI] generateContent POST: model={model} pass={pass_num!r} "
-        f"images_in_payload={image_count} prompt_chars={prompt_chars} "
-        f"max_tokens={gen_cfg['maxOutputTokens']} thinkingBudget={_tb_disp!r} timeout={timeout}s",
-    )
+    if not (_cp and pass_num == 3):
+        _pv(
+            f"[GEMINI] generateContent POST: model={model} pass={pass_num!r} "
+            f"images_in_payload={image_count} prompt_chars={prompt_chars} "
+            f"max_tokens={gen_cfg['maxOutputTokens']} thinkingBudget={_tb_disp!r} timeout={timeout}s",
+        )
     t_pass_wall = time.time()
+    recv_lat = 0.0
+    http_code = 0
     try:
         with _gemini_pipeline_http_wait(pass_num, int(timeout)):
             t_http = time.time()
             r = _req.post(url, json=payload, timeout=timeout)
-            _pv(
-                f"[GEMINI] HTTP response received in {time.time()-t_http:.1f}s with status {r.status_code}",
-            )
+            recv_lat = time.time() - t_http
+            http_code = int(r.status_code)
+            if not _cp:
+                _pv(
+                    f"[GEMINI] HTTP response received in {recv_lat:.1f}s with status {http_code}",
+                )
             r.raise_for_status()
             t_json = time.time()
             data = r.json()
-            _pv(
-                f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
-            )
+            if not _cp:
+                _pv(
+                    f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
+                )
     except _req.exceptions.Timeout as e:
         if pass_num is not None and _gemini_pass_summary_enabled():
             print(
@@ -1036,6 +1070,30 @@ def _gemini_generate(
         if pass_num is not None and _gemini_pass_summary_enabled():
             print(f"[gemini] pass {pass_num} stopped: request error: {e}", flush=True)
         raise
+
+    if _cp and pass_num is not None:
+        wall = time.time() - t_pass_wall
+        if pass_num == 3:
+            print(f"[GEMINI]  HTTP response received in {recv_lat:.1f}s", flush=True)
+            print(
+                f"**********[pipeline] Pass {pass_num} — Gemini HTTP response finished in {wall:.1f}s ************",
+                flush=True,
+            )
+        else:
+            print(
+                f"[GEMINI] HTTP response received in {recv_lat:.1f}s with status {http_code}",
+                flush=True,
+            )
+            if pass_num == 1:
+                print(
+                    f"[pipeline] Pass 1 — Gemini HTTP response finished in {wall:.1f}s",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"**********[pipeline] Pass {pass_num} — Gemini HTTP response finished in {wall:.1f}s **********",
+                    flush=True,
+                )
 
     pf = data.get("promptFeedback")
     if pf:
@@ -1065,11 +1123,12 @@ def _gemini_generate(
 
     c0 = candidates[0]
     fr = c0.get("finishReason")
-    _pv(
-        f"[GEMINI] Candidate summary: finishReason={fr or 'unknown'} "
-        f"totalTokens={total_tokens if total_tokens is not None else 'n/a'} "
-        f"thoughtsTokens={thoughts_tokens if thoughts_tokens is not None else 'n/a'}",
-    )
+    if not _compact_verbose_logs():
+        _pv(
+            f"[GEMINI] Candidate summary: finishReason={fr or 'unknown'} "
+            f"totalTokens={total_tokens if total_tokens is not None else 'n/a'} "
+            f"thoughtsTokens={thoughts_tokens if thoughts_tokens is not None else 'n/a'}",
+        )
     if fr and fr not in ("STOP", "MAX_TOKENS", "FINISH_REASON_STOP", "FINISH_REASON_MAX_TOKENS"):
         _pv(f"[GEMINI] finishReason: {fr}")
 
@@ -2232,6 +2291,28 @@ def _print_pass2_ocr_match_summary(
     tty = getattr(sys.stdout, "isatty", lambda: False)()
     b, off = ("\033[1m", "\033[0m") if tty else ("", "")
 
+    if _compact_verbose_logs():
+        print("", flush=True)
+        print("*******Pass 2 — OCR clusters vs Pass 1 messages******", flush=True)
+        print(f"  Total Pass 1 messages:     {n}", flush=True)
+        print(f"  Total OCR groups:          {g}", flush=True)
+        print(f"  Unmatched groups:          {gu}", flush=True)
+        print(f"  Unmatched messages:        {mw}", flush=True)
+        print("", flush=True)
+        print(f" {m} message(s) get OCR-backed Pass 2 ", flush=True)
+        print(
+            f"{max(0, n - m)} row(s) have no OCR cluster (Pass 2 must keep Pass 1 for those).",
+            flush=True,
+        )
+        print("", flush=True)
+        print("  Why groups did not match:", flush=True)
+        print(f" low text resemblance vs Pass 1 (< min score)={lo}", flush=True)
+        print(f" ambiguous (best vs 2nd line)={am}", flush=True)
+        if lg > 0:
+            print(f" lost greedy pairing={lg}", flush=True)
+        print("", flush=True)
+        return
+
     print(f"{b}Pass 2 — OCR clusters vs Pass 1 messages{off}", flush=True)
     print(f"{b}  Total Pass 1 messages:     {n}{off}", flush=True)
     print(f"{b}  Total OCR groups:          {g}{off}", flush=True)
@@ -2873,6 +2954,9 @@ Output JSON only:
         "Pass 3 (reference + header)" if status_bar_b64 else "Pass 3 (reference resolution)",
         prompt,
     )
+    if _compact_verbose_logs():
+        print("", flush=True)
+        print("*******Pass 3 — SPEAKER REFERENCE******", flush=True)
 
     def _pass3_fallback_rows():
         return [
@@ -3242,6 +3326,9 @@ def translate_conversation_gemini_multimodal(
                 f"{img.shape[1]}x{img.shape[0]}px ({len(b64) // 1024}KB base64)"
             )
 
+    if b64_list and _compact_verbose_logs():
+        print("", flush=True)
+
     if not b64_list:
         print("[GEMINI] No page images to send")
         return False, "", [], [], {}
@@ -3277,12 +3364,14 @@ return json in this structure:
 output json only."""
 
     _write_gemini_prompt_file("gemini_prompt_pass1.txt", "Pass 1 (vision)", prompt)
+    if _compact_verbose_logs():
+        print("", flush=True)
 
     pass1_started = time.time()
 
     def _finish_warn(pay):
         fr = _gemini_candidate_finish_reason(pay)
-        if fr == "MAX_TOKENS":
+        if fr == "MAX_TOKENS" and not _compact_verbose_logs():
             _pv(
                 f"[GEMINI] Pass 1 finishReason={fr!r} — if JSON fails, internal "
                 "thinking may have consumed the output token budget (see PIPELINE.md)."
@@ -3375,8 +3464,9 @@ output json only."""
     )
     _write_gemini_debug_vision_only(prompt, raw, pass1_footer, api_payload=api_payload)
 
-    _pv(f"[GEMINI] Pass 1 (vision): {len(gmsgs)} rows total")
-    _pv(f"[TIMER] Pass 1 Gemini in {time.time()-pass1_started:.1f}s")
+    if not _compact_verbose_logs():
+        _pv(f"[GEMINI] Pass 1 (vision): {len(gmsgs)} rows total")
+        _pv(f"[TIMER] Pass 1 Gemini in {time.time()-pass1_started:.1f}s")
     pass1_source_msgs = [
         {
             "role": m.get("role"),
@@ -3436,7 +3526,14 @@ output json only."""
             "pass3_messages": [],
         }
 
-    _pv(f"[GEMINI] Pass 1 final output OK → {len(meta)} chat rows, contact={contact_name!r}")
+    if _compact_verbose_logs():
+        print(
+            f"\n*************[GEMINI] Pass 1 final output OK → {len(meta)} chat rows, "
+            f"contact={contact_name!r} ***********\n",
+            flush=True,
+        )
+    else:
+        _pv(f"[GEMINI] Pass 1 final output OK → {len(meta)} chat rows, contact={contact_name!r}")
     return True, contact_name, meta, pre_ocr_meta, {
         "pass1_count": non_system_count,
         "pass1_total_count": len(pass1_source_msgs),
