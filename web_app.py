@@ -17,7 +17,12 @@ from fastapi.responses import FileResponse, HTMLResponse
 from auth_api import router as auth_router
 from auth_deps import assert_job_readable, get_current_user_optional, get_job_user
 from billing_api import router as billing_router
-from billing_store import billing_enforce_enabled, get_billing_store, normalize_guest_key
+from billing_store import (
+    billing_enforce_enabled,
+    billing_exempt_user,
+    get_billing_store,
+    normalize_guest_key,
+)
 from rate_limit import RateLimitMiddleware
 from user_store import UserRecord
 
@@ -316,13 +321,16 @@ async def create_job(
     # call apply_successful_job (free_runs_used, credits, sub quota). This applies even when
     # BILLING_ENFORCE is off — otherwise accounts could run unlimited single-image jobs.
     if job_user is not None:
-        ok, consumption, err = bill.can_start_job(job_user.id, len(files))
-        if not ok:
-            raise HTTPException(
-                status_code=402,
-                detail=_billing_block_detail(err),
-            )
-        billing_consumption = consumption
+        if billing_exempt_user(job_user.email, job_user.username):
+            billing_consumption = "unlimited"
+        else:
+            ok, consumption, err = bill.can_start_job(job_user.id, len(files))
+            if not ok:
+                raise HTTPException(
+                    status_code=402,
+                    detail=_billing_block_detail(err),
+                )
+            billing_consumption = consumption
     elif billing_enforce_enabled():
         if not guest_key_opt:
             raise HTTPException(

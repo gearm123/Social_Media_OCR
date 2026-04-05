@@ -40,6 +40,11 @@ services:
         sync: false
       - key: BILLING_SUBSCRIPTION_RUNS_PER_MONTH
         value: "7"
+      # Comma-separated; matched users skip billing on jobs and see unlimited in GET /billing/me
+      - key: BILLING_EXEMPT_EMAILS
+        sync: false
+      - key: BILLING_EXEMPT_USERNAMES
+        sync: false
       - key: FRONTEND_URL
         sync: false
       # Comma-separated if multiple (e.g. prod + preview). Falls back to FRONTEND_URL only if unset.

@@ -49,6 +49,22 @@ def billing_enforce_enabled() -> bool:
     )
 
 
+def _exempt_csv_set(env_key: str) -> set[str]:
+    raw = os.environ.get(env_key, "")
+    return {x.strip().lower() for x in raw.split(",") if x.strip()}
+
+
+def billing_exempt_user(email: str, username: Optional[str] = None) -> bool:
+    """True when email or username is listed in BILLING_EXEMPT_* (comma-separated, case-insensitive)."""
+    emails = _exempt_csv_set("BILLING_EXEMPT_EMAILS")
+    names = _exempt_csv_set("BILLING_EXEMPT_USERNAMES")
+    e = (email or "").strip().lower()
+    if e and e in emails:
+        return True
+    u = (username or "").strip().lower()
+    return bool(u and u in names)
+
+
 def _parse_iso(dt: Optional[str]) -> Optional[datetime]:
     if not dt or not str(dt).strip():
         return None

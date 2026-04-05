@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -300,6 +301,26 @@ def billing_me(
     user: Annotated[UserRecord, Depends(get_current_user_required)],
 ):
     store = get_billing_store(BASE_DIR)
+    if billing_exempt_user(user.email, user.username):
+        store.ensure_row(user.id)
+        cap = 99999
+        ym = datetime.now(timezone.utc).strftime("%Y-%m")
+        return {
+            "user_id": user.id,
+            "access_until": "2099-12-31T23:59:59+00:00",
+            "has_unlimited": True,
+            "subscription_active": True,
+            "subscription_runs_cap": cap,
+            "subscription_runs_used_this_month": 0,
+            "subscription_runs_remaining": cap,
+            "subscription_quota_month": ym,
+            "paid_job_credits": 0,
+            "free_runs_used": 0,
+            "free_runs_remaining": USER_FREE_RUNS_MAX,
+            "free_runs_max": USER_FREE_RUNS_MAX,
+            "paddle_customer_id": None,
+            "paddle_subscription_id": None,
+        }
     e = store.get_entitlements(user.id)
     return {
         "user_id": user.id,
