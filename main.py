@@ -28,6 +28,7 @@ import ocr_translate as ocr_translate_module
 from ocr_translate import (
     translate_to_en,
     translate_conversation_gemini_multimodal,
+    build_pass2_per_message_ocr_hints,
     _gemini_ocr_hints_refine_pass,
     _gemini_reference_resolution_pass,
     _jpeg_b64_from_bgr,
@@ -584,10 +585,14 @@ def build_manual_message_context_crops(page_images, page_specs):
 
 
 def collect_page_ocr_debug(page_images):
-    """Run OCR on each cleaned page image and collect text/confidence debug output."""
+    """Run OCR on each cleaned page image and collect text/confidence debug output.
+
+    Threshold defaults to ``GEMINI_PASS2_OCR_MIN_CONF`` (default **0.9**), aligned with Pass 2 bucketing.
+    """
     lines = []
     entries = []
-    min_conf = 0.94
+    min_conf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.9"))
+    min_conf = max(0.0, min(1.0, min_conf))
 
     for page_idx, page_img in enumerate(page_images or []):
         lines.append(f"image {page_idx + 1}")
@@ -1173,11 +1178,18 @@ def run_pipeline_job(
 
         _check_cancel()
 
-        _emit_phase("pass_2_prep", "Gathering OCR hints for pass 2…", 0.50)
-        pass2_ocr_text, _pass2_ocr_entries = collect_page_ocr_debug(page_images)
+        _emit_phase("pass_2_prep", "Clustering OCR + matching to Pass 1…", 0.50)
+        pass1_for_pass2 = (pass_debug or {}).get("pass1_messages") or []
+
+        pass2_ocr_text, ocr_match_verified, pass2_ocr_meta = build_pass2_per_message_ocr_hints(
+            page_images,
+            pass1_for_pass2,
+        )
         pass2_ocr_debug_path = os.path.join(OUTPUT_DIR, "pass2_ocr_debug.txt")
         with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
             f.write(pass2_ocr_text)
+            f.write("\n\n--- pass2_ocr_meta.json ---\n")
+            f.write(json.dumps(pass2_ocr_meta, ensure_ascii=False, indent=2))
 
         _check_cancel()
 
@@ -1196,9 +1208,10 @@ def run_pipeline_job(
         _t_g2 = time.time()
         pass2_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
             contact_name,
-            (pass_debug or {}).get("pass1_messages") or [],
+            pass1_for_pass2,
             pass2_ocr_text,
             timeout=gemini_pass_timeout_sec(2),
+            ocr_match_verified=ocr_match_verified,
         )
         gemini_pass_sec["pass2"] = round(time.time() - _t_g2, 2)
         if contact_name2:
