@@ -2938,15 +2938,17 @@ def _match_ocr_clusters_to_pass1(
     clusters: List[List[dict]],
     pass1_messages: list,
 ) -> Tuple[Dict[int, int], Dict[int, float], List[dict], dict]:
-    """Map each Pass 1 row to one OCR cluster using per-message softmax over groups.
+    """Map Pass 1 rows to OCR clusters with a **one-to-one** partial matching.
 
-    For each message *m*, every cluster *g* gets a raw score ``S[g,m]`` in ``[0,1]`` from text
-    resemblance, token-overlap F1, and (only when Pass 1 exposes ``y_norm`` / page hints) vertical
-    alignment.  We form logits ``L[g,m] = scale * S[g,m]`` and softmax **down the cluster
-    dimension** so ``P[g|m]`` sums to 1 over *g*.  The assigned cluster is ``argmax_g S[g,m]``
-    (equivalently ``argmax_g P[g|m]``).  ``message_to_score[m]`` is that winner's ``P[g|m]``
-    (confidence).  Use ``PASS2_OCR_MATCH_MIN_CONFIDENCE`` in :func:`build_pass2_per_message_ocr_hints`
-    to gate Pass 2 hint lists / ``ocr_match_verified``.
+    Clusters *g* and messages *m* get raw scores ``S[g,m]``; logits softmax over *g* yield ``P[g|m]``.
+    Edges with ``P[g|m] ≥ PASS2_OCR_MATCH_MIN_CONFIDENCE`` are candidates.  Assignments are chosen by
+    **greedy max-probability matching**: sort candidate edges by ``P`` descending and take an edge
+    iff that message and that cluster are still free.  So each cluster is linked to **at most one**
+    message and each message to **at most one** cluster (partial bijection).  A message ends up with
+    no cluster if every ``P[g|m]`` is below the threshold, or if stronger edges consumed all suitable
+    clusters first.  Unmatched rows keep Pass 1 text (no OCR hints / ``ocr_match_verified`` false).
+
+    ``PASS2_OCR_MATCH_MIN_RAW_SCORE`` is diagnostic only (see ``match_summary``).
 
     Returns ``(message_to_cluster, message_to_confidence, cluster_debug_list, match_summary)``.
     """
@@ -2975,9 +2977,11 @@ def _match_ocr_clusters_to_pass1(
             "messages_without_group": n,
             "messages_would_verify": 0,
             "groups_without_message": g,
+            "messages_below_match_confidence": 0,
             "groups_rejected_low_match_score": 0,
             "groups_rejected_ambiguous": 0,
             "groups_eligible_but_unassigned": 0,
+            "messages_unmatched_cluster_competition": 0,
         }
 
     dbg_clusters: List[dict] = []
@@ -3030,20 +3034,26 @@ def _match_ocr_clusters_to_pass1(
 
     msg_to_cl: Dict[int, int] = {}
     msg_to_sc: Dict[int, float] = {}
+    pairs: List[Tuple[float, int, int]] = []
     for mi in range(n):
         if not pass1_lines[mi]:
             continue
-        col = [scores[gi][mi] for gi in range(g)]
-        best_raw = max(col)
-        if best_raw < min_raw:
+        for gi in range(g):
+            p = float(probs[gi][mi])
+            if p >= conf_threshold:
+                pairs.append((p, mi, gi))
+    pairs.sort(key=lambda t: (-t[0], t[1], t[2]))
+    matched_mi: Set[int] = set()
+    matched_gi: Set[int] = set()
+    for p, mi, gi in pairs:
+        if mi in matched_mi or gi in matched_gi:
             continue
-        gi_star = max(range(g), key=lambda gi: scores[gi][mi])
-        msg_to_cl[mi] = gi_star
-        msg_to_sc[mi] = probs[gi_star][mi] if gi_star < len(probs) and mi < len(probs[gi_star]) else 0.0
+        msg_to_cl[mi] = gi
+        msg_to_sc[mi] = p
+        matched_mi.add(mi)
+        matched_gi.add(gi)
 
-    would_verify = sum(
-        1 for mi in range(n) if mi in msg_to_cl and msg_to_sc.get(mi, 0.0) >= conf_threshold
-    )
+    would_verify = len(msg_to_cl)
 
     for gi in range(g):
         pcol = [round(probs[gi][mi], 5) for mi in range(n)] if gi < len(probs) else []
@@ -3069,25 +3079,42 @@ def _match_ocr_clusters_to_pass1(
 
     assigned_gi = set(msg_to_cl.values())
     unmatched_msg = n - len(msg_to_cl)
+    below_conf = sum(
+        1
+        for mi in range(n)
+        if pass1_lines[mi]
+        and max(probs[gi][mi] for gi in range(g)) < conf_threshold
+    )
+    matched_msg_indices = set(msg_to_cl.keys())
+    competition_unmatched = sum(
+        1
+        for mi in range(n)
+        if pass1_lines[mi]
+        and mi not in matched_msg_indices
+        and max(probs[gi][mi] for gi in range(g)) >= conf_threshold
+    )
     low_raw = sum(
         1
         for mi in range(n)
         if pass1_lines[mi] and max(scores[gi][mi] for gi in range(g)) < min_raw
     )
     summary = {
-        "algorithm": "per_message_softmax_over_clusters",
+        "algorithm": "greedy_one_to_one_softmax_threshold",
         "pass1_message_count": n,
         "ocr_cluster_count": g,
         "matched_pairs": len(msg_to_cl),
         "messages_without_group": unmatched_msg,
         "messages_would_verify": would_verify,
         "groups_without_message": g - len(assigned_gi),
+        "messages_below_match_confidence": below_conf,
+        "messages_unmatched_cluster_competition": competition_unmatched,
         "groups_rejected_low_match_score": low_raw,
         "groups_rejected_ambiguous": 0,
         "groups_eligible_but_unassigned": 0,
         "spatial_hint_used": bool(any_msg_spatial),
         "thresholds_applied": {
             "min_raw_score": min_raw,
+            "min_confidence_for_assignment": conf_threshold,
             "min_confidence_for_hints": conf_threshold,
             "logit_scale": logit_scale,
             "softmax_temperature": softmax_temp,
@@ -3109,6 +3136,8 @@ def _print_pass2_ocr_match_summary(
     mw = int(match_summary.get("messages_without_group") or 0)
     gu = int(match_summary.get("groups_without_message") or 0)
     lo = int(match_summary.get("groups_rejected_low_match_score") or 0)
+    bc = int(match_summary.get("messages_below_match_confidence") or 0)
+    cu = int(match_summary.get("messages_unmatched_cluster_competition") or 0)
     am = int(match_summary.get("groups_rejected_ambiguous") or 0)
     lg = int(match_summary.get("groups_eligible_but_unassigned") or 0)
     wv = int(match_summary.get("messages_would_verify") or 0)
@@ -3129,14 +3158,25 @@ def _print_pass2_ocr_match_summary(
             flush=True,
         )
         print(
-            f" {max(0, n - wv)} row(s): no hints (no winning cluster, weak raw score, or low match-confidence).",
+            f" {max(0, n - wv)} row(s): no hints (top cluster softmax P < PASS2_OCR_MATCH_MIN_CONFIDENCE, "
+            f"or empty Pass 1 text).",
             flush=True,
         )
         print("", flush=True)
-        print("  Match model: per-message softmax over OCR groups (see pass2_ocr_meta).", flush=True)
-        print(f"  Rows with a winning cluster (raw): {m}  |  pass match-confidence threshold: {wv}", flush=True)
-        print("  Why some rows have no group:", flush=True)
-        print(f" max raw score below min_raw floor={lo}", flush=True)
+        print(
+            "  Match model: per-message softmax over OCR groups; assign only if P(winner) ≥ "
+            "PASS2_OCR_MATCH_MIN_CONFIDENCE (see pass2_ocr_meta).",
+            flush=True,
+        )
+        print(f"  Rows assigned a cluster (hints eligible): {m}  (same as match-confidence OK: {wv})", flush=True)
+        print("  Why some rows have no assigned cluster:", flush=True)
+        print(f" max softmax P below confidence threshold → {bc} row(s)", flush=True)
+        if cu:
+            print(
+                f" had P≥threshold for some cluster but lost one-to-one matching → {cu} row(s)",
+                flush=True,
+            )
+        print(f" (diagnostic) max raw score below min_raw floor → {lo} row(s)", flush=True)
         if am or lg:
             print(f" (legacy ambiguous / greedy={am}/{lg})", flush=True)
         if g > n:
@@ -3164,9 +3204,10 @@ def _print_pass2_ocr_match_summary(
         flush=True,
     )
     print(
-        f"  Match model: softmax over groups per message; "
-        f"rows with a winner={m}, would verify (conf≥threshold)={wv}. "
-        f"No group: weak raw score (floor)≈{lo}.",
+        f"  Match model: softmax P(cluster|message); assign only if P(top cluster) ≥ threshold; "
+        f"assigned rows={m}. "
+        f"Below threshold≈{bc} row(s); unmatched despite threshold (competition)≈{cu}; "
+        f"diagnostic max-raw below floor≈{lo}.",
         flush=True,
     )
     _pv(
@@ -3610,6 +3651,8 @@ def build_pass2_per_message_ocr_hints(
             "messages_without_group": n,
             "messages_would_verify": 0,
             "groups_without_message": 0,
+            "messages_below_match_confidence": 0,
+            "messages_unmatched_cluster_competition": 0,
             "groups_rejected_low_match_score": 0,
             "groups_rejected_ambiguous": 0,
             "groups_eligible_but_unassigned": 0,
@@ -3685,6 +3728,8 @@ def build_pass2_per_message_ocr_hints(
             "messages_without_group": n,
             "messages_would_verify": 0,
             "groups_without_message": 0,
+            "messages_below_match_confidence": 0,
+            "messages_unmatched_cluster_competition": 0,
             "groups_rejected_low_match_score": 0,
             "groups_rejected_ambiguous": 0,
             "groups_eligible_but_unassigned": 0,
@@ -3707,6 +3752,7 @@ def build_pass2_per_message_ocr_hints(
     base_debug["match_summary"] = match_summary
     _print_pass2_ocr_match_summary(match_summary, words_kept_ge_min_conf, min_conf)
 
+    # Injective: each cluster index appears at most once in msg_to_cl values.
     cl_to_msg = {cl_i: mi for mi, cl_i in msg_to_cl.items()}
     for item in cluster_dbg:
         gi = item.get("cluster_index")

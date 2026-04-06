@@ -201,64 +201,6 @@ def extract_status_bar_images(crop_infos):
     return out
 
 
-def crop_avatar_from_status_bar(crop_infos, status_bar_images, status_info):
-    """Crop the chosen avatar region, preferring detected avatar geometry."""
-    if not status_bar_images:
-        return None
-    image_index = status_info.get("avatar_image_index")
-    bbox = status_info.get("avatar_bbox")
-    try:
-        image_index = int(image_index)
-    except (TypeError, ValueError):
-        image_index = 0
-    if not (0 <= image_index < len(status_bar_images)):
-        image_index = 0
-    img = status_bar_images[image_index]
-    if img is None or getattr(img, "size", 0) == 0:
-        return None
-    h, w = img.shape[:2]
-
-    rect = None
-    info = crop_infos[image_index] if 0 <= image_index < len(crop_infos or []) else None
-    status_meta = (info or {}).get("status_bar_info") or {}
-    detected_avatar_rect = status_meta.get("avatar_rect")
-    status_bbox = status_meta.get("bbox")
-
-    if isinstance(detected_avatar_rect, (list, tuple)) and len(detected_avatar_rect) >= 4:
-        try:
-            ax1, ay1, ax2, ay2 = [int(v) for v in detected_avatar_rect[:4]]
-            if isinstance(status_bbox, (list, tuple)) and len(status_bbox) >= 4:
-                sx1, sy1, _sx2, _sy2 = [int(v) for v in status_bbox[:4]]
-                rect = [ax1 - sx1, ay1 - sy1, ax2 - sx1, ay2 - sy1]
-            else:
-                rect = [ax1, ay1, ax2, ay2]
-        except (TypeError, ValueError):
-            rect = None
-
-    if rect is None and isinstance(bbox, list) and len(bbox) >= 4:
-        try:
-            x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
-        except (TypeError, ValueError):
-            return None
-        # Gemini may return full-image coordinates; convert them to status-crop-local coords.
-        if (x2 > w or y2 > h) and isinstance(status_bbox, (list, tuple)) and len(status_bbox) >= 4:
-            sx1, sy1, _sx2, _sy2 = [int(v) for v in status_bbox[:4]]
-            x1, y1, x2, y2 = x1 - sx1, y1 - sy1, x2 - sx1, y2 - sy1
-        rect = [x1, y1, x2, y2]
-
-    if rect is None:
-        return None
-
-    x1, y1, x2, y2 = rect
-    pad = 6
-    x1 = max(0, min(w - 1, x1 - pad))
-    x2 = max(x1 + 1, min(w, x2 + pad))
-    y1 = max(0, min(h - 1, y1 - pad))
-    y2 = max(y1 + 1, min(h, y2 + pad))
-    avatar = img[y1:y2, x1:x2].copy()
-    return avatar if avatar.size else None
-
-
 def _map_bubble_role_token(token: str):
     tok = str(token or "").strip().lower()
     if tok in ("s", "sender"):
@@ -806,8 +748,11 @@ def _build_call_notice_meta(
     button_text: str = "Call back",
     event_timestamp: Optional[str] = None,
 ):
-    """Subtitle: non-empty ``event_timestamp`` from Pass 1 is shown verbatim.
-    If ``event_timestamp`` is None, subtitle is extra lines from ``text_src`` (merged system rows or coerced bubble), verbatim."""
+    """Subtitle: ``event_timestamp`` from Pass 1 (clock time or call duration) is translated to English.
+
+    Gemini sometimes puts a Thai duration line (e.g. minutes/seconds) in ``event_timestamp`` instead of a
+    clock time; that still needs ``translate_to_en`` so units render in English. If translation fails,
+    the raw string is kept. If ``event_timestamp`` is empty, subtitle is extra lines from merged text."""
     src = (src_text or "").strip()
     en = (en_text or "").strip()
     combined = en or src
@@ -818,7 +763,9 @@ def _build_call_notice_meta(
     video = ("วิดีโอ" in src_l) or ("video" in full_l)
     title = "Missed audio call" if missed else ("Video call" if video else "Audio call")
     if event_timestamp is not None and str(event_timestamp).strip():
-        subtitle = str(event_timestamp).strip()
+        raw_ts = str(event_timestamp).strip()
+        subtitle_en = translate_to_en(raw_ts)
+        subtitle = subtitle_en.strip() if subtitle_en.strip() else raw_ts
     else:
         subtitle = "\n".join(lines[1:]).strip() if len(lines) >= 2 else ""
     return {
@@ -1323,6 +1270,7 @@ def run_pipeline_job(
         final_status_text_src = (status_bar_info.get("status_text") or "").strip()
         final_contact_name = (translate_to_en(final_contact_name_src) or final_contact_name_src).strip() or "Person A"
         final_status_text = (translate_to_en(final_status_text_src) or final_status_text_src).strip()
+        # Profile photo from screenshots disabled for now (generic stub in renderer).
         profile_image = None
 
         _check_cancel()
@@ -1348,15 +1296,20 @@ def run_pipeline_job(
             json.dump(final_render_meta, f, indent=2, ensure_ascii=False)
 
         _emit_phase("rendering", "Rendering final images…", 0.96)
-        pass1_chat = render_chat(pass1_meta)
+        _render_header = dict(
+            profile_image=profile_image,
+            contact_name=final_contact_name,
+            header_status=final_status_text,
+        )
+        pass1_chat = render_chat(pass1_meta, **_render_header)
         pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
         cv2.imwrite(pass1_path, pass1_chat)
 
-        pass2_img = render_chat(all_meta)
+        pass2_img = render_chat(all_meta, **_render_header)
         pass2_path = os.path.join(RENDER_DIR, "translated_conversation_pass2.png")
         cv2.imwrite(pass2_path, pass2_img)
 
-        pass3_img = render_chat(final_chat_meta)
+        pass3_img = render_chat(final_chat_meta, **_render_header)
         pass3_path = os.path.join(RENDER_DIR, "translated_conversation_pass3.png")
         cv2.imwrite(pass3_path, pass3_img)
 
@@ -1381,12 +1334,7 @@ def run_pipeline_job(
             cv2.imwrite(compare_path, compare_img)
 
         combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
-        final_chat = render_chat(
-            final_render_meta,
-            profile_image=profile_image,
-            contact_name=final_contact_name,
-            header_status=final_status_text,
-        )
+        final_chat = render_chat(final_render_meta, **_render_header)
         cv2.imwrite(combined_path, final_chat)
         _emit_phase("completed", "Final image generated", 1.0)
         if _compact_verbose_logs():

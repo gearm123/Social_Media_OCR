@@ -39,7 +39,9 @@ _CALL_CARD_FONT_CACHE: dict = {}
 _ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 _CALL_ICON_MISSED_PNG = os.path.join(_ASSETS_DIR, "call_icon_missed.png")
 _CALL_ICON_INCOMING_PNG = os.path.join(_ASSETS_DIR, "call_icon_incoming.png")
+_HEADER_ACTION_ICONS_PNG = os.path.join(_ASSETS_DIR, "header_action_icons.png")
 _CALL_ICON_RGBA_CACHE: dict = {}
+_HEADER_ACTION_STRIP_CACHE: dict = {}
 
 
 def _prepare_call_icon_rgba(path: str, diameter: int):
@@ -97,13 +99,64 @@ def _composite_rgba_on_bgr(img, center_x, center_y, rgba):
     roi[:] = np.clip(blended, 0, 255).astype(np.uint8)
 
 
+def _prepare_header_action_strip_png(path: str, target_h: int):
+    """Load horizontal phone/video/info strip; scale to height ``target_h`` (keep aspect)."""
+    th = max(16, int(target_h))
+    key = (path, th)
+    if key in _HEADER_ACTION_STRIP_CACHE:
+        return _HEADER_ACTION_STRIP_CACHE[key]
+    if not path or not os.path.isfile(path):
+        _HEADER_ACTION_STRIP_CACHE[key] = None
+        return None
+    raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if raw is None:
+        _HEADER_ACTION_STRIP_CACHE[key] = None
+        return None
+    if raw.ndim == 2:
+        raw = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGRA)
+        raw[:, :, 3] = 255
+    elif raw.shape[2] == 3:
+        raw = cv2.cvtColor(raw, cv2.COLOR_BGR2BGRA)
+        raw[:, :, 3] = 255
+    elif raw.shape[2] != 4:
+        _HEADER_ACTION_STRIP_CACHE[key] = None
+        return None
+    h0, w0 = raw.shape[:2]
+    if h0 < 1 or w0 < 1:
+        _HEADER_ACTION_STRIP_CACHE[key] = None
+        return None
+    new_w = max(1, int(round(w0 * (th / float(h0)))))
+    scaled = cv2.resize(raw, (new_w, th), interpolation=cv2.INTER_AREA)
+    _HEADER_ACTION_STRIP_CACHE[key] = scaled
+    return scaled
+
+
+def _composite_rgba_patch_tl(img, left: int, top: int, rgba):
+    """Alpha-blend BGRA with top-left at (left, top)."""
+    h, w = rgba.shape[:2]
+    H, W = img.shape[:2]
+    x1, y1 = max(0, left), max(0, top)
+    x2, y2 = min(W, left + w), min(H, top + h)
+    if x2 <= x1 or y2 <= y1:
+        return
+    ix1, iy1 = x1 - left, y1 - top
+    ix2, iy2 = ix1 + (x2 - x1), iy1 + (y2 - y1)
+    roi = img[y1:y2, x1:x2]
+    patch = rgba[iy1:iy2, ix1:ix2]
+    alpha = patch[:, :, 3:4].astype(np.float32) / 255.0
+    fg = patch[:, :, :3].astype(np.float32)
+    bg = roi.astype(np.float32)
+    blended = fg * alpha + bg * (1.0 - alpha)
+    roi[:] = np.clip(blended, 0, 255).astype(np.uint8)
+
+
 _CHAT_THEMES = {
     "messenger_light": {
         "canvas_bg": (255, 255, 255),
         "header_bg": (255, 255, 255),
         "header_divider": (233, 236, 239),
-        "header_title": (36, 36, 36),
-        "header_subtitle": (116, 116, 120),
+        "header_title": (5, 5, 5),  # #050505 — match Messenger web title weight
+        "header_subtitle": (107, 103, 101),  # #65676B
         "header_icon": (250, 48, 168),  # purple-blue accent in BGR family
         "receiver_bubble": (240, 242, 245),
         "receiver_text": (28, 30, 33),
@@ -263,22 +316,34 @@ def draw_gradient_rounded_rect(img, x1, y1, x2, y2, color_left, color_right, rad
     img[y1:y2, x1:x2] = cv2.add(bg, fg)
 
 
-def draw_avatar(img, center_x, center_y, fill_color, accent_color, presence_color=None):
-    cv2.circle(img, (center_x, center_y), 16, fill_color, -1)
-    cv2.circle(img, (center_x, center_y - 4), 6, accent_color, -1)
+def draw_avatar(
+    img, center_x, center_y, fill_color, accent_color, presence_color=None, radius=16
+):
+    """Placeholder avatar; ``radius`` is outer circle (default matches 32px diameter bubbles)."""
+    s = float(radius) / 16.0
+    cv2.circle(img, (center_x, center_y), int(radius), fill_color, -1)
+    cv2.circle(
+        img,
+        (center_x, center_y - int(round(4 * s))),
+        max(1, int(round(6 * s))),
+        accent_color,
+        -1,
+    )
     cv2.ellipse(
         img,
-        (center_x, center_y + 8),
-        (9, 6),
+        (center_x, center_y + int(round(8 * s))),
+        (max(1, int(round(9 * s))), max(1, int(round(6 * s)))),
         0,
         0,
         180,
         accent_color,
-        -1
+        -1,
     )
     if presence_color is not None:
-        cv2.circle(img, (center_x + 11, center_y + 11), 6, (255, 255, 255), -1, cv2.LINE_AA)
-        cv2.circle(img, (center_x + 11, center_y + 11), 4, presence_color, -1, cv2.LINE_AA)
+        px, py = center_x + int(round(11 * s)), center_y + int(round(11 * s))
+        pr = max(2, int(round(4 * s)))
+        cv2.circle(img, (px, py), pr + 2, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(img, (px, py), pr, presence_color, -1, cv2.LINE_AA)
 
 
 def _draw_header_icon(img, center_x, center_y, kind="phone", color=(10, 124, 255)):
@@ -342,6 +407,54 @@ def draw_avatar_image(img, avatar_image, center_x, center_y, size=32):
     img[top:bottom, left:right] = cv2.add(bg, fg)
 
 
+def _header_bar_height(status_text: str) -> int:
+    """Vertical size of Messenger-style top bar (taller than legacy 64/78)."""
+    return 94 if (status_text or "").strip() else 76
+
+
+def _pil_string_pixel_width(font, text):
+    if font is None:
+        return len(text or "") * 8
+    t = text or ""
+    if hasattr(font, "getlength"):
+        try:
+            return int(max(0, font.getlength(t)))
+        except Exception:
+            pass
+    if Image is None or ImageDraw is None:
+        return len(t) * 8
+    im = Image.new("RGB", (4000, 200))
+    dr = ImageDraw.Draw(im)
+    if hasattr(dr, "textbbox"):
+        b = dr.textbbox((0, 0), t, font=font)
+        return max(0, b[2] - b[0])
+    w, _h = dr.textsize(t, font=font)
+    return w
+
+
+def _ellipsis_fit_string(font, text, max_w):
+    """Truncate ``text`` with ``…`` so rendered width ≤ ``max_w`` (PIL metrics)."""
+    text = (text or "").strip()
+    if not text or max_w < 12:
+        return text
+    if _pil_string_pixel_width(font, text) <= max_w:
+        return text
+    ell = "…"
+    if _pil_string_pixel_width(font, ell) > max_w:
+        return ""
+    lo, hi = 0, len(text)
+    best = ell
+    while lo <= hi:
+        mid = (lo + hi + 1) // 2
+        cand = text[:mid].rstrip() + ell
+        if _pil_string_pixel_width(font, cand) <= max_w:
+            best = cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
 def draw_speaker_title(img, text, width, y, theme):
     if not text:
         return y
@@ -357,9 +470,9 @@ def draw_speaker_title(img, text, width, y, theme):
 
 
 def draw_chat_header(img, contact_name, width, status_text="", avatar_image=None, theme=None):
-    """Draw a chat header with theme styling."""
+    """Draw a chat header with theme styling (tall bar, Segoe UI via PIL when available)."""
     theme = theme or _get_chat_theme()
-    header_h = 78 if status_text else 64
+    header_h = _header_bar_height(status_text)
     header_bg = theme["header_bg"]
     avatar_bg = theme["avatar_fill"]
     avatar_acc = theme["avatar_accent"]
@@ -369,29 +482,83 @@ def draw_chat_header(img, contact_name, width, status_text="", avatar_image=None
     cv2.rectangle(img, (0, 0), (width, header_h), header_bg, -1)
     cv2.line(img, (0, header_h - 1), (width, header_h - 1), divider, 1, cv2.LINE_AA)
 
-    # Avatar circle on the left
+    av_size = 42
     av_cx, av_cy = 40, header_h // 2
     if avatar_image is not None and getattr(avatar_image, "size", 0) != 0:
-        draw_avatar_image(img, avatar_image, av_cx, av_cy, size=38)
+        draw_avatar_image(img, avatar_image, av_cx, av_cy, size=av_size)
     else:
         presence_color = theme["presence_active"] if "active" in (status_text or "").lower() else None
-        draw_avatar(img, av_cx, av_cy, avatar_bg, avatar_acc, presence_color=presence_color)
+        draw_avatar(
+            img,
+            av_cx,
+            av_cy,
+            avatar_bg,
+            avatar_acc,
+            presence_color=presence_color,
+            radius=av_size // 2,
+        )
 
-    # Contact name
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.68
-    thickness = 2
-    tw, th, _ = _measure_text(contact_name, font, scale, thickness)
-    tx = av_cx + 30
-    ty = 10 if status_text else max(10, (header_h - th) // 2)
-    _draw_text(img, contact_name, tx, ty, font, scale, thickness, theme["header_title"])
-    if status_text:
-        _draw_text(img, status_text, tx, ty + th + 5, font, 0.42, 1, theme["header_subtitle"])
+    tx = av_cx + av_size // 2 + 14
+    icon_strip_h = max(22, min(34, header_h - 26))
+    action_strip = _prepare_header_action_strip_png(_HEADER_ACTION_ICONS_PNG, icon_strip_h)
+    if action_strip is not None:
+        strip_w = int(action_strip.shape[1])
+        icons_reserve = strip_w + 22
+    else:
+        icons_reserve = 124
+    max_name_w = max(80, width - tx - icons_reserve)
+    name_px, sub_px = 18, 14
+    name_font = _call_card_pil_font(name_px, bold=True)
+    sub_font = _call_card_pil_font(sub_px, bold=False)
+    use_pil = Image is not None and ImageDraw is not None and name_font is not None
 
-    icon_y = header_h // 2
-    _draw_header_icon(img, width - 116, icon_y, "phone", accent)
-    _draw_header_icon(img, width - 74, icon_y, "video", accent)
-    _draw_header_icon(img, width - 32, icon_y, "info", accent)
+    if use_pil:
+        title_rgb = _bgr_to_rgb_for_pil(theme["header_title"])
+        sub_rgb = _bgr_to_rgb_for_pil(theme["header_subtitle"])
+        rgb = cv2.cvtColor(img[0:header_h, 0:width], cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+        dr = ImageDraw.Draw(pil_img)
+        display_name = _ellipsis_fit_string(name_font, contact_name, max_name_w)
+        pad_top = 20 if (status_text or "").strip() else 0
+        if pad_top:
+            ny = pad_top
+        else:
+            if hasattr(dr, "textbbox"):
+                bb0 = dr.textbbox((0, 0), display_name or " ", font=name_font)
+                nh0 = bb0[3] - bb0[1]
+            else:
+                nh0 = int(name_px * 1.15)
+            ny = max(16, (header_h - nh0) // 2)
+        dr.text((int(tx), int(ny)), display_name, font=name_font, fill=title_rgb)
+        if hasattr(dr, "textbbox"):
+            bb = dr.textbbox((int(tx), int(ny)), display_name, font=name_font)
+            name_bottom = float(bb[3])
+        else:
+            name_bottom = float(ny + name_px + 2)
+        if (status_text or "").strip() and sub_font is not None:
+            sy = int(name_bottom + 5)
+            dr.text((int(tx), sy), status_text.strip(), font=sub_font, fill=sub_rgb)
+        img[0:header_h, 0:width] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    else:
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale, thickness = 0.68, 2
+        tw, th, _ = _measure_text(contact_name, font, scale, thickness)
+        ty = 14 if (status_text or "").strip() else max(14, (header_h - th) // 2)
+        _draw_text(img, contact_name, tx, ty, font, scale, thickness, theme["header_title"])
+        if status_text:
+            _draw_text(img, status_text, tx, ty + th + 5, font, 0.42, 1, theme["header_subtitle"])
+
+    if action_strip is not None:
+        sh, sw = action_strip.shape[:2]
+        right_pad = 12
+        left = int(width - right_pad - sw)
+        top = max(0, (header_h - sh) // 2)
+        _composite_rgba_patch_tl(img, left, top, action_strip)
+    else:
+        icon_y = header_h // 2
+        _draw_header_icon(img, width - 118, icon_y, "phone", accent)
+        _draw_header_icon(img, width - 76, icon_y, "video", accent)
+        _draw_header_icon(img, width - 34, icon_y, "info", accent)
     return header_h
 
 
@@ -921,7 +1088,7 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
     theme = _get_chat_theme(theme_name)
 
     # Reserve space for Messenger-style header if we have a contact name
-    header_h = (78 if header_status else 64) if contact_name else 0
+    header_h = (_header_bar_height(header_status) if contact_name else 0)
     speaker_title_height = 26 if speaker_text else 0
     top_gap = 12 if speaker_text else 0
     canvas_height = (
