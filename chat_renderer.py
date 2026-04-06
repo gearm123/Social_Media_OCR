@@ -161,8 +161,9 @@ _CHAT_THEMES = {
         "receiver_bubble": (240, 242, 245),
         "receiver_text": (28, 30, 33),
         "sender_text": (255, 255, 255),
-        "sender_gradient_left": (247, 57, 173),
-        "sender_gradient_right": (255, 112, 34),
+        # Facebook Messenger sender bubble: #1E74FD (lighter, top-left) → #1155E1 (deeper, BR); BGR
+        "sender_gradient_left": (253, 116, 30),
+        "sender_gradient_right": (225, 85, 17),
         "timestamp_text": (108, 112, 118),
         "avatar_fill": (224, 230, 238),
         "avatar_accent": (102, 118, 145),
@@ -289,7 +290,14 @@ def _rounded_rect_mask(height, width, radius):
     return mask
 
 
-def draw_gradient_rounded_rect(img, x1, y1, x2, y2, color_left, color_right, radius):
+def draw_gradient_rounded_rect(
+    img, x1, y1, x2, y2, color_left, color_right, radius, diagonal_tl_br=False
+):
+    """Fill a rounded rect with a blend of ``color_left`` → ``color_right``.
+
+    Default is **horizontal** (left → right). With ``diagonal_tl_br=True``, blends along the
+    diagonal **top-left → bottom-right** (Facebook Messenger–style sender bubble).
+    """
     img_h, img_w = img.shape[:2]
     x1 = max(0, min(int(x1), img_w))
     x2 = max(0, min(int(x2), img_w))
@@ -300,15 +308,23 @@ def draw_gradient_rounded_rect(img, x1, y1, x2, y2, color_left, color_right, rad
 
     width = max(1, x2 - x1)
     height = max(1, y2 - y1)
-    grad = np.zeros((height, width, 3), dtype=np.uint8)
-    left = np.array(color_left, dtype=np.float32)
-    right = np.array(color_right, dtype=np.float32)
-    if width == 1:
-        grad[:, 0] = left.astype(np.uint8)
+    c0 = np.array(color_left, dtype=np.float32)
+    c1 = np.array(color_right, dtype=np.float32)
+    if diagonal_tl_br:
+        den = float(max(1, (width - 1) + (height - 1)))
+        xi = np.arange(width, dtype=np.float32)
+        yi = np.arange(height, dtype=np.float32)
+        xx, yy = np.meshgrid(xi, yi)
+        t = ((xx + yy) / den)[..., np.newaxis]
+        grad = np.clip(c0 * (1.0 - t) + c1 * t, 0, 255).astype(np.uint8)
     else:
-        for xi in range(width):
-            alpha = xi / float(width - 1)
-            grad[:, xi] = (left * (1.0 - alpha) + right * alpha).astype(np.uint8)
+        grad = np.zeros((height, width, 3), dtype=np.uint8)
+        if width == 1:
+            grad[:, 0] = c0.astype(np.uint8)
+        else:
+            for xi in range(width):
+                alpha = xi / float(width - 1)
+                grad[:, xi] = (c0 * (1.0 - alpha) + c1 * alpha).astype(np.uint8)
     mask = _rounded_rect_mask(height, width, radius)
     roi = img[y1:y2, x1:x2]
     bg = cv2.bitwise_and(roi, roi, mask=cv2.bitwise_not(mask))
@@ -1032,6 +1048,7 @@ def draw_bubble(img, text, x, y, max_width, align="left", bubble_color=(200, 200
             theme["sender_gradient_left"],
             theme["sender_gradient_right"],
             radius,
+            diagonal_tl_br=True,
         )
     else:
         draw_rounded_rect(img, x, y, x + box_w, y + box_h, bubble_color, radius)
