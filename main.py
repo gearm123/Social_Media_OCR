@@ -31,11 +31,14 @@ from ocr_translate import (
     build_pass2_per_message_ocr_hints,
     _gemini_ocr_hints_refine_pass,
     _gemini_reference_resolution_pass,
+    _pass3_fallback_messages_from_pass2,
     _jpeg_b64_from_bgr,
     _meta_from_gemini_messages,
     _set_source_language,
     gemini_pass_timeout_sec,
     _compact_verbose_logs,
+    _prefer_english_surface,
+    _default_status_bar_info,
 )
 from pipeline import prepare_image_crop_info
 from chat_renderer import render_chat
@@ -254,94 +257,6 @@ def crop_avatar_from_status_bar(crop_infos, status_bar_images, status_info):
     y2 = max(y1 + 1, min(h, y2 + pad))
     avatar = img[y1:y2, x1:x2].copy()
     return avatar if avatar.size else None
-
-
-def prompt_manual_bubble_summary(num_images: int):
-    """Ask the user for bubble counts and sender/receiver order per cleaned image."""
-    if num_images <= 0:
-        return "", 0, []
-
-    file_summary = _load_pass1_bubble_summary_file(num_images)
-    if file_summary is not None:
-        print(
-            f"\n[pipeline] Using bubble guidance file {PASS1_BUBBLE_INPUT_PATH.name} for Pass 1…",
-            flush=True,
-        )
-        return file_summary
-
-    print(
-        "\n[pipeline] Pass 1 bubble guidance — type counts and order in this terminal "
-        "(or use --no-interactive / the bubble file to skip).",
-        flush=True,
-    )
-    print(
-        "[pipeline] If nothing appears, you may have no TTY; add "
-        f"{PASS1_BUBBLE_INPUT_PATH.name} or run with --no-interactive.",
-        flush=True,
-    )
-    print(
-        "[pipeline] For each image: bubble count, then order as sender/receiver (s/r), comma-separated.",
-        flush=True,
-    )
-    print(
-        "[pipeline] Do not count timestamps, call notices, reactions, headers, or other UI chrome.",
-        flush=True,
-    )
-
-    lines = []
-    total_bubbles = 0
-    page_specs = []
-
-    for i in range(num_images):
-        while True:
-            raw_n = input(f"Image {i + 1} bubble count: ").strip()
-            try:
-                count = int(raw_n)
-            except ValueError:
-                print("Please enter a whole number.")
-                continue
-            if count < 0:
-                print("Please enter 0 or a positive number.")
-                continue
-            break
-
-        order = []
-        if count > 0:
-            while True:
-                raw_seq = input(
-                    f"Image {i + 1} bubble order ({count} items, e.g. s,s,r): "
-                ).strip()
-                parts = [p.strip().lower() for p in raw_seq.replace(";", ",").split(",") if p.strip()]
-                mapped = []
-                bad = False
-                for p in parts:
-                    if p in ("s", "sender"):
-                        mapped.append("sender")
-                    elif p in ("r", "receiver", "recevier", "reciever"):
-                        mapped.append("receiver")
-                    else:
-                        bad = True
-                        break
-                if bad or len(mapped) != count:
-                    print("Sequence must match the count and use only sender/receiver (or s/r).")
-                    continue
-                order = mapped
-                break
-
-        total_bubbles += count
-        page_specs.append({
-            "page_index": i,
-            "count": count,
-            "order": list(order),
-        })
-
-        lines.append(f"in image {i + 1}")
-        lines.append(f"i count {count} message bubbles")
-        lines.extend(order if order else ["none"])
-        if i < num_images - 1:
-            lines.append("")
-
-    return "\n".join(lines), total_bubbles, page_specs
 
 
 def _map_bubble_role_token(token: str):
@@ -588,11 +503,11 @@ def build_manual_message_context_crops(page_images, page_specs):
 def collect_page_ocr_debug(page_images):
     """Run OCR on each cleaned page image and collect text/confidence debug output.
 
-    Threshold defaults to ``GEMINI_PASS2_OCR_MIN_CONF`` (default **0.9**), aligned with Pass 2 bucketing.
+    Threshold defaults to ``GEMINI_PASS2_OCR_MIN_CONF`` (default **0.90**), aligned with Pass 2 bucketing.
     """
     lines = []
     entries = []
-    min_conf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.9"))
+    min_conf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.90"))
     min_conf = max(0.0, min(1.0, min_conf))
 
     for page_idx, page_img in enumerate(page_images or []):
@@ -708,6 +623,39 @@ _KNOWN_LANGUAGES = {
 }
 
 
+def _parse_difficulty_arg(value: str) -> int:
+    try:
+        n = int(value, 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("difficulty must be 1, 2, or 3") from exc
+    if n not in (1, 2, 3):
+        raise argparse.ArgumentTypeError("difficulty must be 1, 2, or 3")
+    return n
+
+
+def _coerce_pipeline_difficulty(value) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("difficulty must be 1, 2, or 3") from None
+    if n not in (1, 2, 3):
+        raise ValueError("difficulty must be 1, 2, or 3")
+    return n
+
+
+def _pass2_messages_from_pass1(pass1_msgs: list) -> list:
+    """Same {role, text_src, text_en} shape as Gemini Pass 2 when Pass 2 is skipped."""
+    out = []
+    for m in pass1_msgs or []:
+        src = (m.get("text_src") or m.get("text_en") or "").strip()
+        out.append({
+            "role": m.get("role"),
+            "text_src": src,
+            "text_en": _prefer_english_surface(translate_to_en(src), src),
+        })
+    return out
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(
         description="Gemini vision chat translator (stitched + per-page screenshots)"
@@ -732,19 +680,22 @@ def _parse_args():
         ),
     )
     parser.add_argument(
-        "--no-interactive",
-        action="store_true",
+        "--difficulty",
+        type=_parse_difficulty_arg,
+        default=3,
+        metavar="N",
         help=(
-            "Do not prompt for bubble counts in the terminal. Use pass1_bubble_input.txt if you need counts; "
-            "otherwise Pass 1 runs without bubble guidance (same as the hosted API). "
-            "Without this flag, the process waits on stdin and looks 'hung' if you are not in a real terminal."
+            "Gemini depth: 1 = Pass 1 only (final image uses Pass 1 + English gloss); "
+            "2 = Passes 1–2; 3 = full Passes 1–3 (default). "
+            "Same output paths (translated_conversation.png, JSON, per-pass PNGs). "
+            "Compare debug: 1 = Pass 1 panel; 2 = Pass 1 | Pass 2; 3 = Pass 1 | Pass 2 | Pass 3."
         ),
     )
     return parser.parse_args()
 
 
 def _compose_labeled_chat_panels(panels):
-    """Place 2+ rendered chats side-by-side with simple labels."""
+    """Place one or more rendered chats side-by-side with simple labels above each."""
     gap = 20
     pad = 12
     label_h = 34
@@ -753,8 +704,6 @@ def _compose_labeled_chat_panels(panels):
     valid_panels = [(img, label) for img, label in panels if img is not None and getattr(img, "size", 0) != 0]
     if not valid_panels:
         return None
-    if len(valid_panels) == 1:
-        return valid_panels[0][0]
 
     panel_w = max(img.shape[1] for img, _label in valid_panels)
     panel_h = max(img.shape[0] + label_h for img, _label in valid_panels)
@@ -1026,14 +975,16 @@ def run_pipeline_job(
     work_dir,
     language=None,
     bubble_summary_text=None,
-    allow_interactive_bubble_summary=False,
+    use_project_pass1_bubble_file: bool = False,
     on_stage: Optional[Callable[[Dict[str, Any]], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    difficulty: int = 3,
 ):
     def _check_cancel() -> None:
         if cancel_check is not None and cancel_check():
             raise JobCancelledError("Job cancelled by user request")
 
+    difficulty = _coerce_pipeline_difficulty(difficulty)
     pipeline_start = time.time()
 
     _quiet_phase_stdout = {
@@ -1168,14 +1119,22 @@ def run_pipeline_job(
         pass1_message_images = []
         craft_expected_n = None
         pass1_bubble_context = ""
-        if bubble_summary_text:
-            pass1_bubble_context, craft_expected_n, _manual_page_specs = _parse_bubble_summary_text(
-                bubble_summary_text, len(page_images)
-            )
-        elif allow_interactive_bubble_summary:
-            pass1_bubble_context, craft_expected_n, _manual_page_specs = prompt_manual_bubble_summary(
-                len(page_images)
-            )
+        _manual_page_specs: list = []
+        bs = (bubble_summary_text or "").strip()
+        if bs:
+            try:
+                pass1_bubble_context, craft_expected_n, _manual_page_specs = _parse_bubble_summary_text(
+                    bs, len(page_images)
+                )
+            except ValueError as exc:
+                print(f"[pipeline] Bubble summary from request ignored: {exc}", flush=True)
+        elif use_project_pass1_bubble_file:
+            loaded = _load_pass1_bubble_summary_file(len(page_images))
+            if loaded is not None:
+                pass1_bubble_context, craft_expected_n, _manual_page_specs = loaded
+                _vprint(
+                    f"\n[pipeline] Using bubble guidance file {PASS1_BUBBLE_INPUT_PATH.name} for Pass 1…",
+                )
 
         if pass1_bubble_context:
             bubble_debug_path = os.path.join(OUTPUT_DIR, "pass1_bubble_summary.txt")
@@ -1208,29 +1167,7 @@ def run_pipeline_job(
 
         _check_cancel()
 
-        _emit_phase("pass_2_prep", "Clustering OCR + matching to Pass 1…", 0.50)
         pass1_for_pass2 = (pass_debug or {}).get("pass1_messages") or []
-
-        pass2_ocr_text, ocr_match_verified, pass2_ocr_meta = build_pass2_per_message_ocr_hints(
-            page_images,
-            pass1_for_pass2,
-        )
-        pass2_ocr_debug_path = os.path.join(OUTPUT_DIR, "pass2_ocr_debug.txt")
-        with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
-            f.write(pass2_ocr_text)
-            f.write("\n\n--- pass2_ocr_meta.json ---\n")
-            f.write(json.dumps(pass2_ocr_meta, ensure_ascii=False, indent=2))
-
-        _check_cancel()
-
-        _emit_phase("pass_2", "Pass 2 — OCR-guided transcript refine…", 0.56)
-        if _compact_verbose_logs():
-            _vprint("[pipeline] Pass 2 — waiting for Gemini (OCR-guided refine).")
-        else:
-            _vprint(
-                "[pipeline] Pass 2 — waiting for Gemini (OCR-guided refine). "
-                "Live timer on the line below.",
-            )
         contact_name = (g_contact or contact_name or "Person A").strip() or "Person A"
         pass1_meta = list(all_meta or [])
         for i, item in enumerate(pre_ocr_meta or []):
@@ -1238,47 +1175,115 @@ def run_pipeline_job(
         for i, item in enumerate(pass1_meta):
             item["order"] = i
 
-        _t_g2 = time.time()
-        pass2_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
-            contact_name,
-            pass1_for_pass2,
-            pass2_ocr_text,
-            timeout=gemini_pass_timeout_sec(2),
-            ocr_match_verified=ocr_match_verified,
-        )
-        gemini_pass_sec["pass2"] = round(time.time() - _t_g2, 2)
-        if contact_name2:
-            contact_name = contact_name2
+        pass2_ocr_debug_path = os.path.join(OUTPUT_DIR, "pass2_ocr_debug.txt")
+        if difficulty >= 2:
+            _emit_phase("pass_2_prep", "Clustering OCR + matching to Pass 1…", 0.50)
+            try:
+                pass2_ocr_text, ocr_match_verified, pass2_ocr_meta = build_pass2_per_message_ocr_hints(
+                    page_images,
+                    pass1_for_pass2,
+                )
+            except Exception as exc:
+                print(
+                    f"[pipeline] Pass 2 OCR clustering failed ({exc}); "
+                    "continuing without per-message OCR hints.",
+                    flush=True,
+                )
+                pass2_ocr_text = ""
+                ocr_match_verified = [False] * len(pass1_for_pass2)
+                pass2_ocr_meta = {"skipped": True, "reason": "ocr_clustering_exception", "error": str(exc)}
+            with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
+                f.write(pass2_ocr_text or "")
+                f.write("\n\n--- pass2_ocr_meta.json ---\n")
+                f.write(json.dumps(pass2_ocr_meta, ensure_ascii=False, indent=2))
+
+            _check_cancel()
+
+            _emit_phase("pass_2", "Pass 2 — OCR-guided transcript refine…", 0.56)
+            if _compact_verbose_logs():
+                _vprint("[pipeline] Pass 2 — waiting for Gemini (OCR-guided refine).")
+            else:
+                _vprint(
+                    "[pipeline] Pass 2 — waiting for Gemini (OCR-guided refine). "
+                    "Live timer on the line below.",
+                )
+
+            _t_g2 = time.time()
+            try:
+                pass2_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
+                    contact_name,
+                    pass1_for_pass2,
+                    pass2_ocr_text,
+                    timeout=gemini_pass_timeout_sec(2),
+                    ocr_match_verified=ocr_match_verified,
+                )
+            except Exception as exc:
+                print(
+                    f"[pipeline] Pass 2 Gemini refine failed ({exc}); using Pass 1 transcript.",
+                    flush=True,
+                )
+                pass2_messages = [dict(m) for m in pass1_for_pass2]
+                contact_name2 = None
+            gemini_pass_sec["pass2"] = round(time.time() - _t_g2, 2)
+            if contact_name2:
+                contact_name = contact_name2
+        else:
+            with open(pass2_ocr_debug_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "Pass 2 OCR hints were not built (pipeline difficulty=1: Gemini Pass 2 disabled).\n"
+                )
+                f.write("\n\n--- pass2_ocr_meta.json ---\n")
+                f.write(
+                    json.dumps({"skipped": True, "reason": "difficulty=1"}, ensure_ascii=False, indent=2)
+                )
+            pass2_messages = _pass2_messages_from_pass1(pass1_for_pass2)
+
         all_meta = _meta_from_gemini_messages(pass2_messages)
         for i, item in enumerate(all_meta or []):
             item["order"] = i
 
         _check_cancel()
 
-        _emit_phase("pass_3", "Pass 3 — reference resolution & header…", 0.78)
-        if not _compact_verbose_logs():
-            _vprint(
-                "[pipeline] Pass 3 — waiting for Gemini (reference resolution + status bar from first image). "
-                "Live timer on the line below.",
-            )
-        status_bar_b64 = None
-        if status_bar_images:
-            _sb0 = status_bar_images[0]
-            if _sb0 is not None and getattr(_sb0, "size", 0) != 0:
-                _sb_b64 = _jpeg_b64_from_bgr(_sb0, quality=92)
-                status_bar_b64 = _sb_b64 if _sb_b64 else None
-        _t_g3 = time.time()
-        final_messages, contact_name3, pass3_reference_debug, status_bar_info = (
-            _gemini_reference_resolution_pass(
-                contact_name,
-                pass2_messages,
-                timeout=gemini_pass_timeout_sec(3),
-                status_bar_b64=status_bar_b64,
-            )
-        )
-        gemini_pass_sec["pass3"] = round(time.time() - _t_g3, 2)
-        if contact_name3:
-            contact_name = contact_name3
+        if difficulty >= 3:
+            _emit_phase("pass_3", "Pass 3 — reference resolution & header…", 0.78)
+            if not _compact_verbose_logs():
+                _vprint(
+                    "[pipeline] Pass 3 — waiting for Gemini (reference resolution + status bar from first image). "
+                    "Live timer on the line below.",
+                )
+            status_bar_b64 = None
+            if status_bar_images:
+                _sb0 = status_bar_images[0]
+                if _sb0 is not None and getattr(_sb0, "size", 0) != 0:
+                    _sb_b64 = _jpeg_b64_from_bgr(_sb0, quality=92)
+                    status_bar_b64 = _sb_b64 if _sb_b64 else None
+            _t_g3 = time.time()
+            try:
+                final_messages, contact_name3, pass3_reference_debug, status_bar_info = (
+                    _gemini_reference_resolution_pass(
+                        contact_name,
+                        pass2_messages,
+                        timeout=gemini_pass_timeout_sec(3),
+                        status_bar_b64=status_bar_b64,
+                    )
+                )
+            except Exception as exc:
+                print(
+                    f"[pipeline] Pass 3 failed ({exc}); using Pass 2 transcript with machine translation.",
+                    flush=True,
+                )
+                final_messages = _pass3_fallback_messages_from_pass2(pass2_messages)
+                contact_name3 = None
+                pass3_reference_debug = []
+                status_bar_info = _default_status_bar_info(contact_name)
+            gemini_pass_sec["pass3"] = round(time.time() - _t_g3, 2)
+            if contact_name3:
+                contact_name = contact_name3
+        else:
+            final_messages = [dict(m) for m in pass2_messages]
+            pass3_reference_debug = []
+            status_bar_info = _default_status_bar_info(contact_name)
+
         final_chat_meta = _meta_from_gemini_messages(final_messages)
         for i, item in enumerate(final_chat_meta or []):
             item["order"] = i
@@ -1329,13 +1334,25 @@ def run_pipeline_job(
         pass3_path = os.path.join(RENDER_DIR, "translated_conversation_pass3.png")
         cv2.imwrite(pass3_path, pass3_img)
 
-        compare_img = _compose_labeled_chat_panels([
-            (pass1_chat, "Pass 1 Translation"),
-            (pass2_img, "Pass 2 OCR Source Polish (Debug EN)"),
-            (pass3_img, "Pass 3 Reference Resolution"),
-        ])
+        if difficulty >= 3:
+            _compare_panels = [
+                (pass1_chat, "Pass 1 Translation"),
+                (pass2_img, "Pass 2 OCR Source Polish (Debug EN)"),
+                (pass3_img, "Pass 3 Reference Resolution"),
+            ]
+        elif difficulty == 2:
+            _compare_panels = [
+                (pass1_chat, "Pass 1 Translation"),
+                (pass2_img, "Pass 2 OCR Source Polish (Debug EN)"),
+            ]
+        else:
+            _compare_panels = [
+                (pass1_chat, "Pass 1 Translation"),
+            ]
+        compare_img = _compose_labeled_chat_panels(_compare_panels)
         compare_path = os.path.join(RENDER_DIR, "translated_conversation_compare.png")
-        cv2.imwrite(compare_path, compare_img)
+        if compare_img is not None:
+            cv2.imwrite(compare_path, compare_img)
 
         combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
         final_chat = render_chat(
@@ -1363,6 +1380,7 @@ def run_pipeline_job(
     return {
         "job_dir": str(work_dir),
         "language": language,
+        "difficulty": difficulty,
         "contact_name": final_contact_name,
         "status_text": final_status_text,
         "images_processed": len(images),
@@ -1411,11 +1429,16 @@ def main():
             file=sys.stderr,
         )
         sys.exit(1)
+    _vprint(
+        f"[pipeline] difficulty={args.difficulty} "
+        f"(1=Pass1 only, 2=Pass1–2, 3=full Pass1–3)\n"
+    )
     result = run_pipeline_job(
         images,
         Path(__file__).resolve().parent,
         language=args.language,
-        allow_interactive_bubble_summary=not args.no_interactive,
+        use_project_pass1_bubble_file=True,
+        difficulty=args.difficulty,
     )
     if not _compact_verbose_logs():
         _vprint(f"[pipeline] Output JSON → {result['artifacts']['json']}")

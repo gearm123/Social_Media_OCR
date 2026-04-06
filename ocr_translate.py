@@ -1,6 +1,7 @@
 import os
 import json
 import cv2
+import math
 import time
 import sys
 import re
@@ -8,7 +9,7 @@ import threading
 from contextlib import contextmanager
 from difflib import SequenceMatcher
 import unicodedata
-from typing import NamedTuple, Optional, Any, Dict, List, Tuple
+from typing import NamedTuple, Optional, Any, Dict, List, Set, Tuple
 import numpy as np
 from config import (
     DEBUG_DIR,
@@ -57,16 +58,14 @@ def _pv(*args, **kwargs) -> None:
 
 
 def gemini_pass_timeout_sec(pass_num: int) -> int:
-    """HTTP client read timeout (seconds) for each Gemini ``generateContent`` call.
-
-    Matches **pre–backend** behavior (commit ``0357c31``): one legacy ceiling for the whole
-    pipeline unless overridden per pass.
+    """HTTP client read timeout (seconds) for each Gemini ``generateContent`` attempt.
 
     Resolution order:
 
     1. ``GEMINI_PASS{n}_TIMEOUT_SEC`` for *n* = 1…4 when set and valid.
-    2. Else ``GEMINI_REQUEST_TIMEOUT_SEC`` (historical default **600** for all passes).
-    3. Else **600** for every pass (same as old ``main.py`` / ``translate_conversation``).
+    2. Else ``GEMINI_REQUEST_TIMEOUT_SEC`` when set and valid.
+    3. Else pass **1** defaults to **83** s; passes **2–4** default to **50** s (each pass may retry on
+       timeout where enabled; see ``GEMINI_HTTP_RETRIES``).
 
     Minimum 30 seconds.
     """
@@ -83,33 +82,138 @@ def gemini_pass_timeout_sec(pass_num: int) -> int:
             return max(30, int(legacy))
         except ValueError:
             pass
-    return max(30, 600)
+    default = 83 if n == 1 else 50
+    return max(30, default)
 
 
-def _gemini_thinking_budget_for_pass(pass_num: int, model_name: str) -> Optional[int]:
-    """Resolve ``thinkingConfig.thinkingBudget`` for **Gemini 2.5 Flash / Flash-Lite** only.
+def _gemini_http_extra_retries_on_timeout() -> int:
+    """Extra ``generateContent`` attempts after :class:`requests.exceptions.Timeout`.
 
-    **2.5 Pro** does not use this: pre–backend behavior omits ``thinkingConfig`` entirely on Pro.
-
-    Per-pass ``GEMINI_PASS{n}_THINKING_BUDGET``, else ``GEMINI_THINKING_BUDGET``, else 0.
+    Default **1** → **2** attempts total per call. Set ``GEMINI_HTTP_RETRIES=0`` to disable.
+    Capped at 5 extra retries.
     """
-    n = int(pass_num)
-    m = (model_name or "").lower()
-    if "2.5" not in m or "pro" in m:
-        return None
-    spec = os.environ.get(f"GEMINI_PASS{n}_THINKING_BUDGET", "").strip()
-    if spec:
-        try:
-            return max(0, min(int(spec), 24576))
-        except ValueError:
-            pass
-    legacy = os.environ.get("GEMINI_THINKING_BUDGET", "").strip()
-    if legacy:
-        try:
-            return max(0, min(int(legacy), 24576))
-        except ValueError:
-            pass
-    return 0
+    v = os.environ.get("GEMINI_HTTP_RETRIES", "").strip()
+    if not v:
+        return 1
+    if v.lower() in ("0", "false", "no", "off"):
+        return 0
+    try:
+        return max(0, min(int(v), 5))
+    except ValueError:
+        return 1
+
+
+def _gemini_http_max_tries_for_pass(pass_num: Optional[int]) -> int:
+    """Passes **2** and **3**: single HTTP attempt (no timeout retry). Other passes: ``GEMINI_HTTP_RETRIES``."""
+    if pass_num is not None and int(pass_num) in (2, 3):
+        return 1
+    return 1 + _gemini_http_extra_retries_on_timeout()
+
+
+def _gemini_attempt_timeout_sec(
+    pass_num: Optional[int],
+    attempt_i: int,
+    base_timeout: float,
+) -> int:
+    """Per-attempt HTTP read timeout.
+
+    Pass **1**: first try *base_timeout* (from ``gemini_pass_timeout_sec(1)``, default **83** s);
+    second try **50** s. Passes **2–3**: **50** s (single attempt each).
+    """
+    base = int(max(30, round(float(base_timeout))))
+    if pass_num is None:
+        return base
+    pn = int(pass_num)
+    if pn == 1 and attempt_i > 0:
+        return max(30, 50)
+    if pn in (2, 3):
+        return max(30, 50)
+    return base
+
+
+# Gemini 2.5 Pro: API allows ``thinkingBudget`` only in **128…32768** (cannot disable with 0).
+_GEMINI_25_PRO_MIN_THINKING_BUDGET = 128
+# Pass 1 only: second HTTP attempt (after timeout on first). **50** s read timeout in
+# ``_gemini_attempt_timeout_sec``; **1920** thinking budget here (not Pass 2).
+_GEMINI_PASS1_RETRY_THINKING_BUDGET = 1920
+# Pass 4+ or *pass_num* unset: first-attempt ``thinkingBudget`` for **Gemini 2.5**.
+_GEMINI_FIRST_TRY_THINKING_BUDGET = 3840
+
+
+def _gemini_build_generation_config(
+    model: str,
+    pass_num: Optional[int],
+    temperature: Optional[float],
+    max_out: int,
+    *,
+    use_json_output: bool,
+    minimal_thinking: bool,
+) -> Dict[str, Any]:
+    """Build ``generationConfig`` for ``generateContent`` (**Gemini 2.5**).
+
+    Pipeline contract:
+
+    - **Pass 1**, first HTTP attempt: omit ``thinkingConfig`` (no explicit thinking budget).
+    - **Pass 1**, second HTTP attempt (timeout retry only): ``thinkingBudget`` =
+      ``_GEMINI_PASS1_RETRY_THINKING_BUDGET`` (**1920**), clamped to the model range.
+    - **Pass 2**, single attempt: omit ``thinkingConfig``.
+    - **Pass 3**, single attempt: omit ``thinkingConfig``.
+    - **Pass 4+** or *pass_num* unset (e.g. status bar): first attempt **3840** (clamped); HTTP
+      timeout retry → **Pro** **128** / **Flash** ``0``.
+
+    HTTP timeouts are enforced in ``_gemini_attempt_timeout_sec`` / ``gemini_pass_timeout_sec``,
+    not in this dict.
+    """
+    temp = 0.0 if temperature is None else max(0.0, min(1.0, float(temperature)))
+    gen_cfg: Dict[str, Any] = {
+        "maxOutputTokens": max(1024, min(int(max_out), 65536)),
+        "temperature": temp,
+        "topP": 1.0,
+    }
+    m = (model or "").lower()
+    is_25 = "2.5" in m
+    is_25_pro = is_25 and ("pro" in m and "flash" not in m)
+
+    if is_25:
+        pn = int(pass_num) if pass_num is not None else None
+        if pn == 1:
+            if minimal_thinking:
+                _tb = _GEMINI_PASS1_RETRY_THINKING_BUDGET
+                if is_25_pro:
+                    _tb = max(_GEMINI_25_PRO_MIN_THINKING_BUDGET, min(int(_tb), 32768))
+                else:
+                    _tb = max(0, min(int(_tb), 24576))
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": _tb}
+            elif not _compact_verbose_logs():
+                _pv(
+                    "[GEMINI] Pass 1: thinkingConfig omitted "
+                    "(no explicit thinking budget).",
+                )
+        elif minimal_thinking:
+            if is_25_pro:
+                gen_cfg["thinkingConfig"] = {
+                    "thinkingBudget": _GEMINI_25_PRO_MIN_THINKING_BUDGET,
+                }
+            else:
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+        else:
+            if pn in (2, 3):
+                if not _compact_verbose_logs():
+                    _pv(
+                        f"[GEMINI] Pass {pn} first try: thinkingConfig omitted "
+                        "(no explicit thinking budget).",
+                    )
+            else:
+                _tb = _GEMINI_FIRST_TRY_THINKING_BUDGET
+                if is_25_pro:
+                    _tb = max(_GEMINI_25_PRO_MIN_THINKING_BUDGET, min(int(_tb), 32768))
+                else:
+                    _tb = max(0, min(int(_tb), 24576))
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": _tb}
+
+    if use_json_output:
+        gen_cfg["responseMimeType"] = "application/json"
+    return gen_cfg
 
 
 def collect_vision_ocr_hints(page_images):
@@ -941,7 +1045,7 @@ def _gemini_generate(
     prompt,
     image_b64=None,
     image_b64_list=None,
-    timeout=120,
+    timeout=50,
     max_output_tokens_override: Optional[int] = None,
     pass_num: Optional[int] = None,
     temperature: Optional[float] = None,
@@ -951,9 +1055,13 @@ def _gemini_generate(
     Pass *image_b64* (single JPEG base64) or *image_b64_list* (several JPEGs in order)
     before the text prompt.
 
-    *pass_num* is used for logging / HTTP wait UI only. **Gemini 2.5 Pro**: omits
-    ``thinkingConfig`` (pre–backend ``0357c31``). **2.5 Flash / Flash-Lite**: sends
-    ``thinkingBudget`` from env (default 0).
+    *pass_num* drives thinking budget, HTTP timeout, and retry count.
+
+    **Gemini 2.5** (passes **1–3**): pass **1** — no ``thinkingConfig`` on first try (Pro: historical
+    omit; **83** s default HTTP read timeout); second try **1920** thinking budget,
+    **50** s. Passes **2–3** — single try, no ``thinkingConfig``,
+    **50** s. Pass **4+** / unset: **3840** first try; retry **Pro** **128** / **Flash** ``0``.
+    See ``_gemini_build_generation_config`` and ``_gemini_attempt_timeout_sec``.
 
     Returns ``GeminiApiResult(text, response_json)``, or ``None`` if the API key / model
     is not configured. *response_json* is the full API object (for empty/blocked replies).
@@ -985,91 +1093,117 @@ def _gemini_generate(
         # Default 32768 keeps total generation (thinking + visible) closer to historical runtime;
         # set GEMINI_MAX_OUTPUT_TOKENS=65536 for very long transcripts if you hit MAX_TOKENS.
         max_out = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "32768"))
-    temp = 0.0 if temperature is None else max(0.0, min(1.0, float(temperature)))
-    gen_cfg: Dict[str, Any] = {
-        "maxOutputTokens": max(1024, min(max_out, 65536)),
-        "temperature": temp,
-        "topP": 1.0,
-    }
-    _mname = (model or "").lower()
-    # Pre–backend: 2.5 Pro omits thinkingConfig; 2.5 Flash sends thinkingBudget (default 0).
-    _is_25_pro = "2.5" in _mname and "pro" in _mname and "flash" not in _mname
-    _cp = _compact_verbose_logs()
-    if _is_25_pro and not _cp:
-        _pv("[GEMINI] 2.5 Pro: thinkingConfig omitted (historical pipeline default).")
-    elif "2.5" in _mname and "pro" not in _mname:
-        if pass_num is not None:
-            thinking_budget = _gemini_thinking_budget_for_pass(int(pass_num), model)
-            if thinking_budget is None:
-                thinking_budget = 0
-        else:
-            _tb = os.environ.get("GEMINI_THINKING_BUDGET", "0").strip()
-            try:
-                thinking_budget = int(_tb)
-            except ValueError:
-                thinking_budget = 0
-        thinking_budget = max(0, min(int(thinking_budget), 24576))
-        gen_cfg["thinkingConfig"] = {"thinkingBudget": thinking_budget}
-    # Optional: force JSON body (no markdown fence). Disable if the API rejects your model/payload.
     _jm = os.environ.get("GEMINI_JSON_OUTPUT", "0").strip().lower()
-    if _jm not in ("0", "false", "no", "off"):
-        gen_cfg["responseMimeType"] = "application/json"
-    payload: Dict[str, Any] = {
-        "contents": [{"parts": parts}],
-        "generationConfig": gen_cfg,
-    }
-    # Chat screenshots often trip default safety (meds, travel, etc.) → empty candidates.
+    use_json_output = _jm not in ("0", "false", "no", "off")
     _rel = os.environ.get("GEMINI_SAFETY_RELAXED", "1").strip().lower()
-    if _rel not in ("0", "false", "no", "off"):
-        payload["safetySettings"] = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
-        ]
+    use_relaxed_safety = _rel not in ("0", "false", "no", "off")
 
     image_count = len(image_b64_list or ([] if not image_b64 else [image_b64]))
     prompt_chars = len(prompt or "")
-    _tc = gen_cfg.get("thinkingConfig") or {}
-    _tb_disp = _tc.get("thinkingBudget")
-    if not (_cp and pass_num == 3):
-        _pv(
-            f"[GEMINI] generateContent POST: model={model} pass={pass_num!r} "
-            f"images_in_payload={image_count} prompt_chars={prompt_chars} "
-            f"max_tokens={gen_cfg['maxOutputTokens']} thinkingBudget={_tb_disp!r} timeout={timeout}s",
-        )
+    _cp = _compact_verbose_logs()
     t_pass_wall = time.time()
     recv_lat = 0.0
     http_code = 0
-    try:
-        with _gemini_pipeline_http_wait(pass_num, int(timeout)):
-            t_http = time.time()
-            r = _req.post(url, json=payload, timeout=timeout)
-            recv_lat = time.time() - t_http
-            http_code = int(r.status_code)
-            if not _cp:
-                _pv(
-                    f"[GEMINI] HTTP response received in {recv_lat:.1f}s with status {http_code}",
-                )
-            r.raise_for_status()
-            t_json = time.time()
-            data = r.json()
-            if not _cp:
-                _pv(
-                    f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
-                )
-    except _req.exceptions.Timeout as e:
-        if pass_num is not None and _gemini_pass_summary_enabled():
-            print(
-                f"[gemini] pass {pass_num} stopped: HTTP timeout after {timeout}s "
-                f"(raise GEMINI_PASS{pass_num}_TIMEOUT_SEC or GEMINI_REQUEST_TIMEOUT_SEC)",
-                flush=True,
+    data: Dict[str, Any] = {}
+    _tb_disp: Any = None
+    max_tries = _gemini_http_max_tries_for_pass(pass_num)
+    for attempt_i in range(max_tries):
+        minimal_thinking = attempt_i > 0
+        attempt_timeout = _gemini_attempt_timeout_sec(pass_num, attempt_i, timeout)
+        gen_cfg = _gemini_build_generation_config(
+            model,
+            pass_num,
+            temperature,
+            max_out,
+            use_json_output=use_json_output,
+            minimal_thinking=minimal_thinking,
+        )
+        _tc = gen_cfg.get("thinkingConfig") or {}
+        _tb_disp_attempt = _tc.get("thinkingBudget")
+        payload: Dict[str, Any] = {
+            "contents": [{"parts": parts}],
+            "generationConfig": gen_cfg,
+        }
+        if use_relaxed_safety:
+            payload["safetySettings"] = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+            ]
+        if not (_cp and pass_num == 3):
+            _retry_tag = " minimal_thinking=1" if minimal_thinking else ""
+            _pv(
+                f"[GEMINI] generateContent POST: model={model} pass={pass_num!r} "
+                f"images_in_payload={image_count} prompt_chars={prompt_chars} "
+                f"max_tokens={gen_cfg['maxOutputTokens']} thinkingBudget={_tb_disp_attempt!r} "
+                f"timeout={attempt_timeout}s attempt={attempt_i + 1}/{max_tries}{_retry_tag}",
             )
-        raise
-    except _req.exceptions.RequestException as e:
-        if pass_num is not None and _gemini_pass_summary_enabled():
-            print(f"[gemini] pass {pass_num} stopped: request error: {e}", flush=True)
-        raise
+        try:
+            with _gemini_pipeline_http_wait(pass_num, int(attempt_timeout)):
+                t_http = time.time()
+                r = _req.post(url, json=payload, timeout=attempt_timeout)
+                recv_lat = time.time() - t_http
+                http_code = int(r.status_code)
+                if not _cp:
+                    _pv(
+                        f"[GEMINI] HTTP response received in {recv_lat:.1f}s with status {http_code}",
+                    )
+                r.raise_for_status()
+                t_json = time.time()
+                data = r.json()
+                if not _cp:
+                    _pv(
+                        f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
+                    )
+            _tb_disp = _tb_disp_attempt
+            break
+        except _req.exceptions.Timeout:
+            if attempt_i < max_tries - 1:
+                _mlow = (model or "").lower()
+                _retry_hint = ""
+                if "2.5" in _mlow:
+                    if pass_num is not None and int(pass_num) == 1:
+                        _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
+                        _retry_hint = (
+                            f" (next attempt: {_next_to}s timeout, "
+                            f"thinkingBudget={_GEMINI_PASS1_RETRY_THINKING_BUDGET})"
+                        )
+                    else:
+                        _is_pro = "pro" in _mlow and "flash" not in _mlow
+                        _retry_hint = (
+                            f" (next attempt: thinkingBudget="
+                            f"{_GEMINI_25_PRO_MIN_THINKING_BUDGET} for 2.5 Pro)"
+                            if _is_pro
+                            else " (next attempt: thinkingBudget=0)"
+                        )
+                print(
+                    f"[GEMINI] HTTP timeout after {attempt_timeout}s "
+                    f"(attempt {attempt_i + 1}/{max_tries}, pass={pass_num!r}) — retrying…{_retry_hint}",
+                    flush=True,
+                )
+                continue
+            if pass_num is not None and _gemini_pass_summary_enabled():
+                _final_to = _gemini_attempt_timeout_sec(pass_num, max_tries - 1, timeout)
+                if int(pass_num) in (2, 3):
+                    print(
+                        f"[gemini] pass {pass_num} stopped: HTTP timeout after {_final_to}s "
+                        f"({max_tries} attempt(s); set GEMINI_PASS{pass_num}_TIMEOUT_SEC or "
+                        f"GEMINI_REQUEST_TIMEOUT_SEC)",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[gemini] pass {pass_num} stopped: HTTP timeout after {_final_to}s "
+                        f"({max_tries} attempt(s); set GEMINI_PASS{pass_num}_TIMEOUT_SEC, "
+                        f"GEMINI_REQUEST_TIMEOUT_SEC, or GEMINI_HTTP_RETRIES)",
+                        flush=True,
+                    )
+            raise
+        except _req.exceptions.RequestException as e:
+            if pass_num is not None and _gemini_pass_summary_enabled():
+                print(f"[gemini] pass {pass_num} stopped: request error: {e}", flush=True)
+            raise
 
     if _cp and pass_num is not None:
         wall = time.time() - t_pass_wall
@@ -1642,7 +1776,7 @@ INPUT JSON:
     )
 
     try:
-        gres = _gemini_generate(prompt, timeout=timeout)
+        gres = _gemini_generate(prompt, timeout=timeout, pass_num=2)
         raw = gres.text if gres else ""
     except Exception as e:
         print(f"[GEMINI] Pass 2 translation failed: {e}")
@@ -1797,7 +1931,9 @@ Output JSON only:
                 img_b64_list.append(b64)
 
         try:
-            gres = _gemini_generate(prompt, image_b64_list=img_b64_list, timeout=timeout)
+            gres = _gemini_generate(
+                prompt, image_b64_list=img_b64_list, timeout=timeout, pass_num=2
+            )
             raw = (gres.text if gres else "") or ""
         except Exception as e:
             _append_gemini_debug_crop_refine(prompt, f"ERROR: {e}", batch_label)
@@ -1982,7 +2118,9 @@ def _gemini_ocr_context_refine_pass(
             img_b64_list.append(b64)
 
     try:
-        gres = _gemini_generate(prompt, image_b64_list=img_b64_list, timeout=timeout)
+        gres = _gemini_generate(
+            prompt, image_b64_list=img_b64_list, timeout=timeout, pass_num=3
+        )
         raw = (gres.text if gres else "") or ""
     except Exception as e:
         print(f"[GEMINI] Pass 3 failed: {e}")
@@ -2084,19 +2222,93 @@ class _UnionFind:
             self._p[pj] = pi
 
 
+def _pass2_word_center_dist(a: dict, b: dict) -> float:
+    dx = float(a["cx"]) - float(b["cx"])
+    dy = float(a["cy"]) - float(b["cy"])
+    return math.hypot(dx, dy)
+
+
+def _pass2_cluster_max_center_pair_dist(words: List[dict]) -> float:
+    n = len(words)
+    if n < 2:
+        return 0.0
+    m = 0.0
+    for i in range(n):
+        for j in range(i + 1, n):
+            m = max(m, _pass2_word_center_dist(words[i], words[j]))
+    return m
+
+
+def _split_pass2_ocr_cluster_by_diameter(
+    word_boxes: List[dict],
+    max_diam_px: float,
+) -> List[List[dict]]:
+    """Bisect clusters whose bbox-center pairwise L2 exceeds *max_diam_px* (breaks union-find chains)."""
+    n = len(word_boxes)
+    if n <= 1:
+        return [word_boxes]
+    if _pass2_cluster_max_center_pair_dist(word_boxes) <= max_diam_px:
+        return [word_boxes]
+
+    best_dd = -1.0
+    ia, ib = 0, 1
+    for i in range(n):
+        for j in range(i + 1, n):
+            dd = _pass2_word_center_dist(word_boxes[i], word_boxes[j])
+            if dd > best_dd:
+                best_dd, ia, ib = dd, i, j
+
+    sa, sb = word_boxes[ia], word_boxes[ib]
+    ga, gb = [], []
+    for w in word_boxes:
+        da = _pass2_word_center_dist(w, sa)
+        db = _pass2_word_center_dist(w, sb)
+        (ga if da <= db else gb).append(w)
+
+    if not ga or not gb or len(ga) == n or len(gb) == n:
+        ordered = sorted(word_boxes, key=lambda w: (float(w["cy"]), float(w["cx"])))
+        mid = max(1, n // 2)
+        ga, gb = ordered[:mid], ordered[mid:]
+
+    out: List[List[dict]] = []
+    for g in (ga, gb):
+        out.extend(_split_pass2_ocr_cluster_by_diameter(g, max_diam_px))
+    return out
+
+
 def _cluster_pass2_ocr_words(
     word_boxes: List[dict],
     iw: int,
     ih: int,
 ) -> List[List[dict]]:
-    """Group OCR words into spatial clusters (message-bubble candidates) via bbox gap thresholds."""
+    """Group OCR words into spatial clusters (message-bubble candidates).
+
+    **Step 1 — proximity graph (union–find):** For each pair of word bboxes, compute axis-aligned
+    *separating gaps* ``dx, dy`` (0 when projections overlap on that axis). Merge into the same
+    component iff **both** ``dx <= max_gx`` and ``dy <= max_gy`` (see env fractions × page size + ε).
+    Every input word therefore lies in **exactly one** raw component (singletons allowed).
+
+    **Step 2 — optional L² diameter cap:** Union–find is *single-linkage*, so components can grow
+    elongated chains. If ``PASS2_OCR_CLUSTER_MAX_DIAM_FRAC`` > 0, split any component whose
+    maximum **center-to-center** Euclidean distance exceeds
+    ``frac * hypot(iw, ih)`` until each piece satisfies the cap.
+
+    **Single image only:** Callers pass words from **one** page image; clusters never span images.
+
+    Words below ``PASS2_OCR_CLUSTER_LINK_MIN_CONF`` never enter this function (see
+    :func:`build_pass2_per_message_ocr_hints`).
+    """
     n = len(word_boxes)
     if n == 0:
         return []
-    gx_frac = float(os.environ.get("PASS2_OCR_CLUSTER_GAP_X_FRAC", "0.035"))
-    gy_frac = float(os.environ.get("PASS2_OCR_CLUSTER_GAP_Y_FRAC", "0.03"))
-    max_gx = max(4.0, gx_frac * float(iw))
-    max_gy = max(4.0, gy_frac * float(ih))
+    # Merge when bbox gaps ≤ these distances: fraction × page W/H (resolution-native). Defaults are
+    # relaxed so long URLs, wrapped lines, and multi-line bubbles merge; tune down if adjacent
+    # bubbles chain together. ε = small fraction of min(w,h) for tiny crops only.
+    gx_frac = float(os.environ.get("PASS2_OCR_CLUSTER_GAP_X_FRAC", "0.068"))
+    gy_frac = float(os.environ.get("PASS2_OCR_CLUSTER_GAP_Y_FRAC", "0.078"))
+    _eps = 0.003 * min(float(iw), float(ih))
+    max_gx = max(_eps, gx_frac * float(iw))
+    max_gy = max(_eps, gy_frac * float(ih))
 
     uf = _UnionFind(n)
     rects = [
@@ -2126,7 +2338,212 @@ def _cluster_pass2_ocr_words(
         clusters.append(members)
 
     clusters.sort(key=lambda cl: (min(float(w["cy"]) for w in cl), min(float(w["cx"]) for w in cl)))
+
+    # Caps how far word centers can spread in one cluster (breaks chains across adjacent bubbles).
+    max_frac = float(os.environ.get("PASS2_OCR_CLUSTER_MAX_DIAM_FRAC", "0.26"))
+    if max_frac > 0:
+        diag = math.hypot(float(iw), float(ih))
+        max_diam_px = max(0.004 * diag, max_frac * diag)
+        split_out: List[List[dict]] = []
+        for cl in clusters:
+            split_out.extend(_split_pass2_ocr_cluster_by_diameter(cl, max_diam_px))
+        clusters = split_out
+        clusters.sort(
+            key=lambda c: (min(float(w["cy"]) for w in c), min(float(w["cx"]) for w in c))
+        )
     return clusters
+
+
+def _pass2_ocr_overlap_resolve_enabled() -> bool:
+    v = os.environ.get("PASS2_OCR_CLUSTER_RESOLVE_OVERLAP", "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _pass2_union_bbox_float(words: List[dict]) -> Tuple[float, float, float, float]:
+    return (
+        min(float(w["x1"]) for w in words),
+        min(float(w["y1"]) for w in words),
+        max(float(w["x2"]) for w in words),
+        max(float(w["y2"]) for w in words),
+    )
+
+
+def _pass2_xyxy_intersection_positive(
+    a: Tuple[float, float, float, float],
+    b: Tuple[float, float, float, float],
+    min_side: float = 2.0,
+) -> Optional[Tuple[float, float, float, float]]:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    x1 = max(ax1, bx1)
+    y1 = max(ay1, by1)
+    x2 = min(ax2, bx2)
+    y2 = min(ay2, by2)
+    if x2 - x1 < min_side or y2 - y1 < min_side:
+        return None
+    return (x1, y1, x2, y2)
+
+
+def _pass2_word_bbox_intersects_rect(w: dict, rect: Tuple[float, float, float, float]) -> bool:
+    wx1, wy1, wx2, wy2 = float(w["x1"]), float(w["y1"]), float(w["x2"]), float(w["y2"])
+    rx1, ry1, rx2, ry2 = rect
+    ix1 = max(wx1, rx1)
+    iy1 = max(wy1, ry1)
+    ix2 = min(wx2, rx2)
+    iy2 = min(wy2, ry2)
+    return ix2 > ix1 + 1e-6 and iy2 > iy1 + 1e-6
+
+
+def _pass2_word_group_centroid(words: List[dict]) -> Optional[Tuple[float, float]]:
+    if not words:
+        return None
+    sx = sum(float(w["cx"]) for w in words)
+    sy = sum(float(w["cy"]) for w in words)
+    n = float(len(words))
+    return (sx / n, sy / n)
+
+
+def _pass2_l2_centers(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _pass2_dist_remainder_to_C(
+    remainder: List[dict],
+    original: List[dict],
+    cent_C: Tuple[float, float],
+) -> float:
+    """L2 from remainder centroid to C; if remainder is empty, use *original* cluster centroid."""
+    if remainder:
+        c = _pass2_word_group_centroid(remainder)
+        assert c is not None
+        return _pass2_l2_centers(c, cent_C)
+    c0 = _pass2_word_group_centroid(original)
+    if c0 is None:
+        return float("inf")
+    return _pass2_l2_centers(c0, cent_C)
+
+
+def _pass2_overlap_assign_mode() -> str:
+    """``PASS2_OCR_CLUSTER_OVERLAP_ASSIGN``: ``nearest`` (default) or ``centroid`` (legacy)."""
+    v = os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_ASSIGN", "nearest").strip().lower()
+    if v in ("centroid", "global", "legacy"):
+        return "centroid"
+    return "nearest"
+
+
+def _pass2_min_dist_word_to_any(w: dict, others: List[dict]) -> float:
+    wx, wy = float(w["cx"]), float(w["cy"])
+    return min(
+        _pass2_l2_centers((wx, wy), (float(r["cx"]), float(r["cy"]))) for r in others
+    )
+
+
+def _pass2_overlap_assign_score(
+    c_words: List[dict],
+    remainder: List[dict],
+    original: List[dict],
+    cent_c: Tuple[float, float],
+) -> float:
+    """Lower is better: how strongly disputed words *C* attach to one cluster's remainder.
+
+    * ``nearest`` — mean L2 from each word in *C* to its nearest word in *remainder* (local).
+      Falls back to centroid-vs-C when *remainder* is empty.
+    * ``centroid`` — L2 from *remainder* centroid to centroid(C); empty *remainder* uses *original*.
+    """
+    if _pass2_overlap_assign_mode() == "centroid":
+        return _pass2_dist_remainder_to_C(remainder, original, cent_c)
+    if remainder:
+        return sum(_pass2_min_dist_word_to_any(w, remainder) for w in c_words) / float(
+            len(c_words)
+        )
+    return _pass2_dist_remainder_to_C(remainder, original, cent_c)
+
+
+def _pass2_try_resolve_one_cluster_bbox_overlap(clusters: List[List[dict]]) -> bool:
+    """If some pair of cluster union bboxes overlap, peel intersecting words into C and reattach C
+    to the side with lower :func:`_pass2_overlap_assign_score` (local nearest-neighbor by default).
+
+    Returns True if *clusters* was mutated (caller should remove empty lists).
+    """
+    n = len(clusters)
+    for i in range(n):
+        for j in range(i + 1, n):
+            ai, bj = clusters[i], clusters[j]
+            if not ai or not bj:
+                continue
+            ui = _pass2_union_bbox_float(ai)
+            uj = _pass2_union_bbox_float(bj)
+            rect = _pass2_xyxy_intersection_positive(ui, uj)
+            if rect is None:
+                continue
+
+            c_ids: Set[int] = set()
+            c_words: List[dict] = []
+            for w in ai:
+                if _pass2_word_bbox_intersects_rect(w, rect):
+                    c_words.append(w)
+                    c_ids.add(id(w))
+            for w in bj:
+                if id(w) in c_ids:
+                    continue
+                if _pass2_word_bbox_intersects_rect(w, rect):
+                    c_words.append(w)
+                    c_ids.add(id(w))
+
+            if not c_words:
+                continue
+
+            a_prime = [w for w in ai if id(w) not in c_ids]
+            b_prime = [w for w in bj if id(w) not in c_ids]
+
+            cent_c = _pass2_word_group_centroid(c_words)
+            if cent_c is None:
+                continue
+
+            dist_a = _pass2_overlap_assign_score(c_words, a_prime, ai, cent_c)
+            dist_b = _pass2_overlap_assign_score(c_words, b_prime, bj, cent_c)
+
+            if dist_a < dist_b - 1e-9:
+                clusters[i] = a_prime + c_words
+                clusters[j] = b_prime
+            elif dist_b < dist_a - 1e-9:
+                clusters[i] = a_prime
+                clusters[j] = b_prime + c_words
+            else:
+                # Tie: keep deterministic (smaller cluster index keeps C).
+                clusters[i] = a_prime + c_words
+                clusters[j] = b_prime
+
+            return True
+    return False
+
+
+def _pass2_resolve_overlapping_ocr_clusters(
+    clusters: List[List[dict]],
+    iw: int,
+    ih: int,
+) -> List[List[dict]]:
+    """Post-pass: split words in union-bbox overlap between two clusters and assign them to one side.
+
+    Scoring: ``PASS2_OCR_CLUSTER_OVERLAP_ASSIGN=nearest`` (default) uses mean distance from each
+    disputed word to the nearest remaining word in that cluster; ``centroid`` uses remainder
+    centroid vs centroid(C). Disabled when ``PASS2_OCR_CLUSTER_RESOLVE_OVERLAP=0``.
+    ``iw``/``ih`` reserved for future scale-aware thresholds.
+    """
+    del iw, ih  # scale hooks for future min overlap area in frac of page
+    if not clusters or not _pass2_ocr_overlap_resolve_enabled():
+        return clusters
+
+    max_iter = max(1, int(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_RESOLVE_MAX_ITERS", "64")))
+    out = [c for c in clusters if c]
+    for _ in range(max_iter):
+        if not _pass2_try_resolve_one_cluster_bbox_overlap(out):
+            break
+        out = [c for c in out if c]
+    out.sort(
+        key=lambda cl: (min(float(w["cy"]) for w in cl), min(float(w["cx"]) for w in cl))
+    )
+    return out
 
 
 def _pass2_token_jaccard(a: str, b: str) -> float:
@@ -2279,7 +2696,7 @@ def _print_pass2_ocr_match_summary(
     ocr_word_count: int,
     min_ocr_conf: float,
 ) -> None:
-    """Always-on summary: how many Pass 1 rows got OCR hints vs Pass 2 Gemini refine."""
+    """Always-on summary: OCR cluster ↔ Pass 1 row matches (soft hints only; no reordering)."""
     n = int(match_summary.get("pass1_message_count") or 0)
     g = int(match_summary.get("ocr_cluster_count") or 0)
     m = int(match_summary.get("matched_pairs") or 0)
@@ -2299,9 +2716,17 @@ def _print_pass2_ocr_match_summary(
         print(f"  Unmatched groups:          {gu}", flush=True)
         print(f"  Unmatched messages:        {mw}", flush=True)
         print("", flush=True)
-        print(f" {m} message(s) get OCR-backed Pass 2 ", flush=True)
         print(
-            f"{max(0, n - m)} row(s) have no OCR cluster (Pass 2 must keep Pass 1 for those).",
+            f" {m} row(s): OCR cluster matched → Pass 2 gets high-conf token hints (soft; conf≥{min_ocr_conf:.2f}).",
+            flush=True,
+        )
+        print(
+            "   Pass 2 should usually edit `text_src` on those rows when hints fix Pass 1; "
+            "unchanged vs Pass 1 is possible but unexpected if OCR disagrees.",
+            flush=True,
+        )
+        print(
+            f" {max(0, n - m)} row(s): no cluster match → Pass 2 leaves Pass 1 text unchanged.",
             flush=True,
         )
         print("", flush=True)
@@ -2310,6 +2735,14 @@ def _print_pass2_ocr_match_summary(
         print(f" ambiguous (best vs 2nd line)={am}", flush=True)
         if lg > 0:
             print(f" lost greedy pairing={lg}", flush=True)
+        if g > n:
+            print(
+                f"  Note: {g} OCR groups vs {n} Pass 1 rows — often multi-line bubbles split by "
+                f"gap/diameter rules, or extra UI text. Set PASS2_OCR_LOG_CLUSTERS=1 for per-group "
+                f"words (writes result/pass2_ocr_cluster_groups.txt). Tune "
+                f"PASS2_OCR_CLUSTER_GAP_Y_FRAC / PASS2_OCR_CLUSTER_MAX_DIAM_FRAC if needed.",
+                flush=True,
+            )
         print("", flush=True)
         return
 
@@ -2319,8 +2752,12 @@ def _print_pass2_ocr_match_summary(
     print(f"{b}  Unmatched groups:          {gu}{off}", flush=True)
     print(f"{b}  Unmatched messages:        {mw}{off}", flush=True)
     print(
-        f"  So: {m} message(s) get OCR-backed Pass 2; "
-        f"{max(0, n - m)} row(s) have no OCR cluster (Pass 2 must keep Pass 1 for those).",
+        f"  {m} row(s): cluster matched → Pass 2 gets high-conf OCR hints (≥ {min_ocr_conf:.2f}); "
+        f"expect `text_src` updates when hints correct Pass 1 (unchanged output is atypical then).",
+        flush=True,
+    )
+    print(
+        f"  {max(0, n - m)} row(s): no match → Pass 2 keeps Pass 1 wording verbatim for those indices.",
         flush=True,
     )
     print(
@@ -2334,24 +2771,297 @@ def _print_pass2_ocr_match_summary(
         f"[PASS2 OCR] tuning: ocr_words>={min_ocr_conf:.2f}: {ocr_word_count}  "
         f"matched_pairs={m}  thresholds={match_summary.get('thresholds_applied')}"
     )
+    if g > n:
+        print(
+            f"  Note: {g} OCR groups vs {n} Pass 1 rows — often multi-line bubbles split by "
+            f"gap/diameter rules, or extra UI text. Set PASS2_OCR_LOG_CLUSTERS=1 for per-group "
+            f"words (also writes result/pass2_ocr_cluster_groups.txt). Tune "
+            f"PASS2_OCR_CLUSTER_GAP_Y_FRAC / PASS2_OCR_CLUSTER_MAX_DIAM_FRAC if needed.",
+            flush=True,
+        )
+
+
+def _pass2_ocr_should_log_cluster_detail() -> bool:
+    v = os.environ.get("PASS2_OCR_LOG_CLUSTERS", "").strip().lower()
+    return v in ("1", "true", "yes", "on") or _pipeline_verbose()
+
+
+def _pass2_ocr_should_emit_cluster_debug_images() -> bool:
+    """Write ``pass2_ocr_clusters_page_*.png`` when Pass 2 OCR clustering runs.
+
+    - ``PASS2_OCR_CLUSTER_DEBUG_IMAGES=0`` — never write overlay images.
+    - ``PASS2_OCR_CLUSTER_DEBUG_IMAGES=1`` — always write (when clusters exist and pages are valid).
+    - Unset — same as detailed cluster log: on if ``PIPELINE_VERBOSE`` or ``PASS2_OCR_LOG_CLUSTERS``.
+    """
+    v = os.environ.get("PASS2_OCR_CLUSTER_DEBUG_IMAGES", "").strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    if v in ("1", "true", "yes", "on"):
+        return True
+    return _pass2_ocr_should_log_cluster_detail()
+
+
+def _pass2_ocr_cluster_union_bbox(words: List[dict]) -> Optional[Tuple[int, int, int, int]]:
+    """Axis-aligned union of word bboxes; integers clamped for OpenCV drawing."""
+    if not words:
+        return None
+    x1 = min(float(w["x1"]) for w in words)
+    y1 = min(float(w["y1"]) for w in words)
+    x2 = max(float(w["x2"]) for w in words)
+    y2 = max(float(w["y2"]) for w in words)
+    return (int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
+
+
+_PASS2_OCR_DEBUG_COLORS_BGR: List[Tuple[int, int, int]] = [
+    (40, 180, 255),
+    (180, 105, 255),
+    (0, 200, 100),
+    (255, 150, 80),
+    (230, 80, 180),
+    (60, 220, 230),
+    (180, 180, 50),
+    (130, 90, 230),
+]
+
+
+def _pass2_ocr_bgr_for_cluster(global_index: int) -> Tuple[int, int, int]:
+    return _PASS2_OCR_DEBUG_COLORS_BGR[global_index % len(_PASS2_OCR_DEBUG_COLORS_BGR)]
+
+
+def _pass2_ocr_draw_cluster_debug_legend(vis: np.ndarray) -> None:
+    """Bottom banner on debug PNGs: active gap/diameter fractions (matches env defaults)."""
+    h, w = vis.shape[:2]
+    if h < 16 or w < 64:
+        return
+    gx = float(os.environ.get("PASS2_OCR_CLUSTER_GAP_X_FRAC", "0.068"))
+    gy = float(os.environ.get("PASS2_OCR_CLUSTER_GAP_Y_FRAC", "0.078"))
+    diam = float(os.environ.get("PASS2_OCR_CLUSTER_MAX_DIAM_FRAC", "0.26"))
+    pad = 8
+    line = (
+        f"PASS2 OCR cluster  gx_frac={gx:.3f}  gy_frac={gy:.3f}  max_diam_frac={diam:.3f}  "
+        f"(merge if gap<=frac*W/H; split if center_L2>frac*diag)"
+    )
+    fs = max(0.38, min(0.72, float(w) / 1200.0))
+    thick = 1
+    max_tw = max(32, w - 2 * pad)
+    for _ in range(12):
+        (tw, th), _bl = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, fs, thick)
+        if tw <= max_tw:
+            break
+        fs = max(0.22, fs * 0.88)
+    (_tw, th), _bl = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, fs, thick)
+    bar_h = min(h, th + pad * 2)
+    y0 = h - bar_h
+    cv2.rectangle(vis, (0, y0), (w, h), (28, 28, 28), -1)
+    tx, ty = pad, h - pad
+    cv2.putText(
+        vis,
+        line,
+        (tx, ty),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        fs,
+        (0, 0, 0),
+        2,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.putText(
+        vis,
+        line,
+        (tx, ty),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        fs,
+        (235, 235, 235),
+        1,
+        lineType=cv2.LINE_AA,
+    )
+
+
+def _pass2_ocr_emit_cluster_debug_images(
+    page_images,
+    clusters: List[List[dict]],
+) -> List[str]:
+    """One PNG per input page: cluster union bboxes (post hint-confidence filter), BGR overlay.
+
+    Filenames: ``pass2_ocr_clusters_page_01.png``, … under :data:`OUTPUT_DIR`.
+    Cluster labels ``g0``, ``g1``, … match indices in ``pass2_ocr_cluster_groups.txt``.
+    """
+    if not clusters or not _pass2_ocr_should_emit_cluster_debug_images():
+        return []
+
+    pages = list(page_images or [])
+    if not pages:
+        return []
+
+    written: List[str] = []
+    for page_idx, page_img in enumerate(pages):
+        if page_img is None or getattr(page_img, "size", 0) == 0:
+            continue
+        h, w = page_img.shape[:2]
+        if page_img.ndim == 2:
+            vis = cv2.cvtColor(page_img, cv2.COLOR_GRAY2BGR)
+        elif page_img.shape[2] == 4:
+            vis = cv2.cvtColor(page_img, cv2.COLOR_BGRA2BGR)
+        else:
+            vis = page_img.copy()
+
+        overlay = vis.copy()
+        draw_specs: List[Tuple[Tuple[int, int, int, int], Tuple[int, int, int], str]] = []
+
+        for gi, cl in enumerate(clusters):
+            if not cl or int(cl[0].get("page_index", -1)) != page_idx:
+                continue
+            box = _pass2_ocr_cluster_union_bbox(cl)
+            if box is None:
+                continue
+            x1, y1, x2, y2 = box
+            x1 = max(0, min(w - 1, x1))
+            x2 = max(0, min(w, x2))
+            y1 = max(0, min(h - 1, y1))
+            y2 = max(0, min(h, y2))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            color = _pass2_ocr_bgr_for_cluster(gi)
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+            draw_specs.append((box, color, f"g{gi}"))
+
+        if draw_specs:
+            cv2.addWeighted(overlay, 0.22, vis, 0.78, 0, vis)
+        for (x1, y1, x2, y2), color, label in draw_specs:
+            cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
+            tx = x1
+            ty = y1 - 6
+            if ty < 12:
+                ty = y2 + 18
+            if ty >= h:
+                ty = h - 2
+            cv2.putText(
+                vis,
+                label,
+                (tx, ty),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (32, 32, 32),
+                3,
+                lineType=cv2.LINE_AA,
+            )
+            cv2.putText(
+                vis,
+                label,
+                (tx, ty),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                1,
+                lineType=cv2.LINE_AA,
+            )
+
+        _pass2_ocr_draw_cluster_debug_legend(vis)
+
+        fname = f"pass2_ocr_clusters_page_{page_idx + 1:02d}.png"
+        out_path = os.path.join(OUTPUT_DIR, fname)
+        try:
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            if not cv2.imwrite(out_path, vis):
+                _pv(f"[PASS2 OCR] imwrite failed for {out_path}")
+                continue
+            written.append(out_path)
+        except OSError as exc:
+            _pv(f"[PASS2 OCR] could not write {out_path}: {exc}")
+
+    if written:
+        print(
+            f"[PASS2 OCR] Wrote {len(written)} cluster overlay PNG(s) → {OUTPUT_DIR}",
+            flush=True,
+        )
+    return written
+
+
+def _pass2_ocr_emit_filtered_cluster_report(
+    clusters: List[List[dict]],
+    min_conf: float,
+) -> None:
+    """Log each post-filter OCR cluster (words + confidences). Console + file when enabled.
+
+    - ``PASS2_OCR_LOG_CLUSTERS=1``: print full report and write ``pass2_ocr_cluster_groups.txt``.
+    - ``PIPELINE_VERBOSE=1`` only: write file and a short ``_pv`` pointer (avoids huge TTY spam).
+    """
+    if not clusters or not _pass2_ocr_should_log_cluster_detail():
+        return
+
+    gx = float(os.environ.get("PASS2_OCR_CLUSTER_GAP_X_FRAC", "0.068"))
+    gy = float(os.environ.get("PASS2_OCR_CLUSTER_GAP_Y_FRAC", "0.078"))
+    diam = float(os.environ.get("PASS2_OCR_CLUSTER_MAX_DIAM_FRAC", "0.26"))
+    lines: List[str] = [
+        "=== Pass 2 OCR clusters (after per-cluster confidence filter) ===",
+        f"GEMINI_PASS2_OCR_MIN_CONF (hint filter) = {min_conf:.4f}",
+        f"union–find: PASS2_OCR_CLUSTER_GAP_X_FRAC={gx}  PASS2_OCR_CLUSTER_GAP_Y_FRAC={gy}",
+        f"diameter split: PASS2_OCR_CLUSTER_MAX_DIAM_FRAC={diam}  (0 disables split)",
+        f"total_clusters={len(clusters)}",
+        "",
+    ]
+    for ci, cl in enumerate(clusters):
+        if not cl:
+            continue
+        pi = int(cl[0].get("page_index", 0))
+        confs = [float(w.get("conf") or 0.0) for w in cl]
+        cmin, cmax = (min(confs), max(confs)) if confs else (0.0, 0.0)
+        parts = [(w.get("text") or "").strip() for w in cl]
+        joined = " ".join(p for p in parts if p)
+        ys = [float(w.get("cy", 0.0)) for w in cl]
+        xs = [float(w.get("cx", 0.0)) for w in cl]
+        y0, y1 = (min(ys), max(ys)) if ys else (0.0, 0.0)
+        x0, x1 = (min(xs), max(xs)) if xs else (0.0, 0.0)
+        lines.append(
+            f"--- cluster {ci}  page_index={pi}  words={len(cl)}  "
+            f"conf min={cmin:.3f} max={cmax:.3f}  "
+            f"cx≈{x0:.0f}–{x1:.0f} cy≈{y0:.0f}–{y1:.0f} ---"
+        )
+        lines.append(f"    joined: {joined[:500]}{'…' if len(joined) > 500 else ''}")
+        for wi, w in enumerate(cl):
+            t = (w.get("text") or "").strip()
+            cf = float(w.get("conf") or 0.0)
+            lines.append(f"    [{wi}] {json.dumps(t, ensure_ascii=False)}  conf={cf:.4f}")
+        lines.append("")
+
+    body = "\n".join(lines).rstrip() + "\n"
+    path = os.path.join(OUTPUT_DIR, "pass2_ocr_cluster_groups.txt")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+    except OSError as exc:
+        _pv(f"[PASS2 OCR] could not write {path}: {exc}")
+
+    loud = os.environ.get("PASS2_OCR_LOG_CLUSTERS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if loud:
+        print("", flush=True)
+        print("*******Pass 2 — OCR cluster groups (filtered words)******", flush=True)
+        print(body, end="", flush=True)
+        print(f"[PASS2 OCR] Full cluster listing → {path}", flush=True)
+    else:
+        _pv(f"[PASS2 OCR] Wrote {len(clusters)} cluster(s) detail → {path}")
 
 
 def build_pass2_per_message_ocr_hints(
     page_images,
     pass1_messages: list,
 ) -> Tuple[str, List[bool], dict]:
-    """Per-page OCR → spatial clusters (bubble candidates) → keep conf ≥ threshold in each cluster.
+    """Per-page OCR → spatial clusters → match clusters to **existing** Pass 1 row indices.
 
-    OCR runs on each page image (not the stitched canvas). Words are clustered by bbox proximity
-    within that page only; then words below ``GEMINI_PASS2_OCR_MIN_CONF`` are dropped from each
-    cluster. Clusters are matched to Pass 1 lines by text resemblance (global greedy one-to-one).
+    Clustering runs **separately on each input image**; a group never mixes words from two images.
+    Does **not** reorder or re-index messages. A matched cluster supplies optional hint words
+    (conf ≥ ``GEMINI_PASS2_OCR_MIN_CONF``, default 0.90) for that Pass 1 index.
 
     Returns ``(hints_markdown, ocr_match_verified_per_message, debug_dict)``.
     """
     n = len(pass1_messages or [])
-    min_conf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.9"))
+    min_conf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.90"))
     min_conf = max(0.0, min(1.0, min_conf))
-    # Optional floor for union-find only (default 0: use every transcribed word for proximity).
+    # Optional floor for union-find only (default 0: every OCR word with a bbox joins some cluster).
     link_min = float(os.environ.get("PASS2_OCR_CLUSTER_LINK_MIN_CONF", "0"))
     link_min = max(0.0, min(1.0, link_min))
 
@@ -2364,11 +3074,15 @@ def build_pass2_per_message_ocr_hints(
         "matching": {
             "min_score": float(os.environ.get("PASS2_OCR_MATCH_MIN_SCORE", "0.70")),
             "ambiguity_margin": float(os.environ.get("PASS2_OCR_MATCH_AMBIGUITY_MARGIN", "0.08")),
-            "cluster_gap_x_frac": float(os.environ.get("PASS2_OCR_CLUSTER_GAP_X_FRAC", "0.035")),
-            "cluster_gap_y_frac": float(os.environ.get("PASS2_OCR_CLUSTER_GAP_Y_FRAC", "0.03")),
+            "cluster_gap_x_frac": float(os.environ.get("PASS2_OCR_CLUSTER_GAP_X_FRAC", "0.068")),
+            "cluster_gap_y_frac": float(os.environ.get("PASS2_OCR_CLUSTER_GAP_Y_FRAC", "0.078")),
+            "cluster_max_diam_frac": float(os.environ.get("PASS2_OCR_CLUSTER_MAX_DIAM_FRAC", "0.26")),
+            "cluster_overlap_resolve": _pass2_ocr_overlap_resolve_enabled(),
+            "cluster_overlap_assign": _pass2_overlap_assign_mode(),
         },
         "ocr_clusters": [],
         "per_index": [],
+        "cluster_debug_image_paths": [],
     }
 
     if n == 0:
@@ -2442,7 +3156,9 @@ def build_pass2_per_message_ocr_hints(
         if not word_boxes:
             continue
 
+        # One OCR + cluster pass per page: words from different images are never in the same group.
         raw_clusters = _cluster_pass2_ocr_words(word_boxes, pw, ph)
+        raw_clusters = _pass2_resolve_overlapping_ocr_clusters(raw_clusters, pw, ph)
         for cl in raw_clusters:
             filtered = [w for w in cl if float(w["conf"]) >= min_conf]
             if not filtered:
@@ -2467,6 +3183,10 @@ def build_pass2_per_message_ocr_hints(
         return "", empty_verified, {**base_debug, "reason": "no_clusters_after_per_page_ocr"}
 
     clusters = all_clusters
+    _pass2_ocr_emit_filtered_cluster_report(clusters, min_conf)
+    dbg_img_paths = _pass2_ocr_emit_cluster_debug_images(pages, clusters)
+    if dbg_img_paths:
+        base_debug["cluster_debug_image_paths"] = dbg_img_paths
     msg_to_cl, msg_to_sc, cluster_dbg, match_summary = _match_ocr_clusters_to_pass1(
         clusters, pass1_messages
     )
@@ -2524,46 +3244,22 @@ def build_pass2_per_message_ocr_hints(
         )
 
     parts = [
-        "## Per-message OCR (per-page images → spatial clusters → text match to Pass 1)\n",
-        f"- OCR runs on **each page screenshot** (the stitched canvas is **not** used for Pass 2 OCR).\n",
-        "- On each page, words are **clustered** by bbox proximity (`PASS2_OCR_CLUSTER_GAP_*_FRAC`).\n",
-        f"- After clustering, only words with confidence **≥ {min_conf:.2f}** (`GEMINI_PASS2_OCR_MIN_CONF`) "
-        "remain in the cluster; clusters that become empty are dropped.\n",
-        "- Clusters from all pages are matched to **Pass 1** lines by **text resemblance** (word/char overlap); "
-        "need score ≥ `PASS2_OCR_MATCH_MIN_SCORE` and a clear winner vs runner-up "
-        "(`PASS2_OCR_MATCH_AMBIGUITY_MARGIN`). Groups weak vs every line are ignored.\n",
-        "- Pass 1 rows **without** a matched cluster keep `ocr_match_verified: false` and stay unchanged after Pass 2.\n"
-        "- Matched rows get **soft** OCR guidance: tokens are high-confidence evidence, not mandatory text.\n\n",
+        "Hint words (optional). Only some `message_index` values are listed; others have no list.\n\n",
     ]
 
     any_verified = False
     for i in range(n):
+        if not (verified[i] and buckets[i]):
+            continue
+        any_verified = True
         parts.append(f"### message_index {i}\n")
-        if verified[i] and buckets[i]:
-            any_verified = True
-            sc = msg_to_sc.get(i, 0.0)
-            parts.append(
-                f"- **ocr_match_verified**: true (cluster match score ≈ {sc:.3f})\n"
-                "- **tokens** (reading order):\n"
-            )
-            for j, b in enumerate(buckets[i]):
-                tjson = json.dumps(b["text"], ensure_ascii=False)
-                parts.append(
-                    f"  - [{j}] page={b['page_index']} conf={float(b['conf']):.3f} "
-                    f"y_norm={b['y_norm']:.4f} x_norm={b['x_norm']:.4f} text={tjson}\n"
-                )
-        else:
-            parts.append(
-                "- **ocr_match_verified**: false\n"
-                "- **tokens**: *(no trusted OCR cluster matched to this line — "
-                "keep `pass1_text_src` unchanged)*\n"
-            )
+        for b in buckets[i]:
+            tjson = json.dumps(b["text"], ensure_ascii=False)
+            parts.append(f"  - {tjson}\n")
         parts.append("\n")
 
     if not any_verified:
-        parts.append(
-            "_No Pass 1 row received a high-confidence cluster match; keep every `pass1_text_src` unchanged._\n"
-        )
+        parts.append("_No hint lists for any index._\n")
 
     return "".join(parts).strip() + "\n", verified, base_debug
 
@@ -2575,7 +3271,11 @@ def _gemini_ocr_hints_refine_pass(
     timeout: int,
     ocr_match_verified: Optional[List[bool]] = None,
 ):
-    """Pass 2: OCR-guided source polish. When ``ocr_match_verified`` is set, only verified rows may change."""
+    """Pass 2: optional per-index OCR hint lists + short rules in the prompt.
+
+    Merge step forces ``text_src`` back to Pass 1 for any index with
+    ``ocr_match_verified`` false, regardless of model output.
+    """
     if not pass1_messages:
         return pass1_messages, contact_name
 
@@ -2614,57 +3314,39 @@ def _gemini_ocr_hints_refine_pass(
         if ocr_match_verified is not None:
             return f"""You are PASS 2 of 3.
 
-You receive:
-1. Pass 1 transcript (JSON). Each row includes `ocr_match_verified` (boolean).
-2. Per-message OCR blocks. **Only** rows with `ocr_match_verified: true` include token lists; all others are withheld.
-
-Input JSON:
 {payload_json}
 
-OCR hints (per-page spatial clusters, matched to rows by text resemblance):
-{hints_text if hints_text else "(no OCR hints available)"}
+For each `message_index`, there may or may not be a matching hint word list below.
 
-Task:
-- Keep the same number of messages: {expected_n}. Same order. Same `role` per index.
-- For every row where `ocr_match_verified` is **false**: set `text_src` **exactly** to `pass1_text_src` (verbatim). Do not paraphrase.
-- For rows where `ocr_match_verified` is **true**:
-  - The listed OCR tokens are **high-confidence** readings from the screenshot for that bubble. Treat them as **strong soft guidance**: they are usually right about spellings, digits, URLs, and short phrases, but they are **not** a mandatory transcript.
-  - Start from `pass1_text_src` and **optionally** refine it when OCR clearly supports a better reading for the **same** message (same meaning, same language). Tokens are ordered by reading position on the image—use that order only as a hint, not a rigid merge.
-  - If Pass 1 already matches the intent well, or OCR looks fragmentary or off-topic, **leave `pass1_text_src` unchanged**. You are **not** required to insert every token or change the line.
-  - Do **not** add new sentences, new topics, or English translation; stay in the source language of the chat.
-- Ignore withheld / unlisted OCR; never apply hints from another `message_index`.
+{hints_text if hints_text else "(no hint lists)"}
+
+Rules:
+- Output exactly {expected_n} messages: same order and `role` as Pass 1.
+- If `ocr_match_verified` is false **or** that index has no list below: set `text_src` exactly to `pass1_text_src` (unchanged).
+- If `ocr_match_verified` is true **and** a list exists for that index: you may rewrite `text_src` in the same language; treat the listed words as **gentle hints** with high evidentiary value—they are **not** mandatory. Pass 1 text can stay as-is when it already fits.
+- Do not add or remove messages or translate to English. Do not use hints from another index.
 {retry_note}
 
 Output JSON only:
-{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<final source reading>"}}]}}"""
+{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<string>"}}]}}"""
 
         return f"""You are PASS 2 of 3.
 
-You receive:
-1. A conversation transcript from Pass 1.
-2. High-confidence OCR hints grouped by image, in chronological order.
-
-Input JSON:
 {payload_json}
 
-OCR hints from the cleaned images:
-{hints_text if hints_text else "(no OCR hints available)"}
+Some indices may have a hint word list below; others do not.
 
-Task:
-- Rewrite the conversation using the OCR hints only as soft supporting evidence.
-- Keep the same number of messages: {expected_n}.
-- Keep the same order.
-- Keep the same role for each message.
-- Improve words, names, URLs, numbers, and short phrases when the OCR clearly supports a better reading.
-- Do not add, remove, merge, or split messages.
-- Ignore OCR fragments that look like UI noise or make the message worse.
-- Return the best corrected source-language reading in `text_src`.
-- Do not translate to English here.
-- Leave ambiguity, person reference, and final translation for the next pass.
+{hints_text if hints_text else "(no hint lists)"}
+
+Rules:
+- Exactly {expected_n} messages; same order and `role` as Pass 1.
+- No hint list for an index: keep `text_src` the same as Pass 1.
+- Hint list present: you may rewrite in the source language using the words as gentle, high-value hints—not required verbatim.
+- Do not add/remove messages or translate to English.
 {retry_note}
 
 Output JSON only:
-{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<final source reading>"}}]}}"""
+{{"contact_name":"<string>","messages":[{{"message_index":0,"role":"contact|user|system","text_src":"<string>"}}]}}"""
 
     hints = _truncate_hints(hints_full, max_hint_chars)
     prompt = _build_prompt(hints)
@@ -2687,10 +3369,9 @@ Output JSON only:
         retry_prompt = _build_prompt(
             retry_hints,
             retry_note=(
-                "\n- If unsure: verbatim `pass1_text_src` for `ocr_match_verified` false. "
-                "For true rows, high-confidence OCR is soft guidance only—keep Pass 1 when it already fits."
+                "\n- Reminder: no list or false → verbatim Pass 1; list + true → hints optional, high value."
                 if ocr_match_verified is not None
-                else "\n- If OCR support is weak, keep the original wording and only fix lines where the OCR clearly helps."
+                else "\n- If hints are weak, keep Pass 1 wording."
             ),
         )
         try:
@@ -2809,6 +3490,18 @@ def _status_bar_info_from_pass3_merged_response(data: Optional[dict], contact_hi
         "avatar_image_index": 0,
         "avatar_bbox": cleaned,
     }
+
+
+def _pass3_fallback_messages_from_pass2(pass2_messages: list) -> list:
+    """Final chat rows when Pass 3 is skipped or fails: English from ``translate_to_en(text_src)``."""
+    return [
+        {
+            "role": m.get("role"),
+            "text_src": (m.get("text_src") or "").strip(),
+            "text_en": translate_to_en(m.get("text_src") or "") or (m.get("text_src") or ""),
+        }
+        for m in (pass2_messages or [])
+    ]
 
 
 def _gemini_reference_resolution_pass(
@@ -2959,14 +3652,7 @@ Output JSON only:
         print("*******Pass 3 — SPEAKER REFERENCE******", flush=True)
 
     def _pass3_fallback_rows():
-        return [
-            {
-                "role": m.get("role"),
-                "text_src": (m.get("text_src") or "").strip(),
-                "text_en": translate_to_en(m.get("text_src") or "") or (m.get("text_src") or ""),
-            }
-            for m in pass2_messages
-        ]
+        return _pass3_fallback_messages_from_pass2(pass2_messages)
 
     img_list = [status_bar_b64] if status_bar_b64 else None
     try:
@@ -2980,7 +3666,12 @@ Output JSON only:
     except Exception as e:
         print(f"[GEMINI] Pass 3 reference failed: {e}")
         _append_gemini_debug_pass2(prompt, f"ERROR: {e}", _pass3_dbg)
-        return pass2_messages, contact_name, [], _default_status_bar_info(contact_name)
+        return (
+            _pass3_fallback_messages_from_pass2(pass2_messages),
+            contact_name,
+            [],
+            _default_status_bar_info(contact_name),
+        )
 
     if not raw.strip():
         _pv("[GEMINI] Pass 3 reference empty — keeping Pass 2 translation fallback")
