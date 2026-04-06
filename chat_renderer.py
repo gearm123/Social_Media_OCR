@@ -1,4 +1,6 @@
+import math
 import os
+import unicodedata
 
 import cv2
 import numpy as np
@@ -19,6 +21,82 @@ _UNICODE_FONT_CANDIDATES = [
     r"C:\Windows\Fonts\arial.ttf",
 ]
 
+# Segoe UI (Windows) / fallbacks — Messenger-style call cards (vector text, clearer than cv2.putText).
+_CALL_CARD_FONT_REGULAR = [
+    r"C:\Windows\Fonts\segoeui.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+]
+_CALL_CARD_FONT_BOLD = [
+    r"C:\Windows\Fonts\segoeuib.ttf",
+    r"C:\Windows\Fonts\segoeuisemibold.ttf",
+    r"C:\Windows\Fonts\arialbd.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+]
+_CALL_CARD_FONT_CACHE: dict = {}
+
+# Messenger-style call disks (PNG includes circular background).
+_ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+_CALL_ICON_MISSED_PNG = os.path.join(_ASSETS_DIR, "call_icon_missed.png")
+_CALL_ICON_INCOMING_PNG = os.path.join(_ASSETS_DIR, "call_icon_incoming.png")
+_CALL_ICON_RGBA_CACHE: dict = {}
+
+
+def _prepare_call_icon_rgba(path: str, diameter: int):
+    """Load and resize PNG to ``diameter``×``diameter`` BGRA; alpha × circular mask for crisp disks."""
+    d = max(1, int(diameter))
+    key = (path, d)
+    if key in _CALL_ICON_RGBA_CACHE:
+        return _CALL_ICON_RGBA_CACHE[key]
+    if not path or not os.path.isfile(path):
+        _CALL_ICON_RGBA_CACHE[key] = None
+        return None
+    raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if raw is None:
+        _CALL_ICON_RGBA_CACHE[key] = None
+        return None
+    if raw.ndim == 2:
+        raw = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGRA)
+        raw[:, :, 3] = 255
+    elif raw.shape[2] == 3:
+        raw = cv2.cvtColor(raw, cv2.COLOR_BGR2BGRA)
+        raw[:, :, 3] = 255
+    elif raw.shape[2] != 4:
+        _CALL_ICON_RGBA_CACHE[key] = None
+        return None
+    scaled = cv2.resize(raw, (d, d), interpolation=cv2.INTER_AREA)
+    h, w = scaled.shape[:2]
+    yy, xx = np.ogrid[:h, :w]
+    cx0, cy0 = (w - 1) / 2.0, (h - 1) / 2.0
+    rad = min(w, h) / 2.0 - 0.5
+    inside = (xx - cx0) ** 2 + (yy - cy0) ** 2 <= rad ** 2
+    a = scaled[:, :, 3].astype(np.float32) * inside.astype(np.float32)
+    scaled[:, :, 3] = np.clip(a, 0, 255).astype(np.uint8)
+    _CALL_ICON_RGBA_CACHE[key] = scaled
+    return scaled
+
+
+def _composite_rgba_on_bgr(img, center_x, center_y, rgba):
+    """Alpha-blend BGRA patch centered at (center_x, center_y) onto BGR image."""
+    h, w = rgba.shape[:2]
+    left = int(round(center_x - w / 2.0))
+    top = int(round(center_y - h / 2.0))
+    H, W = img.shape[:2]
+    x1, y1 = max(0, left), max(0, top)
+    x2, y2 = min(W, left + w), min(H, top + h)
+    if x2 <= x1 or y2 <= y1:
+        return
+    ix1, iy1 = x1 - left, y1 - top
+    ix2, iy2 = ix1 + (x2 - x1), iy1 + (y2 - y1)
+    roi = img[y1:y2, x1:x2]
+    patch = rgba[iy1:iy2, ix1:ix2]
+    alpha = patch[:, :, 3:4].astype(np.float32) / 255.0
+    fg = patch[:, :, :3].astype(np.float32)
+    bg = roi.astype(np.float32)
+    blended = fg * alpha + bg * (1.0 - alpha)
+    roi[:] = np.clip(blended, 0, 255).astype(np.uint8)
+
+
 _CHAT_THEMES = {
     "messenger_light": {
         "canvas_bg": (255, 255, 255),
@@ -37,12 +115,16 @@ _CHAT_THEMES = {
         "avatar_accent": (102, 118, 145),
         "presence_active": (58, 192, 98),
         "presence_ring": (255, 255, 255),
-        "call_card_bg": (245, 245, 246),
-        "call_button_bg": (228, 232, 239),
-        "call_title": (20, 20, 20),
-        "call_subtitle": (110, 112, 118),
-        "call_missed_icon": (72, 72, 255),
-        "call_audio_icon": (34, 34, 34),
+        # Messenger call / system cards (hex → BGR) — match facebook.com/web Messenger
+        "call_card_bg": (245, 242, 240),  # #F0F2F5
+        "call_button_bg": (235, 230, 228),  # #E4E6EB
+        "call_title": (5, 5, 5),  # #050505 (near-black; reads sharper than #1C1E21)
+        "call_subtitle": (107, 103, 101),  # #65676B
+        "call_missed_icon_fill": (62, 62, 250),  # #FA3E3E
+        "call_active_icon_fill": (255, 102, 8),  # legacy (header); call cards use incoming gray
+        "call_incoming_icon_fill": (235, 230, 228),  # #E4E6EB — Facebook disk (not Messenger blue)
+        "call_missed_icon": (62, 62, 250),
+        "call_audio_icon": (255, 102, 8),
     },
 }
 
@@ -336,50 +418,408 @@ def draw_timestamp(img, text, width, y, theme):
     return y + text_h + 20
 
 
-def draw_call_notice_card(img, title, subtitle, button_text, y, theme, missed=False):
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    title_scale = 0.60
-    sub_scale = 0.42
-    title_thickness = 2
-    sub_thickness = 1
-    card_x = 14
-    card_w = min(250, img.shape[1] - 28)
-    icon_cx = card_x + 38
-    icon_cy = y + 36
+def _bgr_to_rgb_for_pil(bgr):
+    return (int(bgr[2]), int(bgr[1]), int(bgr[0]))
 
-    title_lines = wrap_text(title or "", font, title_scale, title_thickness, card_w - 86)
-    subtitle_lines = wrap_text(subtitle or "", font, sub_scale, sub_thickness, card_w - 86) if subtitle else []
-    title_h = sum(_measure_text(line, font, title_scale, title_thickness)[1] for line in title_lines) + max(0, len(title_lines) - 1) * 4
-    subtitle_h = sum(_measure_text(line, font, sub_scale, sub_thickness)[1] for line in subtitle_lines) + max(0, len(subtitle_lines) - 1) * 4
-    button_h = 40 if button_text else 0
-    card_h = max(84, 24 + title_h + (8 if subtitle_h else 0) + subtitle_h + (14 if button_h else 0) + button_h + 16)
 
-    draw_rounded_rect(img, card_x, y, card_x + card_w, y + card_h, theme["call_card_bg"], 18)
+def _call_card_pil_font(size_px: int, bold: bool):
+    if ImageFont is None:
+        return None
+    key = ("call_ui", size_px, bold)
+    if key in _CALL_CARD_FONT_CACHE:
+        return _CALL_CARD_FONT_CACHE[key]
+    paths = _CALL_CARD_FONT_BOLD if bold else _CALL_CARD_FONT_REGULAR
+    for fp in paths:
+        if os.path.isfile(fp):
+            try:
+                f = ImageFont.truetype(fp, size=size_px)
+                _CALL_CARD_FONT_CACHE[key] = f
+                return f
+            except OSError:
+                continue
+    f = ImageFont.load_default()
+    _CALL_CARD_FONT_CACHE[key] = f
+    return f
 
-    icon_color = theme["call_missed_icon"] if missed else theme["call_audio_icon"]
-    cv2.circle(img, (icon_cx, icon_cy), 20, icon_color, -1, cv2.LINE_AA)
-    cv2.ellipse(img, (icon_cx, icon_cy), (7, 10), 35, 210, 330, (255, 255, 255), 3, cv2.LINE_AA)
-    cv2.line(img, (icon_cx - 4, icon_cy + 2), (icon_cx + 7, icon_cy - 9), (255, 255, 255), 3, cv2.LINE_AA)
 
-    tx = card_x + 70
-    ty = y + 18
-    for line in title_lines:
-        lh = _draw_text(img, line, tx, ty, font, title_scale, title_thickness, theme["call_title"])
-        ty += lh + 4
-    if subtitle_lines:
-        ty += 2
-        for line in subtitle_lines:
-            lh = _draw_text(img, line, tx, ty, font, sub_scale, sub_thickness, theme["call_subtitle"])
+def _draw_call_notice_phone_glyph(img, cx, cy, color, incoming_arrow=False, scale=1):
+    """Filled classic handset (two rounded lobes + bridge), like Messenger web — not a hollow outline."""
+    s = float(scale)
+    tilt = 46.0
+    ang = math.radians(tilt)
+
+    def pr(dx, dy):
+        x = dx * math.cos(ang) - dy * math.sin(ang)
+        y = dx * math.sin(ang) + dy * math.cos(ang)
+        return (int(round(cx + x * s)), int(round(cy + y * s)))
+
+    h, w = img.shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    # Earpiece (top-right when drawn), mouthpiece (bottom-left) — filled ellipses + thick joining stroke.
+    cv2.ellipse(
+        mask,
+        pr(5.0, -6.0),
+        (max(1, int(round(4.6 * s))), max(1, int(round(5.5 * s)))),
+        tilt,
+        0,
+        360,
+        255,
+        -1,
+        cv2.LINE_AA,
+    )
+    cv2.ellipse(
+        mask,
+        pr(-5.2, 6.2),
+        (max(1, int(round(5.0 * s))), max(1, int(round(6.0 * s)))),
+        tilt,
+        0,
+        360,
+        255,
+        -1,
+        cv2.LINE_AA,
+    )
+    br = max(1, int(round(5.5 * s)))
+    cv2.line(mask, pr(-0.5, 0.8), pr(2.8, -2.2), 255, br, cv2.LINE_AA)
+    ksz = max(3, int(round(2.5 * s)))
+    if ksz % 2 == 0:
+        ksz += 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    sel = mask > 0
+    b, g, r = int(color[0]), int(color[1]), int(color[2])
+    img[:, :, 0][sel] = b
+    img[:, :, 1][sel] = g
+    img[:, :, 2][sel] = r
+
+    if incoming_arrow:
+        # Thin separate stroke + wedge (Messenger: arrow approaches earpiece from upper-right).
+        t = max(1, int(round(1.25 * s)))
+        tip = pr(6.5, -6.8)
+        tail = pr(12.8, -13.2)
+        cv2.line(img, tail, tip, color, t, cv2.LINE_AA)
+        cv2.line(img, tip, pr(5.2, -6.0), color, t, cv2.LINE_AA)
+        cv2.line(img, tip, pr(6.8, -8.2), color, t, cv2.LINE_AA)
+
+
+def _draw_call_notice_video_glyph(img, cx, cy, color, scale=1):
+    """Simple video camera on gray disk (non-missed video calls)."""
+    s = float(scale)
+    t = max(1, int(round(2 * s)))
+    x1, y1 = cx - int(round(9 * s)), cy - int(round(6 * s))
+    x2, y2 = cx + int(round(7 * s)), cy + int(round(7 * s))
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, t, cv2.LINE_AA)
+    cv2.circle(img, (cx - int(round(1 * s)), cy + int(round(1 * s))), int(round(3 * s)), color, t, cv2.LINE_AA)
+    pts = np.array(
+        [
+            [x2, y1 + int(round(2 * s))],
+            [x2 + int(round(5 * s)), cy],
+            [x2, y2 - int(round(2 * s))],
+        ],
+        dtype=np.int32,
+    )
+    cv2.polylines(img, [pts], False, color, t, cv2.LINE_AA)
+
+
+def _draw_call_notice_messenger_icon_on_patch(patch, cx, cy, missed, theme, video=False, scale=1):
+    """Draw call icon centered at (cx, cy) on patch; ``scale`` upsamples strokes for INTER_AREA downscale."""
+    r = int(round(22 * scale))
+    if missed:
+        fill = theme.get("call_missed_icon_fill", theme.get("call_missed_icon", (62, 62, 250)))
+        cv2.circle(patch, (cx, cy), r, fill, -1, cv2.LINE_AA)
+        white = (255, 255, 255)
+        _draw_call_notice_phone_glyph(patch, cx, cy, white, incoming_arrow=False, scale=scale)
+        # Small × at upper-right of handset (Messenger missed-call asset).
+        t = max(2, int(round(2 * scale)))
+        ang = math.radians(46)
+
+        def wp(dx, dy):
+            x = dx * math.cos(ang) - dy * math.sin(ang)
+            y = dx * math.sin(ang) + dy * math.cos(ang)
+            return (int(round(cx + x * scale)), int(round(cy + y * scale)))
+
+        ax, ay = wp(9, -10)
+        br = int(round(3.0 * scale))
+        cv2.line(patch, (ax - br, ay - br), (ax + br, ay + br), white, t, cv2.LINE_AA)
+        cv2.line(patch, (ax + br, ay - br), (ax - br, ay + br), white, t, cv2.LINE_AA)
+        return
+
+    fill = theme.get(
+        "call_incoming_icon_fill",
+        theme.get("call_button_bg", (235, 230, 228)),
+    )
+    glyph = theme.get("call_incoming_icon_glyph", theme["call_title"])
+    cv2.circle(patch, (cx, cy), r, fill, -1, cv2.LINE_AA)
+    if video:
+        _draw_call_notice_video_glyph(patch, cx, cy, glyph, scale=scale)
+    else:
+        _draw_call_notice_phone_glyph(patch, cx, cy, glyph, incoming_arrow=True, scale=scale)
+
+
+def _draw_call_notice_messenger_icon(img, cx, cy, missed, theme, video=False):
+    """Circular Messenger call disk: PNG assets when present; else procedural (e.g. video)."""
+    r = 22
+    d = 2 * r
+    if not video:
+        path = _CALL_ICON_MISSED_PNG if missed else _CALL_ICON_INCOMING_PNG
+        icon_rgba = _prepare_call_icon_rgba(path, d)
+        if icon_rgba is not None:
+            _composite_rgba_on_bgr(img, cx, cy, icon_rgba)
+            return
+    _draw_call_notice_messenger_icon_vector(img, cx, cy, missed, theme, video=video)
+
+
+def _draw_call_notice_messenger_icon_vector(img, cx, cy, missed, theme, video=False):
+    """Procedural icon when PNGs are missing or for video-call rows."""
+    r = 22
+    margin = 6
+    sup = 2
+    patch_side = 2 * (r + margin) * sup
+    patch = np.full((patch_side, patch_side, 3), theme["call_card_bg"], dtype=np.uint8)
+    pcx = patch_side // 2
+    pcy = patch_side // 2
+    _draw_call_notice_messenger_icon_on_patch(patch, pcx, pcy, missed, theme, video=video, scale=float(sup))
+    small_side = patch_side // sup
+    small = cv2.resize(patch, (small_side, small_side), interpolation=cv2.INTER_AREA)
+    left = int(cx) - small_side // 2
+    top = int(cy) - small_side // 2
+    h, w = small.shape[:2]
+    H, W = img.shape[:2]
+    x1, y1 = max(0, left), max(0, top)
+    x2, y2 = min(W, left + w), min(H, top + h)
+    sx1, sy1 = x1 - left, y1 - top
+    sx2, sy2 = sx1 + (x2 - x1), sy1 + (y2 - y1)
+    if x2 > x1 and y2 > y1:
+        img[y1:y2, x1:x2] = small[sy1:sy2, sx1:sx2]
+
+
+def _pil_text_width(draw, text, font):
+    if not text:
+        return 0
+    if hasattr(draw, "textbbox"):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0]
+    if hasattr(font, "getlength"):
+        return int(font.getlength(text))
+    w, _h = draw.textsize(text, font=font)
+    return w
+
+
+def _wrap_text_pil(draw, text, font, max_w):
+    """Simple word-wrap using PIL font metrics."""
+    words = (text or "").split()
+    if not words:
+        return []
+    lines, cur = [], ""
+    for word in words:
+        trial = f"{cur} {word}".strip() if cur else word
+        tw = _pil_text_width(draw, trial, font)
+        if tw <= max_w:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines or [text or ""]
+
+
+def _call_notice_card_width(canvas_w: int, card_x: int) -> int:
+    """Messenger web: wide column card, slightly under full thread width (between old narrow and ~52%)."""
+    margin_right = 14
+    inner_max = max(100, canvas_w - card_x - margin_right)
+    by_canvas = int(round(canvas_w * 0.46))
+    by_inner = int(round(inner_max * 0.80))
+    w = min(by_canvas, by_inner, inner_max)
+    w = max(220, w)
+    return w
+
+
+def _clean_call_notice_subtitle(text):
+    """Normalize and drop characters that often render as tofu with UI fonts (emoji, replacement, controls)."""
+    s = unicodedata.normalize("NFC", (text or "").strip())
+    out = []
+    for ch in s:
+        o = ord(ch)
+        cat = unicodedata.category(ch)
+        if ch == "\ufffd" or cat in ("Cc", "Cf", "Cs"):
+            continue
+        # Emoji / misc symbols that Segoe UI often maps to empty boxes next to Latin digits.
+        if 0x1F300 <= o <= 0x1FAFF or 0x2600 <= o <= 0x27BF or 0xFE00 <= o <= 0xFE0F:
+            continue
+        out.append(ch)
+    return "".join(out).strip()
+
+
+def draw_call_notice_card(
+    img, title, subtitle, button_text, y, theme, missed=False, video=False, profile_image=None
+):
+    """Messenger-style call / missed-call card (#F0F2F5, vector text via PIL when available)."""
+    subtitle = _clean_call_notice_subtitle(subtitle)
+    # Same horizontal rhythm as left-aligned bubbles: avatar column then card.
+    avatar_size = 36
+    avatar_space = avatar_size + 10
+    card_x = 20 + avatar_space
+    card_w = _call_notice_card_width(img.shape[1], card_x)
+    pad = 14 if card_w < 198 else 16
+    card_radius = 19
+    button_radius = 9
+    icon_cx = card_x + pad + 22
+    icon_cy = y + pad + 22
+    text_left = card_x + pad + 50
+    text_max_w = card_w - pad * 2 - 54
+
+    # Slightly larger than before — closer to Messenger web and reads cleaner when hinted.
+    title_px = 17 if card_w < 198 else 18
+    sub_px = 14 if card_w < 198 else 15
+    btn_px = 15 if card_w < 198 else 16
+    title_f = _call_card_pil_font(title_px, bold=True)
+    # Subtitle: Tahoma/Leelawadi etc. first — better Thai/Latin time strings than Segoe-only for mixed OCR.
+    sub_f = _load_unicode_font(sub_px) or _call_card_pil_font(sub_px, bold=False)
+    btn_f = _call_card_pil_font(btn_px, bold=True)
+    use_pil = Image is not None and ImageDraw is not None and title_f is not None
+
+    if use_pil:
+        _measure_img = Image.new("RGB", (max(1, text_max_w + 2), 400), (255, 255, 255))
+        _md = ImageDraw.Draw(_measure_img)
+        title_lines = _wrap_text_pil(_md, title or "", title_f, text_max_w)
+        subtitle_lines = (
+            _wrap_text_pil(_md, subtitle or "", sub_f, text_max_w)
+            if (subtitle or "").strip()
+            else []
+        )
+
+        def _pil_line_height(draw, fnt, line):
+            if hasattr(draw, "textbbox"):
+                bbox = draw.textbbox((0, 0), line, font=fnt)
+                return bbox[3] - bbox[1]
+            _w, h = draw.textsize(line, font=fnt)
+            return h
+
+        title_h = sum(_pil_line_height(_md, title_f, ln) for ln in title_lines) + max(
+            0, len(title_lines) - 1
+        ) * 3
+        subtitle_h = sum(_pil_line_height(_md, sub_f, ln) for ln in subtitle_lines) + max(
+            0, len(subtitle_lines) - 1
+        ) * 2
+    else:
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        title_scale, sub_scale = 0.58, 0.42
+        title_thickness, sub_thickness = 2, 1
+        title_lines = wrap_text(title or "", font, title_scale, title_thickness, text_max_w)
+        subtitle_lines = (
+            wrap_text(subtitle or "", font, sub_scale, sub_thickness, text_max_w)
+            if (subtitle or "").strip()
+            else []
+        )
+        title_h = sum(
+            _measure_text(line, font, title_scale, title_thickness)[1] for line in title_lines
+        ) + max(0, len(title_lines) - 1) * 4
+        subtitle_h = sum(
+            _measure_text(line, font, sub_scale, sub_thickness)[1] for line in subtitle_lines
+        ) + max(0, len(subtitle_lines) - 1) * 4
+
+    button_h = 42 if button_text else 0
+    top_block_h = pad + max(48, title_h + (6 if subtitle_h else 0) + subtitle_h) + pad // 2
+    card_h = max(96, top_block_h + (12 if button_h else 0) + button_h + pad)
+
+    draw_rounded_rect(img, card_x, y, card_x + card_w, y + card_h, theme["call_card_bg"], card_radius)
+    _draw_call_notice_messenger_icon(img, icon_cx, icon_cy, missed, theme, video=video)
+
+    col_title = _bgr_to_rgb_for_pil(theme["call_title"])
+    col_sub = _bgr_to_rgb_for_pil(theme["call_subtitle"])
+
+    if use_pil:
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(pil_img)
+        ty = float(y + pad + 2)
+        tx = float(text_left)
+        for line in title_lines:
+            draw.text((int(round(tx)), int(round(ty))), line, font=title_f, fill=col_title)
+            if hasattr(draw, "textbbox"):
+                bbox = draw.textbbox((int(round(tx)), int(round(ty))), line, font=title_f)
+                ty = float(bbox[3] + 4)
+            else:
+                _w, h = draw.textsize(line, font=title_f)
+                ty += float(h + 4)
+        if subtitle_lines:
+            ty += 2.0
+            for line in subtitle_lines:
+                draw.text((int(round(tx)), int(round(ty))), line, font=sub_f, fill=col_sub)
+                if hasattr(draw, "textbbox"):
+                    bbox = draw.textbbox((int(round(tx)), int(round(ty))), line, font=sub_f)
+                    ty = float(bbox[3] + 2)
+                else:
+                    _w, h = draw.textsize(line, font=sub_f)
+                    ty += float(h + 2)
+        img[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+        if button_text:
+            btn_x1 = card_x + pad
+            btn_x2 = card_x + card_w - pad
+            btn_y1 = y + card_h - pad - button_h
+            btn_y2 = y + card_h - pad
+            draw_rounded_rect(img, btn_x1, btn_y1, btn_x2, btn_y2, theme["call_button_bg"], button_radius)
+            if btn_f is not None:
+                rgb2 = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                pil2 = Image.fromarray(rgb2)
+                dr2 = ImageDraw.Draw(pil2)
+                if hasattr(dr2, "textbbox"):
+                    bb = dr2.textbbox((0, 0), button_text, font=btn_f)
+                    bw, bh = bb[2] - bb[0], bb[3] - bb[1]
+                else:
+                    bw, bh = dr2.textsize(button_text, font=btn_f)
+                btx = int(btn_x1 + max(0, ((btn_x2 - btn_x1) - bw) // 2))
+                bty = int(btn_y1 + max(0, ((button_h - bh) // 2) - 1))
+                dr2.text((btx, bty), button_text, font=btn_f, fill=col_title)
+                img[:] = cv2.cvtColor(np.array(pil2), cv2.COLOR_RGB2BGR)
+            else:
+                bw, bh, _ = _measure_text(button_text, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
+                _draw_text(
+                    img,
+                    button_text,
+                    btn_x1 + max(8, ((btn_x2 - btn_x1) - bw) // 2),
+                    btn_y1 + max(6, ((button_h - bh) // 2) - 1),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    1,
+                    theme["call_title"],
+                )
+    else:
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        ty = y + pad
+        for line in title_lines:
+            lh = _draw_text(img, line, text_left, ty, font, 0.58, 2, theme["call_title"])
             ty += lh + 4
+        if subtitle_lines:
+            ty += 2
+            for line in subtitle_lines:
+                lh = _draw_text(
+                    img, line, text_left, ty, font, 0.42, 1, theme["call_subtitle"]
+                )
+                ty += lh + 4
+        if button_text:
+            btn_x1 = card_x + pad
+            btn_x2 = card_x + card_w - pad
+            btn_y1 = y + card_h - pad - button_h
+            btn_y2 = y + card_h - pad
+            draw_rounded_rect(img, btn_x1, btn_y1, btn_x2, btn_y2, theme["call_button_bg"], button_radius)
+            bw, bh, _ = _measure_text(button_text, font, 0.52, 1)
+            _draw_text(
+                img,
+                button_text,
+                btn_x1 + max(8, ((btn_x2 - btn_x1) - bw) // 2),
+                btn_y1 + max(6, ((button_h - bh) // 2) - 1),
+                font,
+                0.52,
+                1,
+                theme["call_title"],
+            )
 
-    if button_text:
-        btn_x1 = card_x + 16
-        btn_x2 = card_x + card_w - 16
-        btn_y1 = y + card_h - 16 - button_h
-        btn_y2 = y + card_h - 16
-        draw_rounded_rect(img, btn_x1, btn_y1, btn_x2, btn_y2, theme["call_button_bg"], 12)
-        bw, bh, _ = _measure_text(button_text, font, 0.56, 1)
-        _draw_text(img, button_text, btn_x1 + max(10, ((btn_x2 - btn_x1) - bw) // 2), btn_y1 + max(6, ((button_h - bh) // 2) - 1), font, 0.56, 1, theme["call_title"])
+    av_cx = card_x - 6 - (avatar_size // 2)
+    av_cy = y + card_h - (avatar_size // 2) - 2
+    draw_avatar_image(img, profile_image, av_cx, av_cy, size=avatar_size)
 
     return y + card_h + 12
 
@@ -463,7 +903,7 @@ def estimate_canvas_height(objects):
         if obj.get("type") == "timestamp":
             base_height += 38
         elif obj.get("type") == "call_notice":
-            base_height += 120
+            base_height += 140
         else:
             lines = max(1, len(text) // 28 + 1)
             base_height += 20 + lines * 22
@@ -536,6 +976,8 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
                 y,
                 theme,
                 missed=bool(obj.get("missed")),
+                video=bool(obj.get("video")),
+                profile_image=profile_image,
             )
             prev_type = "timestamp"
 

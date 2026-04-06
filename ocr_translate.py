@@ -1670,6 +1670,10 @@ def _parse_gemini_full_vision_json(raw: str):
         ).strip()
         if not (te or text_src or text_en_debug):
             continue
+        ev_ts = m.get("event_timestamp")
+        if ev_ts is None:
+            ev_ts = m.get("timestamp")
+        event_timestamp = (str(ev_ts).strip() if ev_ts is not None else "") or ""
         normalized.append(
             {
                 "role": role,
@@ -1679,6 +1683,7 @@ def _parse_gemini_full_vision_json(raw: str):
                 "text_en_debug": text_en_debug,
                 "legibility": (m.get("legibility") or "").strip(),
                 "note": (m.get("note") or "").strip(),
+                "event_timestamp": event_timestamp,
             }
         )
     return name, normalized, ledger
@@ -4590,9 +4595,10 @@ for actual chat bubbles, map receiver -> role "contact" and sender -> role "user
 keep the actual chat bubbles in that same top-to-bottom order
 if you clearly see timestamps, missed calls, transfer notices, or other centered/system conversation rows, include them too as role "system"
 those system rows are metadata only and must not change the receiver/sender bubble order above
+for role "system" only you may add "event_timestamp": the exact time/date line shown for that row in the UI if any (e.g. under a call card); otherwise ""
 
 return json in this structure:
-{{"contact_name":"<header or empty>","messages":[{{"role":"contact|user|system","text_src":"<original-language transcription>"}}]}}
+{{"contact_name":"<header or empty>","messages":[{{"role":"contact|user|system","text_src":"<original-language transcription>","event_timestamp":""}}]}}
 
 output json only."""
 
@@ -4659,6 +4665,7 @@ output json only."""
                 "role": "system",
                 "text_src": text_src,
                 "insert_before_chat_index": chat_seen,
+                "event_timestamp": (m.get("event_timestamp") or "").strip(),
             })
             continue
         mm = dict(m)

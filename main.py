@@ -800,25 +800,27 @@ def _looks_like_call_notice(src_text: str, en_text: str) -> bool:
     return any(marker in s or marker in e for marker in call_markers)
 
 
-def _build_call_notice_meta(src_text: str, en_text: str, button_text: str = "Call back"):
+def _build_call_notice_meta(
+    src_text: str,
+    en_text: str,
+    button_text: str = "Call back",
+    event_timestamp: Optional[str] = None,
+):
+    """Subtitle: non-empty ``event_timestamp`` from Pass 1 is shown verbatim.
+    If ``event_timestamp`` is None, subtitle is extra lines from ``text_src`` (merged system rows or coerced bubble), verbatim."""
     src = (src_text or "").strip()
     en = (en_text or "").strip()
     combined = en or src
     lines = [line.strip() for line in combined.splitlines() if line.strip()]
-    full_l = combined.lower()
     src_l = src.lower()
+    full_l = combined.lower()
     missed = ("ไม่ได้รับ" in src_l) or ("missed" in full_l)
     video = ("วิดีโอ" in src_l) or ("video" in full_l)
     title = "Missed audio call" if missed else ("Video call" if video else "Audio call")
-    subtitle = ""
-    if len(lines) >= 2:
-        subtitle = lines[1]
-    elif len(lines) == 1:
-        subtitle = lines[0]
-
-    subtitle = subtitle.replace("voice calling", "").replace("audio call", "").replace("video call", "").strip(" -:\n")
-    if not subtitle and lines:
-        subtitle = lines[0]
+    if event_timestamp is not None and str(event_timestamp).strip():
+        subtitle = str(event_timestamp).strip()
+    else:
+        subtitle = "\n".join(lines[1:]).strip() if len(lines) >= 2 else ""
     return {
         "type": "call_notice",
         "bbox": [0, 0, 400, 35],
@@ -848,15 +850,40 @@ def _merge_chat_with_system_metadata(chat_meta, system_messages):
 
         if _looks_like_call_notice(src_text, text_en):
             button_text = "Call back"
-            if i + 1 < len(sys_items):
-                next_src = sys_items[i + 1].get("text_src") or ""
-                next_en = translate_to_en(next_src) or next_src
-                if _is_call_action_text(next_src) or _is_call_action_text(next_en):
-                    button_text = "Call back"
-                    i += 1
+            chunk_msgs = [sys_msg]
+            chunks = [(src_text or "").strip()]
+            j = i + 1
+            while j < len(sys_items):
+                if int(sys_items[j].get("insert_before_chat_index") or 0) != before_idx:
+                    break
+                t2 = (sys_items[j].get("text_src") or "").strip()
+                e2 = translate_to_en(t2) or t2
+                if _is_call_action_text(t2) or _is_call_action_text(e2):
+                    j += 1
+                    break
+                if _looks_like_call_notice(t2, e2):
+                    break
+                chunk_msgs.append(sys_items[j])
+                chunks.append(t2)
+                j += 1
+            merged_src = "\n".join(chunks)
+            merged_en = translate_to_en(merged_src) or merged_src
+            ev_ts = None
+            for cm in chunk_msgs:
+                v = (cm.get("event_timestamp") or "").strip()
+                if v:
+                    ev_ts = v
+                    break
             systems_by_before.setdefault(before_idx, []).append(
-                _build_call_notice_meta(src_text, text_en, button_text=button_text)
+                _build_call_notice_meta(
+                    merged_src,
+                    merged_en,
+                    button_text=button_text,
+                    event_timestamp=ev_ts,
+                )
             )
+            i = j
+            continue
         else:
             systems_by_before.setdefault(before_idx, []).append({
                 "type": "timestamp",
