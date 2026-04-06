@@ -64,8 +64,8 @@ def gemini_pass_timeout_sec(pass_num: int) -> int:
 
     1. ``GEMINI_PASS{n}_TIMEOUT_SEC`` for *n* = 1…4 when set and valid.
     2. Else ``GEMINI_REQUEST_TIMEOUT_SEC`` when set and valid.
-    3. Else pass **1** defaults to **83** s; passes **2–4** default to **50** s (each pass may retry on
-       timeout where enabled; see ``GEMINI_HTTP_RETRIES``).
+    3. Else pass **1** defaults to **83** s; pass **2** to **70** s; passes **3–4** default to **50** s
+       (each pass may retry on timeout where enabled; see ``GEMINI_HTTP_RETRIES``).
 
     Minimum 30 seconds.
     """
@@ -82,7 +82,12 @@ def gemini_pass_timeout_sec(pass_num: int) -> int:
             return max(30, int(legacy))
         except ValueError:
             pass
-    default = 83 if n == 1 else 50
+    if n == 1:
+        default = 83
+    elif n == 2:
+        default = 70
+    else:
+        default = 50
     return max(30, default)
 
 
@@ -118,7 +123,8 @@ def _gemini_attempt_timeout_sec(
     """Per-attempt HTTP read timeout.
 
     Pass **1**: first try *base_timeout* (from ``gemini_pass_timeout_sec(1)``, default **83** s);
-    second try **50** s. Passes **2–3**: **50** s (single attempt each).
+    second try **50** s. Passes **2–3**: use *base_timeout* from ``gemini_pass_timeout_sec`` (defaults
+    **70** s and **50** s; single attempt each).
     """
     base = int(max(30, round(float(base_timeout))))
     if pass_num is None:
@@ -127,7 +133,7 @@ def _gemini_attempt_timeout_sec(
     if pn == 1 and attempt_i > 0:
         return max(30, 50)
     if pn in (2, 3):
-        return max(30, 50)
+        return base
     return base
 
 
@@ -2283,6 +2289,10 @@ def _cluster_pass2_ocr_words(
 ) -> List[List[dict]]:
     """Group OCR words into spatial clusters (message-bubble candidates).
 
+    Each cluster is an unordered list of OCR word dicts (``text``, bbox, ``cx``/``cy``, …); the
+    only purpose of a group is which detection belongs together. Any joined string built later is
+    for Pass 1 resemblance only, not a semantic transcript.
+
     **Step 1 — proximity graph (union–find):** For each pair of word bboxes, compute axis-aligned
     *separating gaps* ``dx, dy`` (0 when projections overlap on that axis). Merge into the same
     component iff **both** ``dx <= max_gx`` and ``dy <= max_gy`` (see env fractions × page size + ε).
@@ -2295,8 +2305,8 @@ def _cluster_pass2_ocr_words(
 
     **Single image only:** Callers pass words from **one** page image; clusters never span images.
 
-    Words below ``PASS2_OCR_CLUSTER_LINK_MIN_CONF`` never enter this function (see
-    :func:`build_pass2_per_message_ocr_hints`).
+    Callers should pass **every** OCR word that should participate in spatial grouping; confidence
+    filtering for Pass 2 hints happens **after** clustering in :func:`build_pass2_per_message_ocr_hints`.
     """
     n = len(word_boxes)
     if n == 0:
@@ -2366,6 +2376,37 @@ def _pass2_union_bbox_float(words: List[dict]) -> Tuple[float, float, float, flo
         max(float(w["x2"]) for w in words),
         max(float(w["y2"]) for w in words),
     )
+
+
+def _pass2_xyxy_intersection_area(
+    a: Tuple[float, float, float, float],
+    b: Tuple[float, float, float, float],
+) -> float:
+    """Area of axis-aligned intersection; 0 if disjoint or degenerate."""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    x1 = max(ax1, bx1)
+    y1 = max(ay1, by1)
+    x2 = min(ax2, bx2)
+    y2 = min(ay2, by2)
+    w = x2 - x1
+    h = y2 - y1
+    if w <= 0 or h <= 0:
+        return 0.0
+    return w * h
+
+
+def _pass2_bbox_iou(
+    ui: Tuple[float, float, float, float],
+    uj: Tuple[float, float, float, float],
+) -> float:
+    inter = _pass2_xyxy_intersection_area(ui, uj)
+    if inter <= 0:
+        return 0.0
+    ai = max(0.0, ui[2] - ui[0]) * max(0.0, ui[3] - ui[1])
+    aj = max(0.0, uj[2] - uj[0]) * max(0.0, uj[3] - uj[1])
+    u = ai + aj - inter
+    return inter / u if u > 0 else 0.0
 
 
 def _pass2_xyxy_intersection_positive(
@@ -2438,6 +2479,48 @@ def _pass2_min_dist_word_to_any(w: dict, others: List[dict]) -> float:
     )
 
 
+def _pass2_union_width(words: List[dict]) -> float:
+    if not words:
+        return 0.0
+    u = _pass2_union_bbox_float(words)
+    return max(0.0, u[2] - u[0])
+
+
+def _pass2_mean_cx(words: List[dict]) -> float:
+    if not words:
+        return 0.0
+    return sum(float(w["cx"]) for w in words) / float(len(words))
+
+
+def _pass2_remainder_layout_kind(words: List[dict], iw: int) -> str:
+    """Rough chat layout: *column* (sidebar / stacked), *row* (bubble / horizontal run), *neutral*.
+
+    Uses union bbox aspect plus **fraction of page width** so multi-line bubbles (tall unions that
+    still span much of the screen) count as *row*, not *neutral*.
+    """
+    if not words:
+        return "neutral"
+    u = _pass2_union_bbox_float(words)
+    w = max(0.0, u[2] - u[0])
+    h = max(0.0, u[3] - u[1])
+    if w < 1.0 or h < 1.0:
+        return "neutral"
+    iw = max(int(iw), 1)
+    col_thr = float(os.environ.get("PASS2_OCR_CLUSTER_COLUMN_ASPECT", "1.75"))
+    row_thr = float(os.environ.get("PASS2_OCR_CLUSTER_ROW_ASPECT", "1.15"))
+    col_max_w = float(os.environ.get("PASS2_OCR_CLUSTER_COLUMN_MAX_WIDTH_FRAC", "0.34")) * float(iw)
+    row_min_w = float(os.environ.get("PASS2_OCR_CLUSTER_ROW_MIN_WIDTH_FRAC", "0.20")) * float(iw)
+    if h >= col_thr * w:
+        return "column"
+    if w >= row_thr * h:
+        return "row"
+    if w >= row_min_w and len(words) >= 2:
+        return "row"
+    if w <= col_max_w and h >= 1.12 * w:
+        return "column"
+    return "neutral"
+
+
 def _pass2_overlap_assign_score(
     c_words: List[dict],
     remainder: List[dict],
@@ -2459,9 +2542,100 @@ def _pass2_overlap_assign_score(
     return _pass2_dist_remainder_to_C(remainder, original, cent_c)
 
 
-def _pass2_try_resolve_one_cluster_bbox_overlap(clusters: List[List[dict]]) -> bool:
+def _pass2_overlap_apply_lateral_bias(
+    dist_a: float,
+    dist_b: float,
+    c_words: List[dict],
+    a_prime: List[dict],
+    b_prime: List[dict],
+    ai: List[dict],
+    bj: List[dict],
+    iw: int,
+) -> Tuple[float, float]:
+    """Chat layout: when disputed text sits right of the screen, penalize the more-left cluster.
+
+    Uses ``PASS2_OCR_CLUSTER_OVERLAP_LATERAL_BIAS`` (default 0.24; 0 = off) and
+    ``PASS2_OCR_CLUSTER_OVERLAP_RIGHT_FRAC`` (fraction of image width).
+    """
+    bias = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_LATERAL_BIAS", "0.24"))
+    if bias <= 0:
+        return dist_a, dist_b
+    thr = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_RIGHT_FRAC", "0.28")) * float(iw)
+    cc = _pass2_word_group_centroid(c_words)
+    if cc is None or cc[0] <= thr:
+        return dist_a, dist_b
+    mxa = _pass2_mean_cx(a_prime if a_prime else ai)
+    mxb = _pass2_mean_cx(b_prime if b_prime else bj)
+    sep = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_LATERAL_SEP_FRAC", "0.045")) * float(iw)
+    if abs(mxa - mxb) < sep:
+        return dist_a, dist_b
+    if mxa < mxb:
+        return dist_a * (1.0 + bias), dist_b
+    return dist_a, dist_b * (1.0 + bias)
+
+
+def _pass2_overlap_apply_column_row_bias(
+    dist_a: float,
+    dist_b: float,
+    a_prime: List[dict],
+    b_prime: List[dict],
+    ai: List[dict],
+    bj: List[dict],
+    iw: int,
+) -> Tuple[float, float]:
+    """Penalize *column* vs *row*, and *non-row* vs *row* (bubble wins over neutral/column tails).
+
+    Disabled when ``PASS2_OCR_CLUSTER_OVERLAP_COLUMN_PENALTY`` and
+    ``PASS2_OCR_CLUSTER_OVERLAP_NONROW_VS_ROW_PENALTY`` are both 0.
+    """
+    pen = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_COLUMN_PENALTY", "0.48"))
+    pen_nr = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_NONROW_VS_ROW_PENALTY", "0.40"))
+    wa = a_prime if a_prime else ai
+    wb = b_prime if b_prime else bj
+    ka = _pass2_remainder_layout_kind(wa, iw)
+    kb = _pass2_remainder_layout_kind(wb, iw)
+    if pen > 0:
+        if ka == "column" and kb == "row":
+            return dist_a * (1.0 + pen), dist_b
+        if kb == "column" and ka == "row":
+            return dist_a, dist_b * (1.0 + pen)
+    if pen_nr > 0:
+        if ka != "row" and kb == "row":
+            return dist_a * (1.0 + pen_nr), dist_b
+        if kb != "row" and ka == "row":
+            return dist_a, dist_b * (1.0 + pen_nr)
+    return dist_a, dist_b
+
+
+def _pass2_overlap_apply_width_ratio_bias(
+    dist_a: float,
+    dist_b: float,
+    wa: float,
+    wb: float,
+) -> Tuple[float, float]:
+    """When one remainder is much wider than the other, penalize the narrow side's score.
+
+    Catches neutral+neutral aspect cases where one cluster is still clearly a horizontal run.
+    """
+    ratio = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_WIDTH_RATIO", "2.0"))
+    pen = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_WIDTH_RATIO_PENALTY", "0.32"))
+    min_px = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_WIDTH_MIN_PX", "12"))
+    if pen <= 0 or ratio <= 1.0:
+        return dist_a, dist_b
+    mn = min(wa, wb)
+    mx = max(wa, wb)
+    if mn < min_px or mx < mn * ratio:
+        return dist_a, dist_b
+    if wa + 1e-6 < wb:
+        return dist_a * (1.0 + pen), dist_b
+    if wb + 1e-6 < wa:
+        return dist_a, dist_b * (1.0 + pen)
+    return dist_a, dist_b
+
+
+def _pass2_try_resolve_one_cluster_bbox_overlap(clusters: List[List[dict]], iw: int) -> bool:
     """If some pair of cluster union bboxes overlap, peel intersecting words into C and reattach C
-    to the side with lower :func:`_pass2_overlap_assign_score` (local nearest-neighbor by default).
+    to the side with lower score (NN/centroid + column/row + width-ratio + lateral + width ties).
 
     Returns True if *clusters* was mutated (caller should remove empty lists).
     """
@@ -2500,22 +2674,92 @@ def _pass2_try_resolve_one_cluster_bbox_overlap(clusters: List[List[dict]]) -> b
             if cent_c is None:
                 continue
 
+            wa = _pass2_union_width(a_prime) if a_prime else _pass2_union_width(ai)
+            wb = _pass2_union_width(b_prime) if b_prime else _pass2_union_width(bj)
+
             dist_a = _pass2_overlap_assign_score(c_words, a_prime, ai, cent_c)
             dist_b = _pass2_overlap_assign_score(c_words, b_prime, bj, cent_c)
+            dist_a, dist_b = _pass2_overlap_apply_column_row_bias(
+                dist_a, dist_b, a_prime, b_prime, ai, bj, iw
+            )
+            dist_a, dist_b = _pass2_overlap_apply_width_ratio_bias(dist_a, dist_b, wa, wb)
+            dist_a, dist_b = _pass2_overlap_apply_lateral_bias(
+                dist_a, dist_b, c_words, a_prime, b_prime, ai, bj, iw
+            )
+            eps_px = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_WIDTH_EPS_PX", "8"))
+            rel_tol = float(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_REL_TIE_FRAC", "0.035"))
+            denom = max(dist_a, dist_b, 1e-6)
+            near_tie = abs(dist_a - dist_b) <= rel_tol * denom
 
-            if dist_a < dist_b - 1e-9:
+            def _assign_c_to_a() -> None:
                 clusters[i] = a_prime + c_words
                 clusters[j] = b_prime
-            elif dist_b < dist_a - 1e-9:
+
+            def _assign_c_to_b() -> None:
                 clusters[i] = a_prime
                 clusters[j] = b_prime + c_words
+
+            if near_tie:
+                if wa > wb + eps_px:
+                    _assign_c_to_a()
+                elif wb > wa + eps_px:
+                    _assign_c_to_b()
+                elif dist_a < dist_b - 1e-9:
+                    _assign_c_to_a()
+                elif dist_b < dist_a - 1e-9:
+                    _assign_c_to_b()
+                else:
+                    _assign_c_to_a()
             else:
-                # Tie: keep deterministic (smaller cluster index keeps C).
-                clusters[i] = a_prime + c_words
-                clusters[j] = b_prime
+                if dist_a < dist_b - 1e-9:
+                    _assign_c_to_a()
+                elif dist_b < dist_a - 1e-9:
+                    _assign_c_to_b()
+                else:
+                    _assign_c_to_a()
 
             return True
     return False
+
+
+def _pass2_try_rejoin_one_cluster_pair(clusters: List[List[dict]], iw: int, ih: int) -> bool:
+    """Merge two clusters if union bboxes overlap strongly and merged center spread is below cap.
+
+    Recovers one bubble split by diameter when ``PASS2_OCR_CLUSTER_REJOIN_IOU_MIN`` > 0.
+    """
+    iou_min = float(os.environ.get("PASS2_OCR_CLUSTER_REJOIN_IOU_MIN", "0"))
+    if iou_min <= 0:
+        return False
+    max_frac = float(os.environ.get("PASS2_OCR_CLUSTER_REJOIN_MAX_DIAM_FRAC", "0.44"))
+    diag = math.hypot(float(iw), float(ih))
+    max_diam = max(0.004 * diag, max_frac * diag)
+
+    best_iou = -1.0
+    best_lo, best_hi = -1, -1
+    n = len(clusters)
+    for ii in range(n):
+        for jj in range(ii + 1, n):
+            ai, bj = clusters[ii], clusters[jj]
+            if not ai or not bj:
+                continue
+            ui, uj = _pass2_union_bbox_float(ai), _pass2_union_bbox_float(bj)
+            iou = _pass2_bbox_iou(ui, uj)
+            if iou < iou_min or iou <= best_iou:
+                continue
+            merged = ai + bj
+            if _pass2_cluster_max_center_pair_dist(merged) > max_diam:
+                continue
+            best_iou, best_lo, best_hi = iou, ii, jj
+
+    if best_lo < 0:
+        return False
+    lo, hi = best_lo, best_hi
+    merged = clusters[lo] + clusters[hi]
+    merged.sort(key=lambda w: (float(w["cy"]), float(w["cx"])))
+    clusters.pop(hi)
+    clusters.pop(lo)
+    clusters.append(merged)
+    return True
 
 
 def _pass2_resolve_overlapping_ocr_clusters(
@@ -2527,19 +2771,33 @@ def _pass2_resolve_overlapping_ocr_clusters(
 
     Scoring: ``PASS2_OCR_CLUSTER_OVERLAP_ASSIGN=nearest`` (default) uses mean distance from each
     disputed word to the nearest remaining word in that cluster; ``centroid`` uses remainder
-    centroid vs centroid(C). Disabled when ``PASS2_OCR_CLUSTER_RESOLVE_OVERLAP=0``.
-    ``iw``/``ih`` reserved for future scale-aware thresholds.
-    """
-    del iw, ih  # scale hooks for future min overlap area in frac of page
-    if not clusters or not _pass2_ocr_overlap_resolve_enabled():
-        return clusters
+    centroid vs centroid(C). Then: column-vs-row union-bbox penalty (tall sidebar vs wide bubble),
+    width-ratio penalty when one remainder is much wider, lateral bias when *C* is right of
+    ``PASS2_OCR_CLUSTER_OVERLAP_RIGHT_FRAC``, and near-ties prefer the wider remainder.
 
-    max_iter = max(1, int(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_RESOLVE_MAX_ITERS", "64")))
+    Optional rejoin: ``PASS2_OCR_CLUSTER_REJOIN_IOU_MIN`` > 0 merges oversplit pairs whose IoU and
+    merged center diameter pass thresholds.
+
+    Overlap peeling is skipped when ``PASS2_OCR_CLUSTER_RESOLVE_OVERLAP=0``. IoU rejoin still runs
+    when ``PASS2_OCR_CLUSTER_REJOIN_IOU_MIN`` > 0 so diameter-oversplit bubbles can merge.
+    """
     out = [c for c in clusters if c]
-    for _ in range(max_iter):
-        if not _pass2_try_resolve_one_cluster_bbox_overlap(out):
+    if not out:
+        return out
+
+    if _pass2_ocr_overlap_resolve_enabled():
+        max_iter = max(1, int(os.environ.get("PASS2_OCR_CLUSTER_OVERLAP_RESOLVE_MAX_ITERS", "64")))
+        for _ in range(max_iter):
+            if not _pass2_try_resolve_one_cluster_bbox_overlap(out, iw):
+                break
+            out = [c for c in out if c]
+
+    rj_iters = max(1, int(os.environ.get("PASS2_OCR_CLUSTER_REJOIN_MAX_ITERS", "32")))
+    for _ in range(rj_iters):
+        if not _pass2_try_rejoin_one_cluster_pair(out, iw, ih):
             break
         out = [c for c in out if c]
+
     out.sort(
         key=lambda cl: (min(float(w["cy"]) for w in cl), min(float(w["cx"]) for w in cl))
     )
@@ -2582,20 +2840,127 @@ def _pass2_text_resemblance_score(cluster_text: str, pass1_text: str) -> float:
     return min(1.0, base)
 
 
+def _pass2_token_overlap_f1(cluster_text: str, pass1_text: str) -> float:
+    """Token F1 in [0,1] between OCR cluster text and Pass 1 line (helps short bubbles)."""
+    ta = {t for t in _pass2_norm_text(cluster_text).split() if t}
+    tb = {t for t in _pass2_norm_text(pass1_text).split() if t}
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    if inter == 0:
+        return 0.0
+    prec = inter / len(ta)
+    rec = inter / len(tb)
+    return 2.0 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+
+
+def _pass2_message_spatial_y_norm(m: dict) -> Optional[float]:
+    """Pass 1 row vertical hint in [0,1] if present; else None (skip spatial term)."""
+    for key in ("y_norm", "y_norm_center", "craft_y_norm", "center_y_norm"):
+        v = m.get(key)
+        if isinstance(v, (int, float)) and 0.0 <= float(v) <= 1.0:
+            return float(v)
+    return None
+
+
+def _pass2_message_spatial_page_index(m: dict) -> Optional[int]:
+    for key in ("page_index", "stitch_page", "image_index", "band_index"):
+        v = m.get(key)
+        if isinstance(v, int) and v >= 0:
+            return v
+        if isinstance(v, float) and v >= 0:
+            return int(v)
+    return None
+
+
+def _pass2_cluster_page_y_norm(cl: List[dict]) -> Tuple[Optional[int], float]:
+    """Primary page_index and mean y_norm (cy/page_h) for cluster *cl*."""
+    if not cl:
+        return None, 0.5
+    pis = [int(w.get("page_index", 0) or 0) for w in cl]
+    pi = max(set(pis), key=pis.count)
+    same = [w for w in cl if int(w.get("page_index", 0) or 0) == pi]
+    if not same:
+        same = cl
+    yns = []
+    for w in same:
+        ph = float(w.get("page_h") or 0.0)
+        if ph > 1e-6:
+            yns.append(float(w["cy"]) / ph)
+    if not yns:
+        return pi, 0.5
+    return pi, sum(yns) / float(len(yns))
+
+
+def _pass2_spatial_alignment_score(cl: List[dict], msg: dict) -> Optional[float]:
+    """[0,1] alignment from Pass 1 y_norm (when present) to cluster vertical position; else None."""
+    my = _pass2_message_spatial_y_norm(msg)
+    if my is None:
+        return None
+    cpi, cy = _pass2_cluster_page_y_norm(cl)
+    mpi = _pass2_message_spatial_page_index(msg)
+    if mpi is not None and cpi is not None and mpi != cpi:
+        return 0.15
+    span = float(os.environ.get("PASS2_OCR_MATCH_SPATIAL_Y_SPAN", "4.0"))
+    span = max(0.5, span)
+    d = abs(cy - my)
+    return max(0.0, 1.0 - min(1.0, d * span))
+
+
+def _pass2_softmax_matrix_cols(
+    logits: List[List[float]], temperature: float
+) -> List[List[float]]:
+    """``logits[g][m]`` → ``probs[g][m]`` with softmax over *g* for each column *m*."""
+    g = len(logits)
+    if g == 0:
+        return []
+    n = len(logits[0])
+    temp = max(1e-6, float(temperature))
+    out: List[List[float]] = [[0.0] * n for _ in range(g)]
+    for m in range(n):
+        col = [logits[gi][m] for gi in range(g)]
+        mx = max(col)
+        exps = [math.exp((c - mx) / temp) for c in col]
+        s = sum(exps)
+        if s <= 0:
+            continue
+        for gi in range(g):
+            out[gi][m] = exps[gi] / s
+    return out
+
+
 def _match_ocr_clusters_to_pass1(
     clusters: List[List[dict]],
     pass1_messages: list,
 ) -> Tuple[Dict[int, int], Dict[int, float], List[dict], dict]:
-    """Map message_index -> cluster_index with one-to-one greedy matching.
+    """Map each Pass 1 row to one OCR cluster using per-message softmax over groups.
 
-    Returns ``(message_to_cluster, message_to_score, cluster_debug_list, match_summary)``.
+    For each message *m*, every cluster *g* gets a raw score ``S[g,m]`` in ``[0,1]`` from text
+    resemblance, token-overlap F1, and (only when Pass 1 exposes ``y_norm`` / page hints) vertical
+    alignment.  We form logits ``L[g,m] = scale * S[g,m]`` and softmax **down the cluster
+    dimension** so ``P[g|m]`` sums to 1 over *g*.  The assigned cluster is ``argmax_g S[g,m]``
+    (equivalently ``argmax_g P[g|m]``).  ``message_to_score[m]`` is that winner's ``P[g|m]``
+    (confidence).  Use ``PASS2_OCR_MATCH_MIN_CONFIDENCE`` in :func:`build_pass2_per_message_ocr_hints`
+    to gate Pass 2 hint lists / ``ocr_match_verified``.
+
+    Returns ``(message_to_cluster, message_to_confidence, cluster_debug_list, match_summary)``.
     """
     n = len(pass1_messages)
     g = len(clusters)
-    min_score = float(os.environ.get("PASS2_OCR_MATCH_MIN_SCORE", "0.70"))
-    min_score = max(0.0, min(1.0, min_score))
-    margin = float(os.environ.get("PASS2_OCR_MATCH_AMBIGUITY_MARGIN", "0.08"))
-    margin = max(0.0, min(1.0, margin))
+    w_text = float(os.environ.get("PASS2_OCR_MATCH_W_TEXT", "0.52"))
+    w_ov = float(os.environ.get("PASS2_OCR_MATCH_W_OVERLAP", "0.38"))
+    w_sp = float(os.environ.get("PASS2_OCR_MATCH_W_SPATIAL", "0.10"))
+    w_text = max(0.0, w_text)
+    w_ov = max(0.0, w_ov)
+    w_sp = max(0.0, w_sp)
+    logit_scale = float(os.environ.get("PASS2_OCR_MATCH_LOGIT_SCALE", "14.0"))
+    logit_scale = max(0.1, logit_scale)
+    softmax_temp = float(os.environ.get("PASS2_OCR_MATCH_SOFTMAX_TEMP", "1.0"))
+    softmax_temp = max(1e-6, softmax_temp)
+    min_raw = float(os.environ.get("PASS2_OCR_MATCH_MIN_RAW_SCORE", "0.04"))
+    min_raw = max(0.0, min(1.0, min_raw))
+    conf_threshold = float(os.environ.get("PASS2_OCR_MATCH_MIN_CONFIDENCE", "0.22"))
+    conf_threshold = max(0.0, min(1.0, conf_threshold))
 
     def _empty_summary() -> dict:
         return {
@@ -2603,6 +2968,7 @@ def _match_ocr_clusters_to_pass1(
             "ocr_cluster_count": g,
             "matched_pairs": 0,
             "messages_without_group": n,
+            "messages_would_verify": 0,
             "groups_without_message": g,
             "groups_rejected_low_match_score": 0,
             "groups_rejected_ambiguous": 0,
@@ -2623,70 +2989,105 @@ def _match_ocr_clusters_to_pass1(
         parts = [p for p in parts if p]
         cluster_texts.append(" ".join(parts))
 
-    # S[g][m] = score
+    any_msg_spatial = any(_pass2_message_spatial_y_norm(pass1_messages[i]) is not None for i in range(n))
+
+    # S[g][m] raw combined scores
     scores: List[List[float]] = []
     for gi in range(g):
-        row = []
+        row: List[float] = []
         ct = cluster_texts[gi]
+        cl = clusters[gi]
         for mi in range(n):
-            row.append(_pass2_text_resemblance_score(ct, pass1_lines[mi]) if pass1_lines[mi] else 0.0)
+            line = pass1_lines[mi]
+            if not line:
+                row.append(0.0)
+                continue
+            text_s = _pass2_text_resemblance_score(ct, line)
+            ov_s = _pass2_token_overlap_f1(ct, line)
+            sp_s = _pass2_spatial_alignment_score(cl, pass1_messages[mi])
+            if sp_s is not None:
+                wsum = w_text + w_ov + w_sp
+                if wsum <= 0:
+                    combined = 0.0
+                else:
+                    combined = (w_text * text_s + w_ov * ov_s + w_sp * sp_s) / wsum
+            else:
+                wsum2 = w_text + w_ov
+                if wsum2 <= 0:
+                    combined = 0.0
+                else:
+                    combined = (w_text * text_s + w_ov * ov_s) / wsum2
+            row.append(max(0.0, min(1.0, combined)))
         scores.append(row)
 
-    # Candidate edges: (score, cluster_idx, message_idx) — cluster must pass ambiguity vs 2nd-best message
-    edges: List[Tuple[float, int, int]] = []
+    logits: List[List[float]] = [[logit_scale * scores[gi][mi] for mi in range(n)] for gi in range(g)]
+    probs = _pass2_softmax_matrix_cols(logits, softmax_temp)
+
+    msg_to_cl: Dict[int, int] = {}
+    msg_to_sc: Dict[int, float] = {}
+    for mi in range(n):
+        if not pass1_lines[mi]:
+            continue
+        col = [scores[gi][mi] for gi in range(g)]
+        best_raw = max(col)
+        if best_raw < min_raw:
+            continue
+        gi_star = max(range(g), key=lambda gi: scores[gi][mi])
+        msg_to_cl[mi] = gi_star
+        msg_to_sc[mi] = probs[gi_star][mi] if gi_star < len(probs) and mi < len(probs[gi_star]) else 0.0
+
+    would_verify = sum(
+        1 for mi in range(n) if mi in msg_to_cl and msg_to_sc.get(mi, 0.0) >= conf_threshold
+    )
+
     for gi in range(g):
-        row = [(mi, scores[gi][mi]) for mi in range(n)]
-        row.sort(key=lambda t: -t[1])
-        best_m, s1 = row[0]
-        s2 = row[1][1] if n > 1 else 0.0
-        amb = (n > 1) and (s1 - s2 < margin)
+        pcol = [round(probs[gi][mi], 5) for mi in range(n)] if gi < len(probs) else []
+        scol = [round(scores[gi][mi], 5) for mi in range(n)]
+        best_m = max(range(n), key=lambda mi: scores[gi][mi]) if n else 0
+        s1 = scores[gi][best_m] if n else 0.0
+        row_pairs = sorted([(mi, scores[gi][mi]) for mi in range(n)], key=lambda t: -t[1])
+        s2 = row_pairs[1][1] if n > 1 else 0.0
         dbg_clusters.append(
             {
                 "cluster_index": gi,
                 "cluster_text": cluster_texts[gi],
                 "word_count": len(clusters[gi]),
                 "best_message_index": best_m,
-                "best_score": round(s1, 4),
-                "second_best_score": round(s2, 4) if n > 1 else None,
-                "rejected_ambiguous": amb,
-                "rejected_low_score": s1 < min_score,
+                "best_raw_score": round(s1, 4),
+                "second_best_raw_score": round(s2, 4) if n > 1 else None,
+                "raw_score_by_message": scol,
+                "prob_given_message": pcol,
+                "rejected_ambiguous": False,
+                "rejected_low_score": False,
             }
         )
-        if s1 < min_score or amb:
-            continue
-        edges.append((s1, gi, best_m))
 
-    edges.sort(key=lambda t: -t[0])
-    used_c: set[int] = set()
-    used_m: set[int] = set()
-    msg_to_cl: Dict[int, int] = {}
-    msg_to_sc: Dict[int, float] = {}
-    for s1, gi, mi in edges:
-        if gi in used_c or mi in used_m:
-            continue
-        used_c.add(gi)
-        used_m.add(mi)
-        msg_to_cl[mi] = gi
-        msg_to_sc[mi] = s1
-
-    eligible_gi = {gi for (_, gi, _) in edges}
     assigned_gi = set(msg_to_cl.values())
-    lost_greedy = len(eligible_gi - assigned_gi)
-    low_ct = sum(1 for d in dbg_clusters if d.get("rejected_low_score"))
-    amb_only_ct = sum(
-        1 for d in dbg_clusters if not d.get("rejected_low_score") and d.get("rejected_ambiguous")
+    unmatched_msg = n - len(msg_to_cl)
+    low_raw = sum(
+        1
+        for mi in range(n)
+        if pass1_lines[mi] and max(scores[gi][mi] for gi in range(g)) < min_raw
     )
-    matched_ct = len(msg_to_cl)
     summary = {
+        "algorithm": "per_message_softmax_over_clusters",
         "pass1_message_count": n,
         "ocr_cluster_count": g,
-        "matched_pairs": matched_ct,
-        "messages_without_group": n - matched_ct,
+        "matched_pairs": len(msg_to_cl),
+        "messages_without_group": unmatched_msg,
+        "messages_would_verify": would_verify,
         "groups_without_message": g - len(assigned_gi),
-        "groups_rejected_low_match_score": low_ct,
-        "groups_rejected_ambiguous": amb_only_ct,
-        "groups_eligible_but_unassigned": lost_greedy,
-        "thresholds_applied": {"min_match_score": min_score, "ambiguity_margin": margin},
+        "groups_rejected_low_match_score": low_raw,
+        "groups_rejected_ambiguous": 0,
+        "groups_eligible_but_unassigned": 0,
+        "spatial_hint_used": bool(any_msg_spatial),
+        "thresholds_applied": {
+            "min_raw_score": min_raw,
+            "min_confidence_for_hints": conf_threshold,
+            "logit_scale": logit_scale,
+            "softmax_temperature": softmax_temp,
+            "weights_text_overlap_spatial": [w_text, w_ov, w_sp],
+        },
     }
     return msg_to_cl, msg_to_sc, dbg_clusters, summary
 
@@ -2705,6 +3106,7 @@ def _print_pass2_ocr_match_summary(
     lo = int(match_summary.get("groups_rejected_low_match_score") or 0)
     am = int(match_summary.get("groups_rejected_ambiguous") or 0)
     lg = int(match_summary.get("groups_eligible_but_unassigned") or 0)
+    wv = int(match_summary.get("messages_would_verify") or 0)
     tty = getattr(sys.stdout, "isatty", lambda: False)()
     b, off = ("\033[1m", "\033[0m") if tty else ("", "")
 
@@ -2717,24 +3119,21 @@ def _print_pass2_ocr_match_summary(
         print(f"  Unmatched messages:        {mw}", flush=True)
         print("", flush=True)
         print(
-            f" {m} row(s): OCR cluster matched → Pass 2 gets high-conf token hints (soft; conf≥{min_ocr_conf:.2f}).",
+            f" {wv} row(s): cluster match + match-confidence ≥ threshold → Pass 2 hint lists "
+            f"(OCR tokens still need score≥{min_ocr_conf:.2f}).",
             flush=True,
         )
         print(
-            "   Pass 2 should usually edit `text_src` on those rows when hints fix Pass 1; "
-            "unchanged vs Pass 1 is possible but unexpected if OCR disagrees.",
-            flush=True,
-        )
-        print(
-            f" {max(0, n - m)} row(s): no cluster match → Pass 2 leaves Pass 1 text unchanged.",
+            f" {max(0, n - wv)} row(s): no hints (no winning cluster, weak raw score, or low match-confidence).",
             flush=True,
         )
         print("", flush=True)
-        print("  Why groups did not match:", flush=True)
-        print(f" low text resemblance vs Pass 1 (< min score)={lo}", flush=True)
-        print(f" ambiguous (best vs 2nd line)={am}", flush=True)
-        if lg > 0:
-            print(f" lost greedy pairing={lg}", flush=True)
+        print("  Match model: per-message softmax over OCR groups (see pass2_ocr_meta).", flush=True)
+        print(f"  Rows with a winning cluster (raw): {m}  |  pass match-confidence threshold: {wv}", flush=True)
+        print("  Why some rows have no group:", flush=True)
+        print(f" max raw score below min_raw floor={lo}", flush=True)
+        if am or lg:
+            print(f" (legacy ambiguous / greedy={am}/{lg})", flush=True)
         if g > n:
             print(
                 f"  Note: {g} OCR groups vs {n} Pass 1 rows — often multi-line bubbles split by "
@@ -2752,19 +3151,17 @@ def _print_pass2_ocr_match_summary(
     print(f"{b}  Unmatched groups:          {gu}{off}", flush=True)
     print(f"{b}  Unmatched messages:        {mw}{off}", flush=True)
     print(
-        f"  {m} row(s): cluster matched → Pass 2 gets high-conf OCR hints (≥ {min_ocr_conf:.2f}); "
-        f"expect `text_src` updates when hints correct Pass 1 (unchanged output is atypical then).",
+        f"  {wv} row(s): match-confidence OK → Pass 2 OCR hint lists (tokens ≥ {min_ocr_conf:.2f}).",
         flush=True,
     )
     print(
-        f"  {max(0, n - m)} row(s): no match → Pass 2 keeps Pass 1 wording verbatim for those indices.",
+        f"  {max(0, n - wv)} row(s): no OCR hints → Pass 2 keeps Pass 1 `text_src` for those indices.",
         flush=True,
     )
     print(
-        f"  Why groups did not match: "
-        f"low text resemblance vs Pass 1 (< min score)={lo},  "
-        f"ambiguous (best vs 2nd line)={am},  "
-        f"lost greedy pairing={lg}",
+        f"  Match model: softmax over groups per message; "
+        f"rows with a winner={m}, would verify (conf≥threshold)={wv}. "
+        f"No group: weak raw score (floor)≈{lo}.",
         flush=True,
     )
     _pv(
@@ -2799,6 +3196,103 @@ def _pass2_ocr_should_emit_cluster_debug_images() -> bool:
     if v in ("1", "true", "yes", "on"):
         return True
     return _pass2_ocr_should_log_cluster_detail()
+
+
+def _pass2_should_write_hint_audit_file() -> bool:
+    """Write ``pass2_ocr_hint_audit.txt`` under :data:`OUTPUT_DIR` unless
+    ``PASS2_OCR_HINT_AUDIT_FILE=0`` / ``false`` / ``off``.
+    """
+    v = os.environ.get("PASS2_OCR_HINT_AUDIT_FILE", "").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _pass2_cluster_text_map(cluster_dbg: List[dict]) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for d in cluster_dbg or []:
+        gi = d.get("cluster_index")
+        if gi is None:
+            continue
+        out[int(gi)] = (d.get("cluster_text") or "").strip()
+    return out
+
+
+def _pass2_write_ocr_hints_audit_file(
+    pass1_messages: list,
+    per_index: List[dict],
+    cluster_dbg: List[dict],
+    min_ocr_conf: float,
+    match_min_confidence: float,
+) -> None:
+    """Append-free overwrite: Pass 1 line vs matched OCR cluster and high-conf tokens (same as former console audit)."""
+    if not _pass2_should_write_hint_audit_file():
+        return
+    n = len(pass1_messages or [])
+    if n == 0:
+        return
+    ct_map = _pass2_cluster_text_map(cluster_dbg)
+    bar = "=" * 72
+    lines: List[str] = [
+        bar,
+        " Pass 2 — OCR hint audit (Pass 1 text_src vs matched cluster & tokens → Gemini)",
+        f" OCR tokens listed below require score≥{min_ocr_conf:.2f}; "
+        f"row must pass match-confidence≥{match_min_confidence:.2f} for a hint list.",
+        bar,
+    ]
+    for row in per_index:
+        mi = int(row.get("message_index", -1))
+        if mi < 0 or mi >= n:
+            continue
+        m = pass1_messages[mi]
+        role = m.get("role") or ""
+        src = (m.get("text_src") or m.get("text_en") or "").strip()
+        verified = bool(row.get("ocr_match_verified"))
+        gi = row.get("matched_cluster_index")
+        mc = row.get("match_confidence")
+        tokens = row.get("tokens") or []
+        ctext = ct_map.get(int(gi), "") if gi is not None else ""
+        lines.append(f"\n--- message_index={mi}  role={role}  ocr_match_verified={verified} ---")
+        lines.append(f"pass1_text_src: {json.dumps(src, ensure_ascii=False)}")
+        if gi is not None:
+            lines.append(
+                f"matched_cluster_index={gi}  match_confidence={mc}  "
+                f"cluster_text (full OCR group): {json.dumps(ctext, ensure_ascii=False)}"
+            )
+        else:
+            lines.append("matched_cluster_index=None (no cluster above raw-score floor)")
+        if verified and not tokens:
+            lines.append(
+                "[note] verified=True but hint token list is empty — every word in the cluster "
+                f"was below OCR conf {min_ocr_conf:.2f}; Pass 2 sees no list for this index."
+            )
+        elif tokens:
+            parts = []
+            for t in tokens:
+                tx = t.get("text", "")
+                cf = t.get("conf", "")
+                parts.append(f"{json.dumps(tx, ensure_ascii=False)} ({cf})")
+            lines.append("hint_tokens → Gemini: " + " | ".join(parts))
+        elif not verified:
+            wh = row.get("withheld_from_prompt")
+            lines.append(
+                f"no hint list (withheld_from_prompt={wh}); Pass 2 must keep pass1_text_src verbatim."
+            )
+    lines.extend(
+        [
+            "",
+            bar,
+            " Pass 2 user prompt is written to: gemini_prompt_pass2.txt (and gemini_prompt_pass2_retry.txt on retry).",
+            bar,
+            "",
+        ]
+    )
+    try:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        path = os.path.join(OUTPUT_DIR, "pass2_ocr_hint_audit.txt")
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines))
+        print(f"[PASS2 OCR] Wrote hint audit → {path}", flush=True)
+    except OSError as e:
+        _pv(f"[PASS2 OCR] Could not write pass2_ocr_hint_audit.txt: {e}")
 
 
 def _pass2_ocr_cluster_union_bbox(words: List[dict]) -> Optional[Tuple[int, int, int, int]]:
@@ -2880,7 +3374,7 @@ def _pass2_ocr_emit_cluster_debug_images(
     page_images,
     clusters: List[List[dict]],
 ) -> List[str]:
-    """One PNG per input page: cluster union bboxes (post hint-confidence filter), BGR overlay.
+    """One PNG per input page: union bbox of each spatial cluster (all grouped OCR words), BGR overlay.
 
     Filenames: ``pass2_ocr_clusters_page_01.png``, … under :data:`OUTPUT_DIR`.
     Cluster labels ``g0``, ``g1``, … match indices in ``pass2_ocr_cluster_groups.txt``.
@@ -2980,7 +3474,10 @@ def _pass2_ocr_emit_filtered_cluster_report(
     clusters: List[List[dict]],
     min_conf: float,
 ) -> None:
-    """Log each post-filter OCR cluster (words + confidences). Console + file when enabled.
+    """Log each OCR cluster after grouping (all words in the group). Console + file when enabled.
+
+    Every line lists one OCR token; ``[hint]`` marks conf ≥ ``GEMINI_PASS2_OCR_MIN_CONF`` (those
+    are the only tokens copied into Pass 2 hint lists).
 
     - ``PASS2_OCR_LOG_CLUSTERS=1``: print full report and write ``pass2_ocr_cluster_groups.txt``.
     - ``PIPELINE_VERBOSE=1`` only: write file and a short ``_pv`` pointer (avoids huge TTY spam).
@@ -2992,7 +3489,7 @@ def _pass2_ocr_emit_filtered_cluster_report(
     gy = float(os.environ.get("PASS2_OCR_CLUSTER_GAP_Y_FRAC", "0.078"))
     diam = float(os.environ.get("PASS2_OCR_CLUSTER_MAX_DIAM_FRAC", "0.26"))
     lines: List[str] = [
-        "=== Pass 2 OCR clusters (after per-cluster confidence filter) ===",
+        "=== Pass 2 OCR clusters (all grouped words; hint filter applied only to prompt lists) ===",
         f"GEMINI_PASS2_OCR_MIN_CONF (hint filter) = {min_conf:.4f}",
         f"union–find: PASS2_OCR_CLUSTER_GAP_X_FRAC={gx}  PASS2_OCR_CLUSTER_GAP_Y_FRAC={gy}",
         f"diameter split: PASS2_OCR_CLUSTER_MAX_DIAM_FRAC={diam}  (0 disables split)",
@@ -3020,7 +3517,10 @@ def _pass2_ocr_emit_filtered_cluster_report(
         for wi, w in enumerate(cl):
             t = (w.get("text") or "").strip()
             cf = float(w.get("conf") or 0.0)
-            lines.append(f"    [{wi}] {json.dumps(t, ensure_ascii=False)}  conf={cf:.4f}")
+            tag = "hint" if cf >= min_conf else "group_only"
+            lines.append(
+                f"    [{wi}] {json.dumps(t, ensure_ascii=False)}  conf={cf:.4f}  [{tag}]"
+            )
         lines.append("")
 
     body = "\n".join(lines).rstrip() + "\n"
@@ -3039,7 +3539,7 @@ def _pass2_ocr_emit_filtered_cluster_report(
     )
     if loud:
         print("", flush=True)
-        print("*******Pass 2 — OCR cluster groups (filtered words)******", flush=True)
+        print("*******Pass 2 — OCR cluster groups (all words; [hint] = in prompt)******", flush=True)
         print(body, end="", flush=True)
         print(f"[PASS2 OCR] Full cluster listing → {path}", flush=True)
     else:
@@ -3053,27 +3553,35 @@ def build_pass2_per_message_ocr_hints(
     """Per-page OCR → spatial clusters → match clusters to **existing** Pass 1 row indices.
 
     Clustering runs **separately on each input image**; a group never mixes words from two images.
-    Does **not** reorder or re-index messages. A matched cluster supplies optional hint words
-    (conf ≥ ``GEMINI_PASS2_OCR_MIN_CONF``, default 0.90) for that Pass 1 index.
+    **Every** non-empty OCR token with a valid bbox is included in the grouping graph so low- and
+    high-confidence words jointly define cluster shape. After that, only tokens with
+    conf ≥ ``GEMINI_PASS2_OCR_MIN_CONF`` (default 0.92) are listed as Pass 2 hints.
+
+    Does **not** reorder or re-index messages.
 
     Returns ``(hints_markdown, ocr_match_verified_per_message, debug_dict)``.
     """
     n = len(pass1_messages or [])
-    min_conf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.90"))
+    min_conf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.92"))
     min_conf = max(0.0, min(1.0, min_conf))
-    # Optional floor for union-find only (default 0: every OCR word with a bbox joins some cluster).
-    link_min = float(os.environ.get("PASS2_OCR_CLUSTER_LINK_MIN_CONF", "0"))
-    link_min = max(0.0, min(1.0, link_min))
+    match_min_confidence = float(os.environ.get("PASS2_OCR_MATCH_MIN_CONFIDENCE", "0.22"))
+    match_min_confidence = max(0.0, min(1.0, match_min_confidence))
 
     empty_verified = [False] * n
     base_debug: dict = {
         "min_confidence": min_conf,
-        "cluster_link_min_confidence": link_min,
         "ocr_source": "per_page_images",
         "pass1_message_count": n,
         "matching": {
-            "min_score": float(os.environ.get("PASS2_OCR_MATCH_MIN_SCORE", "0.70")),
-            "ambiguity_margin": float(os.environ.get("PASS2_OCR_MATCH_AMBIGUITY_MARGIN", "0.08")),
+            "min_raw_score": float(os.environ.get("PASS2_OCR_MATCH_MIN_RAW_SCORE", "0.04")),
+            "min_confidence_for_hints": match_min_confidence,
+            "logit_scale": float(os.environ.get("PASS2_OCR_MATCH_LOGIT_SCALE", "14.0")),
+            "softmax_temperature": float(os.environ.get("PASS2_OCR_MATCH_SOFTMAX_TEMP", "1.0")),
+            "weights_text_overlap_spatial": [
+                float(os.environ.get("PASS2_OCR_MATCH_W_TEXT", "0.52")),
+                float(os.environ.get("PASS2_OCR_MATCH_W_OVERLAP", "0.38")),
+                float(os.environ.get("PASS2_OCR_MATCH_W_SPATIAL", "0.10")),
+            ],
             "cluster_gap_x_frac": float(os.environ.get("PASS2_OCR_CLUSTER_GAP_X_FRAC", "0.068")),
             "cluster_gap_y_frac": float(os.environ.get("PASS2_OCR_CLUSTER_GAP_Y_FRAC", "0.078")),
             "cluster_max_diam_frac": float(os.environ.get("PASS2_OCR_CLUSTER_MAX_DIAM_FRAC", "0.26")),
@@ -3095,6 +3603,7 @@ def build_pass2_per_message_ocr_hints(
             "ocr_cluster_count": 0,
             "matched_pairs": 0,
             "messages_without_group": n,
+            "messages_would_verify": 0,
             "groups_without_message": 0,
             "groups_rejected_low_match_score": 0,
             "groups_rejected_ambiguous": 0,
@@ -3105,7 +3614,7 @@ def build_pass2_per_message_ocr_hints(
         _print_pass2_ocr_match_summary(st, 0, min_conf)
         return "", empty_verified, {**base_debug, "reason": "no_page_images"}
 
-    all_clusters: List[List[dict]] = []
+    clusters_full: List[List[dict]] = []
     words_kept_ge_min_conf = 0
 
     for page_idx, page_img in enumerate(pages):
@@ -3126,8 +3635,6 @@ def build_pass2_per_message_ocr_hints(
             if not text:
                 continue
             conf = float(det.get("score") or 0.0)
-            if conf < link_min:
-                continue
             bbox = det.get("bbox") or []
             if len(bbox) < 4:
                 continue
@@ -3160,18 +3667,18 @@ def build_pass2_per_message_ocr_hints(
         raw_clusters = _cluster_pass2_ocr_words(word_boxes, pw, ph)
         raw_clusters = _pass2_resolve_overlapping_ocr_clusters(raw_clusters, pw, ph)
         for cl in raw_clusters:
-            filtered = [w for w in cl if float(w["conf"]) >= min_conf]
-            if not filtered:
+            if not cl:
                 continue
-            words_kept_ge_min_conf += len(filtered)
-            all_clusters.append(filtered)
+            clusters_full.append(cl)
+            words_kept_ge_min_conf += sum(1 for w in cl if float(w["conf"]) >= min_conf)
 
-    if not all_clusters:
+    if not clusters_full:
         st = {
             "pass1_message_count": n,
             "ocr_cluster_count": 0,
             "matched_pairs": 0,
             "messages_without_group": n,
+            "messages_would_verify": 0,
             "groups_without_message": 0,
             "groups_rejected_low_match_score": 0,
             "groups_rejected_ambiguous": 0,
@@ -3182,7 +3689,7 @@ def build_pass2_per_message_ocr_hints(
         _print_pass2_ocr_match_summary(st, 0, min_conf)
         return "", empty_verified, {**base_debug, "reason": "no_clusters_after_per_page_ocr"}
 
-    clusters = all_clusters
+    clusters = clusters_full
     _pass2_ocr_emit_filtered_cluster_report(clusters, min_conf)
     dbg_img_paths = _pass2_ocr_emit_cluster_debug_images(pages, clusters)
     if dbg_img_paths:
@@ -3209,9 +3716,16 @@ def build_pass2_per_message_ocr_hints(
     for mi in range(n):
         gi = msg_to_cl.get(mi)
         sc = msg_to_sc.get(mi, 0.0)
-        if gi is not None and 0 <= gi < len(clusters):
+        use_hints = (
+            gi is not None
+            and 0 <= gi < len(clusters)
+            and float(sc) >= match_min_confidence
+        )
+        if use_hints:
             verified[mi] = True
             for w in clusters[gi]:
+                if float(w["conf"]) < min_conf:
+                    continue
                 ph_f = float(w["page_h"])
                 pw_f = float(w["page_w"])
                 buckets[mi].append(
@@ -3228,6 +3742,7 @@ def build_pass2_per_message_ocr_hints(
             {
                 "message_index": mi,
                 "matched_cluster_index": gi,
+                "match_confidence": round(sc, 4) if gi is not None else None,
                 "match_score": round(sc, 4) if gi is not None else None,
                 "ocr_match_verified": verified[mi],
                 "withheld_from_prompt": not verified[mi],
@@ -3244,7 +3759,9 @@ def build_pass2_per_message_ocr_hints(
         )
 
     parts = [
-        "Hint words (optional). Only some `message_index` values are listed; others have no list.\n\n",
+        "OCR word candidates per `message_index` (from the screenshot). Only some indices have a list; "
+        "each bullet is one token whose vision confidence met the hint floor for this run.\n\n",
+        f"Hint confidence floor: ≥ {min_conf:.2f}.\n\n",
     ]
 
     any_verified = False
@@ -3260,6 +3777,14 @@ def build_pass2_per_message_ocr_hints(
 
     if not any_verified:
         parts.append("_No hint lists for any index._\n")
+
+    _pass2_write_ocr_hints_audit_file(
+        pass1_messages,
+        base_debug.get("per_index") or [],
+        base_debug.get("ocr_clusters") or [],
+        min_conf,
+        match_min_confidence,
+    )
 
     return "".join(parts).strip() + "\n", verified, base_debug
 
@@ -3311,20 +3836,27 @@ def _gemini_ocr_hints_refine_pass(
         return text[:limit].rstrip() + "\n\n[... OCR hints truncated ...]"
 
     def _build_prompt(hints_text: str, retry_note: str = "") -> str:
+        hf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.92"))
+        hf = max(0.0, min(1.0, hf))
         if ocr_match_verified is not None:
             return f"""You are PASS 2 of 3.
 
 {payload_json}
 
-For each `message_index`, there may or may not be a matching hint word list below.
+Below, some `message_index` sections list **OCR word candidates** for that row (tokens with vision confidence ≥ {hf:.2f}).
 
-{hints_text if hints_text else "(no hint lists)"}
+{hints_text if hints_text else "(no OCR candidate lists)"}
+
+Meaning of each list:
+- We **estimate these words have high probability of belonging inside that message’s true on-screen text** (the pipeline can mis-associate a cluster, so this is not guaranteed).
+- The lists are **guidance only**: you are **not** forced to use any word, and nothing must appear verbatim.
+- When a list is present and `ocr_match_verified` is true, **consider rewriting** `text_src` if Pass 1 likely disagrees with the screenshot; you may still leave `pass1_text_src` unchanged when it already matches the screen.
 
 Rules:
 - Output exactly {expected_n} messages: same order and `role` as Pass 1.
-- If `ocr_match_verified` is false **or** that index has no list below: set `text_src` exactly to `pass1_text_src` (unchanged).
-- If `ocr_match_verified` is true **and** a list exists for that index: you may rewrite `text_src` in the same language; treat the listed words as **gentle hints** with high evidentiary value—they are **not** mandatory. Pass 1 text can stay as-is when it already fits.
-- Do not add or remove messages or translate to English. Do not use hints from another index.
+- If `ocr_match_verified` is false **or** that index has no OCR candidate list below: set `text_src` exactly to `pass1_text_src` (unchanged).
+- If `ocr_match_verified` is true **and** a list exists for that index: you may rewrite `text_src` in the source language following the meaning above.
+- Do not add or remove messages or translate to English. Do not use candidates from another index’s list.
 {retry_note}
 
 Output JSON only:
@@ -3334,15 +3866,20 @@ Output JSON only:
 
 {payload_json}
 
-Some indices may have a hint word list below; others do not.
+Some `message_index` sections list **OCR word candidates** (vision confidence ≥ {hf:.2f}); others have no list.
 
-{hints_text if hints_text else "(no hint lists)"}
+{hints_text if hints_text else "(no OCR candidate lists)"}
+
+Meaning of each list:
+- We **estimate these words have high probability of belonging in that message’s true on-screen text** (matching can be wrong).
+- **Guidance only**—not mandatory, not required verbatim.
+- **Consider rewriting** `text_src` when the candidates suggest Pass 1 may be off; keep Pass 1 when it already fits.
 
 Rules:
 - Exactly {expected_n} messages; same order and `role` as Pass 1.
-- No hint list for an index: keep `text_src` the same as Pass 1.
-- Hint list present: you may rewrite in the source language using the words as gentle, high-value hints—not required verbatim.
-- Do not add/remove messages or translate to English.
+- No list for an index: keep `text_src` the same as Pass 1.
+- List present: you may rewrite in the source language as above.
+- Do not add/remove messages or translate to English. Do not use another index’s candidates.
 {retry_note}
 
 Output JSON only:
@@ -3369,10 +3906,15 @@ Output JSON only:
         retry_prompt = _build_prompt(
             retry_hints,
             retry_note=(
-                "\n- Reminder: no list or false → verbatim Pass 1; list + true → hints optional, high value."
+                "\n- Reminder: false or no list → verbatim Pass 1; list + true → OCR candidates are probabilistic guidance—consider a rewrite if Pass 1 disagrees with the screen."
                 if ocr_match_verified is not None
-                else "\n- If hints are weak, keep Pass 1 wording."
+                else "\n- If candidates are weak or irrelevant, keep Pass 1 wording."
             ),
+        )
+        _write_gemini_prompt_file(
+            "gemini_prompt_pass2_retry.txt",
+            "Pass 2 (OCR-guided rewrite, retry)",
+            retry_prompt,
         )
         try:
             gres = _gemini_generate(
