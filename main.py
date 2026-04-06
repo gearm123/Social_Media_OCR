@@ -503,11 +503,11 @@ def build_manual_message_context_crops(page_images, page_specs):
 def collect_page_ocr_debug(page_images):
     """Run OCR on each cleaned page image and collect text/confidence debug output.
 
-    Threshold defaults to ``GEMINI_PASS2_OCR_MIN_CONF`` (default **0.90**), aligned with Pass 2 bucketing.
+    Threshold defaults to ``GEMINI_PASS2_OCR_MIN_CONF`` (default **0.92**), aligned with Pass 2 bucketing.
     """
     lines = []
     entries = []
-    min_conf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.90"))
+    min_conf = float(os.environ.get("GEMINI_PASS2_OCR_MIN_CONF", "0.92"))
     min_conf = max(0.0, min(1.0, min_conf))
 
     for page_idx, page_img in enumerate(page_images or []):
@@ -1082,8 +1082,7 @@ def run_pipeline_job(
             _vprint(f"[JOB] job_dir={work_dir}")
         _vprint(
             f"[GEMINI] HTTP timeouts: pass1={gemini_pass_timeout_sec(1)}s "
-            f"pass2={gemini_pass_timeout_sec(2)}s pass3={gemini_pass_timeout_sec(3)}s "
-            f"pass4={gemini_pass_timeout_sec(4)}s"
+            f"pass2={gemini_pass_timeout_sec(2)}s pass3={gemini_pass_timeout_sec(3)}s"
         )
         if not _pipeline_verbose():
             print("Starting up…", flush=True)

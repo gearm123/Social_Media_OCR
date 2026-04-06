@@ -62,10 +62,10 @@ def gemini_pass_timeout_sec(pass_num: int) -> int:
 
     Resolution order:
 
-    1. ``GEMINI_PASS{n}_TIMEOUT_SEC`` for *n* = 1…4 when set and valid.
+    1. ``GEMINI_PASS{n}_TIMEOUT_SEC`` for the pass number of that HTTP call when set and valid.
     2. Else ``GEMINI_REQUEST_TIMEOUT_SEC`` when set and valid.
-    3. Else pass **1** defaults to **83** s; pass **2** to **70** s; passes **3–4** default to **50** s
-       (each pass may retry on timeout where enabled; see ``GEMINI_HTTP_RETRIES``).
+    3. Else pass **1** defaults to **83** s; passes **2–3** to **70** s; any other pass number defaults
+       to **50** s (each pass may retry on timeout where enabled; see ``GEMINI_HTTP_RETRIES``).
 
     Minimum 30 seconds.
     """
@@ -84,7 +84,7 @@ def gemini_pass_timeout_sec(pass_num: int) -> int:
             pass
     if n == 1:
         default = 83
-    elif n == 2:
+    elif n in (2, 3):
         default = 70
     else:
         default = 50
@@ -123,8 +123,8 @@ def _gemini_attempt_timeout_sec(
     """Per-attempt HTTP read timeout.
 
     Pass **1**: first try *base_timeout* (from ``gemini_pass_timeout_sec(1)``, default **83** s);
-    second try **50** s. Passes **2–3**: use *base_timeout* from ``gemini_pass_timeout_sec`` (defaults
-    **70** s and **50** s; single attempt each).
+    second try **50** s. Passes **2–3**: use *base_timeout* from ``gemini_pass_timeout_sec`` (default
+    **70** s each; single attempt each).
     """
     base = int(max(30, round(float(base_timeout))))
     if pass_num is None:
