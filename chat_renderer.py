@@ -1216,6 +1216,110 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
 # Template match confidence floor for aligning full bar to center-nav strip (``top_banner_center.png``).
 _TOP_BANNER_TEMPLATE_MATCH_MIN = 0.28
 
+# Under the top bar, widen the chat by this fraction of the **full canvas width** on the left and
+# again on the right (white margin shrinks; overall image size unchanged). Override with env
+# ``CHAT_BELOW_BAR_SIDE_MARGIN_FRAC`` (e.g. ``0.05``).
+def _below_bar_side_margin_frac() -> float:
+    raw = os.environ.get("CHAT_BELOW_BAR_SIDE_MARGIN_FRAC", "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if 0.0 <= v <= 0.25:
+                return v
+        except ValueError:
+            pass
+    return 0.05
+
+
+def _scale_chat_wider_for_below_bar_strip(chat_bgr: np.ndarray, canvas_width: int) -> np.ndarray:
+    """Widen chat horizontally by ``2 * frac * canvas_width`` px (``frac`` from env), capped at ``canvas_width``."""
+    if canvas_width < 1 or chat_bgr is None or chat_bgr.size == 0:
+        return chat_bgr
+    ch, cw = chat_bgr.shape[:2]
+    if cw < 1 or ch < 1:
+        return chat_bgr
+    frac = _below_bar_side_margin_frac()
+    extra_total = int(round(2.0 * frac * float(canvas_width)))
+    slot_w = min(int(canvas_width), cw + extra_total)
+    if slot_w <= cw:
+        return chat_bgr
+    return cv2.resize(chat_bgr, (slot_w, ch), interpolation=cv2.INTER_LINEAR)
+
+
+# One grey frame around the whole area below the top banner (top edge + sides + bottom).
+def _below_bar_frame_border_bgr() -> Tuple[int, int, int]:
+    raw = os.environ.get("CHAT_BELOW_BAR_FRAME_BGR", "").strip()
+    if raw:
+        parts = [p.strip() for p in raw.replace(",", " ").split() if p.strip()]
+        if len(parts) >= 3:
+            try:
+                b, g, r = (int(parts[0]), int(parts[1]), int(parts[2]))
+                if all(0 <= x <= 255 for x in (b, g, r)):
+                    return (b, g, r)
+            except ValueError:
+                pass
+    return (220, 220, 220)
+
+
+def _below_bar_border_px(canvas_width: int) -> int:
+    raw = os.environ.get("CHAT_BELOW_BAR_BORDER_PX", "").strip()
+    if raw:
+        try:
+            v = int(raw, 10)
+            if 2 <= v <= 120:
+                return v
+        except ValueError:
+            pass
+    W = max(1, int(canvas_width))
+    return max(10, min(48, int(round(0.02 * float(W)))))
+
+
+def _compose_top_strip_and_framed_chat_below(
+    top_strip_bgr: np.ndarray,
+    chat_row: np.ndarray,
+    *,
+    bg_bgr: tuple,
+) -> np.ndarray:
+    """
+    ``top_strip_bgr`` is the finished top bar row ``(bh, W, 3)``. Below it, draw one continuous
+    grey border (separator under the bar, left, right, bottom) and paste ``chat_row`` in the inset.
+    """
+    if top_strip_bgr is None or top_strip_bgr.size == 0 or chat_row is None or chat_row.size == 0:
+        return top_strip_bgr if top_strip_bgr is not None else chat_row
+
+    bh, W = top_strip_bgr.shape[:2]
+    if bh < 1 or W < 1:
+        return top_strip_bgr
+
+    cr_h, cr_w = chat_row.shape[:2]
+    if cr_h < 1 or cr_w < 1:
+        return top_strip_bgr
+
+    t = _below_bar_border_px(W)
+    t = min(t, max(2, W // 2 - 2))
+    border = _below_bar_frame_border_bgr()
+    inner_w = max(1, W - 2 * t)
+
+    row = chat_row
+    rh, rw = row.shape[:2]
+    if rw > inner_w:
+        nh = max(1, int(round(rh * float(inner_w) / float(rw))))
+        row = cv2.resize(row, (inner_w, nh), interpolation=cv2.INTER_AREA)
+        rh, rw = row.shape[:2]
+
+    pad_x = t + (inner_w - rw) // 2
+    canvas_h = bh + t + rh + t
+    canvas = np.full((canvas_h, W, 3), bg_bgr, dtype=np.uint8)
+    canvas[0:bh, :] = top_strip_bgr
+
+    canvas[bh : bh + t, :] = border
+    canvas[bh + t : canvas_h, 0:t] = border
+    canvas[bh + t : canvas_h, W - t : W] = border
+    canvas[canvas_h - t : canvas_h, :] = border
+
+    canvas[bh + t : bh + t + rh, pad_x : pad_x + rw] = row
+    return canvas
+
 
 def _five_icon_strip_inner_span_rel(rw: float) -> Tuple[float, float]:
     """
@@ -1317,7 +1421,9 @@ def composite_chat_below_top_banner(
 
     When the bar is **wider or equal** to the chat (native bar width ``bw0 >= cw``), the bar is kept
     at native size, the canvas width is ``bw0``, and the chat is pasted below with **horizontal
-    white padding** so both share the same width and the same horizontal center.
+    white padding** so both share the same width and the same horizontal center. The chat strip is
+    then widened horizontally (same canvas size) by ``CHAT_BELOW_BAR_SIDE_MARGIN_FRAC`` of the
+    full width on each side, taken from the side margins.
 
     When the bar is **narrower** than the chat and ``top_banner_center.png`` is configured,
     template-match the five-icon strip in the full bar. The **rendered chat width** (``cw``) is
@@ -1326,6 +1432,10 @@ def composite_chat_below_top_banner(
 
     When the bar is narrower and there is no center template, the whole bar is scaled to the chat
     width.
+
+    Below the bar, the chat sits inside **one** continuous grey frame (same thickness on all four
+    sides of that panel): separator under the bar, left and right edges, and bottom. Env:
+    ``CHAT_BELOW_BAR_BORDER_PX``, ``CHAT_BELOW_BAR_FRAME_BGR`` (three integers, B G R).
     """
     if not banner_path or chat_bgr is None or chat_bgr.size == 0:
         return chat_bgr
@@ -1342,15 +1452,11 @@ def composite_chat_below_top_banner(
     if ch < 1 or cw < 1:
         return chat_bgr
 
-    # Native bar width ≥ chat: pad chat left/right with ``bg_bgr``; bar unchanged on top.
+    # Native bar width ≥ chat: bar unchanged on top; framed chat panel below.
     if bw0 >= cw:
         W, bh = int(bw0), int(bh0)
-        pad_left = (W - cw) // 2
-        canvas_h = bh + ch
-        canvas = np.full((canvas_h, W, 3), bg_bgr, dtype=np.uint8)
-        canvas[0:bh, 0:W] = banner_bgr
-        canvas[bh : bh + ch, pad_left : pad_left + cw] = chat_bgr
-        return canvas
+        chat_row = _scale_chat_wider_for_below_bar_strip(chat_bgr, W)
+        return _compose_top_strip_and_framed_chat_below(banner_bgr, chat_row, bg_bgr=bg_bgr)
 
     center_ref = resolve_top_banner_center_ref_path()
     match = _nav_cluster_match_in_banner(banner_bgr, center_ref)
@@ -1368,16 +1474,15 @@ def composite_chat_below_top_banner(
         inner_center_s = inner_center0 * (float(bw) / float(bw0))
         x_b = int(round(float(cw) / 2.0 - inner_center_s))
 
-        canvas_h = bh + ch
-        canvas = np.full((canvas_h, cw, 3), bg_bgr, dtype=np.uint8)
+        canvas_top = np.full((bh, cw, 3), bg_bgr, dtype=np.uint8)
         c_x1 = max(0, x_b)
         c_x2 = min(cw, x_b + bw)
         w_copy = c_x2 - c_x1
         if w_copy > 0:
             b_x1 = c_x1 - x_b
-            canvas[0:bh, c_x1:c_x2] = banner_bgr[:, b_x1 : b_x1 + w_copy]
-        canvas[bh : bh + ch, :] = chat_bgr
-        return canvas
+            canvas_top[0:bh, c_x1:c_x2] = banner_bgr[:, b_x1 : b_x1 + w_copy]
+        chat_row = _scale_chat_wider_for_below_bar_strip(chat_bgr, cw)
+        return _compose_top_strip_and_framed_chat_below(canvas_top, chat_row, bg_bgr=bg_bgr)
 
     # No center template: scale full bar to chat width (fills top row edge-to-edge).
     scale = float(cw) / float(bw0)
@@ -1386,8 +1491,5 @@ def composite_chat_below_top_banner(
     interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
     banner_bgr = cv2.resize(banner_bgr, (bw, bh), interpolation=interp)
 
-    canvas_h = bh + ch
-    canvas = np.full((canvas_h, cw, 3), bg_bgr, dtype=np.uint8)
-    canvas[0:bh, :] = banner_bgr
-    canvas[bh : bh + ch, :] = chat_bgr
-    return canvas
+    chat_row = _scale_chat_wider_for_below_bar_strip(chat_bgr, cw)
+    return _compose_top_strip_and_framed_chat_below(banner_bgr, chat_row, bg_bgr=bg_bgr)
