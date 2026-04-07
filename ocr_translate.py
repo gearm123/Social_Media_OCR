@@ -952,6 +952,8 @@ def _gemini_discover_if_needed() -> bool:
         model, ver = _gemini_discover_model(_gemini_api_key)
         if model:
             _gemini_active_model = (model, ver)
+            if _compact_verbose_logs():
+                print("**************", flush=True)
             _pv(f"[GEMINI] Using model: {model} (API {ver})")
         else:
             _pv("[GEMINI] No generateContent-capable model found — refinement disabled")
@@ -1188,6 +1190,14 @@ def _gemini_generate(
             _http_timing_recorded = True
 
     for attempt_i in range(max_tries):
+        if (
+            _cp
+            and pass_num is not None
+            and int(pass_num) == 1
+            and attempt_i == 0
+        ):
+            print("**********PASS1**********", flush=True)
+            print("", flush=True)
         if http_timing and attempt_i == 1:
             http_timing.mark_second_attempt_started()
         minimal_thinking = attempt_i > 0
@@ -1313,25 +1323,35 @@ def _gemini_generate(
 
     if _cp and pass_num is not None:
         wall = time.time() - t_pass_wall
-        if pass_num == 3:
+        pn = int(pass_num)
+        if pn == 3:
             print(f"[GEMINI]  HTTP response received in {recv_lat:.1f}s", flush=True)
             print(
-                f"**********[pipeline] Pass {pass_num} — Gemini HTTP response finished in {wall:.1f}s ************",
+                f"[pipeline] Pass {pn} — Gemini HTTP response finished in {wall:.1f}s ",
                 flush=True,
             )
+            print("********Pass3 finished*********", flush=True)
         else:
             print(
                 f"[GEMINI] HTTP response received in {recv_lat:.1f}s with status {http_code}",
                 flush=True,
             )
-            if pass_num == 1:
+            if pn == 1:
                 print(
                     f"[pipeline] Pass 1 — Gemini HTTP response finished in {wall:.1f}s",
                     flush=True,
                 )
+                print("", flush=True)
+                print("", flush=True)
+            elif pn == 2:
+                print(
+                    f"[pipeline] Pass {pn} — Gemini HTTP response finished in {wall:.1f}s ",
+                    flush=True,
+                )
+                print("***********Pass 2 finished**************", flush=True)
             else:
                 print(
-                    f"**********[pipeline] Pass {pass_num} — Gemini HTTP response finished in {wall:.1f}s **********",
+                    f"[pipeline] Pass {pn} — Gemini HTTP response finished in {wall:.1f}s",
                     flush=True,
                 )
 
@@ -1676,6 +1696,8 @@ def _write_gemini_prompt_file(filename: str, label: str, prompt: str):
             f.write("=" * 60 + "\n\n")
             f.write(prompt)
         _pv(f"[GEMINI] Prompt file → {path}")
+        if _compact_verbose_logs() and filename == "gemini_prompt_pass1.txt":
+            print("**************", flush=True)
     except Exception as exc:
         _pv(f"[GEMINI] Could not write prompt file {filename}: {exc}")
 
@@ -3251,42 +3273,6 @@ def _print_pass2_ocr_match_summary(
         print(f"  Total OCR groups:          {g}", flush=True)
         print(f"  Unmatched groups:          {gu}", flush=True)
         print(f"  Unmatched messages:        {mw}", flush=True)
-        print("", flush=True)
-        print(
-            f" {wv} row(s): cluster match + match-confidence ≥ threshold → Pass 2 hint lists "
-            f"(OCR tokens still need score≥{min_ocr_conf:.2f}).",
-            flush=True,
-        )
-        print(
-            f" {max(0, n - wv)} row(s): no hints (top cluster softmax P < PASS2_OCR_MATCH_MIN_CONFIDENCE, "
-            f"or empty Pass 1 text).",
-            flush=True,
-        )
-        print("", flush=True)
-        print(
-            "  Match model: per-message softmax over OCR groups; assign only if P(winner) ≥ "
-            "PASS2_OCR_MATCH_MIN_CONFIDENCE (see pass2_ocr_meta).",
-            flush=True,
-        )
-        print(f"  Rows assigned a cluster (hints eligible): {m}  (same as match-confidence OK: {wv})", flush=True)
-        print("  Why some rows have no assigned cluster:", flush=True)
-        print(f" max softmax P below confidence threshold → {bc} row(s)", flush=True)
-        if cu:
-            print(
-                f" had P≥threshold for some cluster but lost one-to-one matching → {cu} row(s)",
-                flush=True,
-            )
-        print(f" (diagnostic) max raw score below min_raw floor → {lo} row(s)", flush=True)
-        if am or lg:
-            print(f" (legacy ambiguous / greedy={am}/{lg})", flush=True)
-        if g > n:
-            print(
-                f"  Note: {g} OCR groups vs {n} Pass 1 rows — often multi-line bubbles split by "
-                f"gap/diameter rules, or extra UI text. Set PASS2_OCR_LOG_CLUSTERS=1 for per-group "
-                f"words (writes result/pass2_ocr_cluster_groups.txt). Tune "
-                f"PASS2_OCR_CLUSTER_GAP_Y_FRAC / PASS2_OCR_CLUSTER_MAX_DIAM_FRAC if needed.",
-                flush=True,
-            )
         print("", flush=True)
         return
 
@@ -4915,7 +4901,7 @@ output json only."""
     if _compact_verbose_logs():
         print(
             f"\n*************[GEMINI] Pass 1 final output OK → {len(meta)} chat rows, "
-            f"contact={contact_name!r} ***********\n",
+            f"contact={contact_name!r} ***********",
             flush=True,
         )
     else:

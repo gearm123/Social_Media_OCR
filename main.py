@@ -1108,6 +1108,8 @@ def run_pipeline_job(
     ):
         if not _compact_verbose_logs():
             _vprint(f"[JOB] job_dir={work_dir}")
+        if _compact_verbose_logs():
+            _vprint("**************")
         _vprint(
             f"[GEMINI] HTTP timeouts: pass1={gemini_pass_timeout_sec(1)}s "
             f"pass2={gemini_pass_timeout_sec(2)}s pass3={gemini_pass_timeout_sec(3)}s"
@@ -1136,6 +1138,8 @@ def run_pipeline_job(
             f"{len(page_images)} page segment(s), combined canvas {cw}×{ch} px"
         )
         _vprint(_ready if _compact_verbose_logs() else f"{_ready} — OK to use")
+        if _compact_verbose_logs():
+            _vprint("**************")
 
         _check_cancel()
 
@@ -1451,31 +1455,43 @@ def main():
     args = _parse_args()
     if args.verbose:
         os.environ["PIPELINE_VERBOSE"] = "1"
-    _vprint("\n[pipeline] Gemini full-vision chat translator\n")
-    if args.language:
-        _vprint(f"[pipeline] Source language hint: {args.language}")
-    else:
-        _vprint("[pipeline] Source language: infer from screenshots")
     images = sorted(
         p
         for p in Path(INPUT_DIR).glob("*")
         if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES
     )
-    if _compact_verbose_logs():
-        _vprint(f"[pipeline] Found {len(images)} image(s)")
-    else:
-        _vprint(f"[pipeline] Found {len(images)} image(s) under {INPUT_DIR}")
     if not images:
         print(
             "[pipeline] Add .png / .jpg / .webp / .bmp files to input_images/ (see README).",
             file=sys.stderr,
         )
         sys.exit(1)
-    _vprint(
-        f"[pipeline] difficulty={args.difficulty} "
-        f"(1=Pass1 only, 2=Pass1–2, 3=full Pass1–3)  "
-        f"hurry_up={'on' if args.hurry_up else 'off'}\n"
-    )
+    if _compact_verbose_logs():
+        _vprint("\n******[pipeline] Gemini full-vision chat translator************\n")
+        _vprint("******************")
+        if args.language:
+            _vprint(f"[pipeline] Source language hint: {args.language}")
+        else:
+            _vprint("[pipeline] Source language: infer from screenshots")
+        _vprint(f"[pipeline] Found {len(images)} image(s)")
+        _vprint(
+            f"[pipeline] difficulty={args.difficulty} "
+            f"(1=Pass1 only, 2=Pass1–2, 3=full Pass1–3)  "
+            f"hurry_up={'on' if args.hurry_up else 'off'}"
+        )
+        _vprint("*****************\n")
+    else:
+        _vprint("\n[pipeline] Gemini full-vision chat translator\n")
+        if args.language:
+            _vprint(f"[pipeline] Source language hint: {args.language}")
+        else:
+            _vprint("[pipeline] Source language: infer from screenshots")
+        _vprint(f"[pipeline] Found {len(images)} image(s) under {INPUT_DIR}")
+        _vprint(
+            f"[pipeline] difficulty={args.difficulty} "
+            f"(1=Pass1 only, 2=Pass1–2, 3=full Pass1–3)  "
+            f"hurry_up={'on' if args.hurry_up else 'off'}\n"
+        )
     result = run_pipeline_job(
         images,
         Path(__file__).resolve().parent,
