@@ -8,6 +8,10 @@ result_json/
 jobs/
 data/
 
+# Gemini pass timing logs / Welford state (created when running with --verbose)
+timing_debug/*.txt
+timing_debug/*.json
+
 input_images/*
 !input_images/.gitkeep
 

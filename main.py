@@ -609,7 +609,11 @@ def _parse_args():
             "Full pipeline and Gemini logs (HTTP wait lines, pass summaries, debug paths). "
             "Same as PIPELINE_VERBOSE=1. Default layout is compact; set "
             "PIPELINE_VERBOSE_LAYOUT=classic (or full/old) for the longer log style. "
-            "When unset, GEMINI_PASS_SUMMARY and GEMINI_WAIT_UI follow verbose unless you set them explicitly."
+            "When unset, GEMINI_PASS_SUMMARY and GEMINI_WAIT_UI follow verbose unless you set them explicitly. "
+            "Also appends rolling HTTP timing stats under timing_debug/ "
+            "(short pass_timing_debug.txt vs pass_timing_debug_hurry_up.txt when --hurry-up; "
+            "full state in matching *_state.json). Only pass blocks for passes that ran under "
+            "--difficulty are updated (1→pass1 only, 2→pass1–2, 3→pass1–3)."
         ),
     )
     parser.add_argument(
@@ -631,6 +635,17 @@ def _parse_args():
             "2 = Passes 1–2; 3 = full Passes 1–3 (default). "
             "Same output paths (translated_conversation.png, JSON, per-pass PNGs). "
             "Compare debug: 1 = Pass 1 panel; 2 = Pass 1 | Pass 2; 3 = Pass 1 | Pass 2 | Pass 3."
+        ),
+    )
+    parser.add_argument(
+        "--hurry-up",
+        action="store_true",
+        help=(
+            "Use shorter HTTP timeouts and fixed thinking budgets per pass/attempt (Gemini 2.5). "
+            "Pass 1: 1920/30s then 960/30s; Pass 2: 1920/20s then 480/15s; Pass 3: 960/20s (one try). "
+            "Default off — normal behavior uses env-based timeouts and existing thinking rules. "
+            "Verbose timing log + state use timing_debug/pass_timing_debug_hurry_up*. "
+            "Delete both .txt and _state.json for that mode to reset counts."
         ),
     )
     return parser.parse_args()
@@ -903,7 +918,20 @@ def _parse_bubble_summary_text(raw_text: str, num_images: int):
 
 
 @contextmanager
-def _override_runtime_dirs(input_dir, output_dir, json_dir, render_dir, debug_dir):
+def _override_runtime_dirs(
+    input_dir,
+    output_dir,
+    json_dir,
+    render_dir,
+    debug_dir,
+    pipeline_timing_difficulty: Optional[int] = None,
+    hurry_up: bool = False,
+):
+    """When *pipeline_timing_difficulty* is set (1–3), ``PIPELINE_TIMING_DIFFICULTY`` is exposed so
+    verbose pass timing logs only update pass blocks for passes that ran in this job.
+
+    ``PIPELINE_HURRY_UP`` is set for the job duration so Gemini timeouts/thinking and timing log path
+    follow ``--hurry-up``."""
     original = {
         "main.INPUT_DIR": globals()["INPUT_DIR"],
         "main.OUTPUT_DIR": globals()["OUTPUT_DIR"],
@@ -928,6 +956,14 @@ def _override_runtime_dirs(input_dir, output_dir, json_dir, render_dir, debug_di
     runtime_config.DEBUG_DIR = Path(debug_dir)
     ocr_translate_module.OUTPUT_DIR = Path(output_dir)
     ocr_translate_module.DEBUG_DIR = Path(debug_dir)
+    prev_ptd: Optional[str] = None
+    if pipeline_timing_difficulty is not None:
+        prev_ptd = os.environ.get("PIPELINE_TIMING_DIFFICULTY")
+        os.environ["PIPELINE_TIMING_DIFFICULTY"] = str(
+            max(1, min(3, int(pipeline_timing_difficulty)))
+        )
+    prev_hurry: Optional[str] = os.environ.get("PIPELINE_HURRY_UP")
+    os.environ["PIPELINE_HURRY_UP"] = "1" if hurry_up else "0"
     try:
         yield
     finally:
@@ -942,6 +978,15 @@ def _override_runtime_dirs(input_dir, output_dir, json_dir, render_dir, debug_di
         runtime_config.DEBUG_DIR = original["config.DEBUG_DIR"]
         ocr_translate_module.OUTPUT_DIR = original["ocr_translate.OUTPUT_DIR"]
         ocr_translate_module.DEBUG_DIR = original["ocr_translate.DEBUG_DIR"]
+        if pipeline_timing_difficulty is not None:
+            if prev_ptd is None:
+                os.environ.pop("PIPELINE_TIMING_DIFFICULTY", None)
+            else:
+                os.environ["PIPELINE_TIMING_DIFFICULTY"] = prev_ptd
+        if prev_hurry is None:
+            os.environ.pop("PIPELINE_HURRY_UP", None)
+        else:
+            os.environ["PIPELINE_HURRY_UP"] = prev_hurry
 
 
 def run_pipeline_job(
@@ -953,6 +998,7 @@ def run_pipeline_job(
     on_stage: Optional[Callable[[Dict[str, Any]], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     difficulty: int = 3,
+    hurry_up: bool = False,
 ):
     def _check_cancel() -> None:
         if cancel_check is not None and cancel_check():
@@ -1051,7 +1097,15 @@ def run_pipeline_job(
 
     _check_cancel()
 
-    with _override_runtime_dirs(input_dir, output_dir, json_dir, render_dir, debug_dir):
+    with _override_runtime_dirs(
+        input_dir,
+        output_dir,
+        json_dir,
+        render_dir,
+        debug_dir,
+        pipeline_timing_difficulty=difficulty,
+        hurry_up=hurry_up,
+    ):
         if not _compact_verbose_logs():
             _vprint(f"[JOB] job_dir={work_dir}")
         _vprint(
@@ -1368,6 +1422,7 @@ def run_pipeline_job(
         "job_dir": str(work_dir),
         "language": language,
         "difficulty": difficulty,
+        "hurry_up": bool(hurry_up),
         "contact_name": final_contact_name,
         "status_text": final_status_text,
         "images_processed": len(images),
@@ -1418,7 +1473,8 @@ def main():
         sys.exit(1)
     _vprint(
         f"[pipeline] difficulty={args.difficulty} "
-        f"(1=Pass1 only, 2=Pass1–2, 3=full Pass1–3)\n"
+        f"(1=Pass1 only, 2=Pass1–2, 3=full Pass1–3)  "
+        f"hurry_up={'on' if args.hurry_up else 'off'}\n"
     )
     result = run_pipeline_job(
         images,
@@ -1426,6 +1482,7 @@ def main():
         language=args.language,
         use_project_pass1_bubble_file=True,
         difficulty=args.difficulty,
+        hurry_up=args.hurry_up,
     )
     if not _compact_verbose_logs():
         _vprint(f"[pipeline] Output JSON → {result['artifacts']['json']}")

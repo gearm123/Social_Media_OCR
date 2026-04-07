@@ -141,6 +141,27 @@ def _cancel_flag_path(job_id: str) -> Path:
     return _job_dir(job_id) / ".cancel_requested"
 
 
+def _parse_job_difficulty(raw: Optional[str]) -> int:
+    """Multipart ``difficulty`` field; invalid or missing → 3 (matches CLI default)."""
+    if raw is None or not str(raw).strip():
+        return 3
+    try:
+        n = int(str(raw).strip())
+    except ValueError:
+        return 3
+    return max(1, min(3, n))
+
+
+def _parse_hurry_up_form(raw: Optional[str]) -> bool:
+    """Same semantics as CLI ``--hurry-up``: only explicit truthy values enable hurry mode."""
+    if raw is None:
+        return False
+    s = str(raw).strip().lower()
+    if not s:
+        return False
+    return s in ("1", "true", "yes", "on")
+
+
 def _run_job(
     job_id: str,
     image_paths: list[str],
@@ -149,6 +170,8 @@ def _run_job(
     billing_user_id: Optional[str] = None,
     billing_consumption: Optional[str] = None,
     billing_guest_key: Optional[str] = None,
+    difficulty: int = 3,
+    hurry_up: bool = False,
 ):
     # Import here so the web process binds to $PORT quickly (Render port scan).
     # Loading ``main`` pulls CV2, Gemini, Vision — too slow for module-level import.
@@ -171,6 +194,8 @@ def _run_job(
             bubble_summary_text=bubble_summary_text,
             on_stage=_make_pipeline_stage_writer(job_id),
             cancel_check=lambda: _cancel_flag_path(job_id).exists(),
+            difficulty=difficulty,
+            hurry_up=hurry_up,
         )
         _write_status(
             job_id,
@@ -243,7 +268,7 @@ def root():
             "oauth_apple": "POST /auth/oauth/apple JSON {id_token}",
             "me": "GET /auth/me Authorization: Bearer <token>",
         },
-        "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text)",
+        "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text, difficulty 1–3, hurry_up 1/true when set — default hurry_up off)",
         "cancel_job": "POST /jobs/{job_id}/cancel — request cooperative cancel (checked between pipeline stages)",
         "job_auth": "Set REQUIRE_AUTH_FOR_JOBS=1 to require Bearer token; jobs are scoped to the user",
         "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/guest-checkout-session (one-time, guest + email), POST /billing/guest-claim-transaction, POST /billing/user-claim-transaction (Bearer + txn, single/debug), POST /billing/portal-session, POST /billing/webhook. BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id",
@@ -300,10 +325,15 @@ async def create_job(
     files: list[UploadFile] = File(...),
     language: Optional[str] = Form(default=None),
     bubble_summary_text: Optional[str] = Form(default=None),
+    difficulty: Optional[str] = Form(default=None),
+    hurry_up: Optional[str] = Form(default=None),
     x_guest_billing_id: Annotated[Optional[str], Header(alias="X-Guest-Billing-Id")] = None,
 ):
     if not files:
         raise HTTPException(status_code=400, detail="At least one image file is required")
+
+    difficulty_i = _parse_job_difficulty(difficulty)
+    hurry_up_b = _parse_hurry_up_form(hurry_up)
 
     max_files = _max_job_files()
     if len(files) > max_files:
@@ -392,7 +422,11 @@ async def create_job(
 
     bubble_preview = (bubble_summary_text or "").strip()
     bubble_line_count = len([ln for ln in bubble_preview.splitlines() if ln.strip()])
-    print(f"[JOB_INTAKE] job_id={job_id} images_saved={len(image_paths)} language={language!r}", flush=True)
+    print(
+        f"[JOB_INTAKE] job_id={job_id} images_saved={len(image_paths)} language={language!r} "
+        f"difficulty={difficulty_i} hurry_up={hurry_up_b}",
+        flush=True,
+    )
     for idx, orig_name, nbytes in intake_rows:
         print(f"[JOB_INTAKE]   input[{idx}] original_name={orig_name!r} bytes_on_disk={nbytes}", flush=True)
     if bubble_preview:
@@ -416,6 +450,8 @@ async def create_job(
         language=language,
         images_count=len(image_paths),
         bubble_summary_text=bubble_summary_text,
+        difficulty=difficulty_i,
+        hurry_up=hurry_up_b,
         user_id=(job_user.id if job_user else None),
         billing_consumption=billing_consumption,
         billing_guest_key=billing_guest_key,
@@ -430,6 +466,8 @@ async def create_job(
             job_user.id if job_user else None,
             billing_consumption,
             billing_guest_key,
+            difficulty_i,
+            hurry_up_b,
         ),
         daemon=True,
     ).start()
@@ -487,7 +525,7 @@ async def smoke_job(
     )
     Thread(
         target=_run_job,
-        args=(job_id, image_paths, language, None, None, None, None),
+        args=(job_id, image_paths, language, None, None, None, None, 3, False),
         daemon=True,
     ).start()
     status["artifact_urls"] = {}

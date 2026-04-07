@@ -19,6 +19,7 @@ from config import (
     translator,
     translation_cache,
 )
+from pass_timing_debug import GeminiPassHttpTiming, record_gemini_pass_http_timing
 
 # --------------------------------------------------
 # SOURCE LANGUAGE  (auto-detected from Vision OCR)
@@ -36,6 +37,32 @@ def _set_source_language(code: str, name: str):
 
 def _pipeline_verbose() -> bool:
     return os.environ.get("PIPELINE_VERBOSE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _gemini_pass_timing_enabled_for_pass(pass_num: Optional[int]) -> bool:
+    """Whether this ``_gemini_generate`` call writes rolling timing stats.
+
+    Log file is ``timing_debug/pass_timing_debug.txt`` (or ``..._hurry_up.txt`` when hurry-up);
+    rolling state is in ``pass_timing_debug_state.json`` (or ``..._hurry_up_state.json``).
+    During ``run_pipeline_job``, ``PIPELINE_TIMING_DIFFICULTY`` limits which pass blocks update
+    (1→pass 1 only, 2→passes 1–2, 3→passes 1–3).
+    """
+    if pass_num is None or int(pass_num) not in (1, 2, 3):
+        return False
+    raw = os.environ.get("PIPELINE_TIMING_DIFFICULTY", "").strip()
+    if not raw:
+        return True
+    try:
+        d = int(raw)
+    except ValueError:
+        return True
+    d = max(1, min(3, d))
+    return int(pass_num) <= d
+
+
+def _pipeline_hurry_up() -> bool:
+    """Set for the duration of ``run_pipeline_job`` when ``--hurry-up`` / ``PIPELINE_HURRY_UP=1``."""
+    return os.environ.get("PIPELINE_HURRY_UP", "").strip().lower() in ("1", "true", "yes")
 
 
 def _compact_verbose_logs() -> bool:
@@ -109,7 +136,12 @@ def _gemini_http_extra_retries_on_timeout() -> int:
 
 
 def _gemini_http_max_tries_for_pass(pass_num: Optional[int]) -> int:
-    """Passes **2** and **3**: single HTTP attempt (no timeout retry). Other passes: ``GEMINI_HTTP_RETRIES``."""
+    """Passes **2** and **3**: single HTTP attempt unless ``--hurry-up`` enables a Pass 2 retry.
+
+    Pass **1** and hurry-up Pass **2**: ``1 + GEMINI_HTTP_RETRIES`` (default 2 attempts).
+    """
+    if pass_num is not None and int(pass_num) == 2 and _pipeline_hurry_up():
+        return 2
     if pass_num is not None and int(pass_num) in (2, 3):
         return 1
     return 1 + _gemini_http_extra_retries_on_timeout()
@@ -125,7 +157,17 @@ def _gemini_attempt_timeout_sec(
     Pass **1**: first try *base_timeout* (from ``gemini_pass_timeout_sec(1)``, default **83** s);
     second try **50** s. Passes **2–3**: use *base_timeout* from ``gemini_pass_timeout_sec`` (default
     **70** s each; single attempt each).
+
+    ``--hurry-up``: Pass **1** both tries **30** s; Pass **2** **20** s then **15** s; Pass **3** **20** s.
     """
+    if _pipeline_hurry_up() and pass_num is not None:
+        pn = int(pass_num)
+        if pn == 1:
+            return 30
+        if pn == 2:
+            return 20 if attempt_i == 0 else 15
+        if pn == 3:
+            return 20
     base = int(max(30, round(float(base_timeout))))
     if pass_num is None:
         return base
@@ -144,6 +186,12 @@ _GEMINI_25_PRO_MIN_THINKING_BUDGET = 128
 _GEMINI_PASS1_RETRY_THINKING_BUDGET = 1920
 # Pass 4+ or *pass_num* unset: first-attempt ``thinkingBudget`` for **Gemini 2.5**.
 _GEMINI_FIRST_TRY_THINKING_BUDGET = 3840
+# ``--hurry-up``: explicit thinking budgets (2.5); see ``_gemini_build_generation_config``.
+_HURRY_UP_PASS1_TRY1_THINKING = 1920
+_HURRY_UP_PASS1_TRY2_THINKING = 960
+_HURRY_UP_PASS2_TRY1_THINKING = 1920
+_HURRY_UP_PASS2_TRY2_THINKING = 480
+_HURRY_UP_PASS3_TRY1_THINKING = 960
 
 
 def _gemini_build_generation_config(
@@ -182,7 +230,19 @@ def _gemini_build_generation_config(
 
     if is_25:
         pn = int(pass_num) if pass_num is not None else None
-        if pn == 1:
+        if _pipeline_hurry_up() and pn in (1, 2, 3):
+            if pn == 1:
+                _tb = _HURRY_UP_PASS1_TRY2_THINKING if minimal_thinking else _HURRY_UP_PASS1_TRY1_THINKING
+            elif pn == 2:
+                _tb = _HURRY_UP_PASS2_TRY2_THINKING if minimal_thinking else _HURRY_UP_PASS2_TRY1_THINKING
+            else:
+                _tb = _HURRY_UP_PASS3_TRY1_THINKING
+            if is_25_pro:
+                _tb = max(_GEMINI_25_PRO_MIN_THINKING_BUDGET, min(int(_tb), 32768))
+            else:
+                _tb = max(0, min(int(_tb), 24576))
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": _tb}
+        elif pn == 1:
             if minimal_thinking:
                 _tb = _GEMINI_PASS1_RETRY_THINKING_BUDGET
                 if is_25_pro:
@@ -1065,8 +1125,10 @@ def _gemini_generate(
 
     **Gemini 2.5** (passes **1–3**): pass **1** — no ``thinkingConfig`` on first try (Pro: historical
     omit; **83** s default HTTP read timeout); second try **1920** thinking budget,
-    **50** s. Passes **2–3** — single try, no ``thinkingConfig``,
-    **50** s. Pass **4+** / unset: **3840** first try; retry **Pro** **128** / **Flash** ``0``.
+    **50** s. Passes **2–3** — single try, no ``thinkingConfig`` (default timeouts from env).
+    With ``PIPELINE_HURRY_UP`` / ``--hurry-up``, all three passes use fixed ``thinkingBudget`` and
+    shorter per-attempt timeouts; pass **2** may retry once on HTTP timeout.
+    Pass **4+** / unset: **3840** first try; retry **Pro** **128** / **Flash** ``0``.
     See ``_gemini_build_generation_config`` and ``_gemini_attempt_timeout_sec``.
 
     Returns ``GeminiApiResult(text, response_json)``, or ``None`` if the API key / model
@@ -1113,7 +1175,21 @@ def _gemini_generate(
     data: Dict[str, Any] = {}
     _tb_disp: Any = None
     max_tries = _gemini_http_max_tries_for_pass(pass_num)
+    http_timing: Optional[GeminiPassHttpTiming] = None
+    if _pipeline_verbose() and _gemini_pass_timing_enabled_for_pass(pass_num):
+        http_timing = GeminiPassHttpTiming(int(pass_num), max_tries)
+        http_timing.t_pass_wall = t_pass_wall
+    _http_timing_recorded = False
+
+    def _flush_http_timing() -> None:
+        nonlocal _http_timing_recorded
+        if http_timing and not _http_timing_recorded:
+            record_gemini_pass_http_timing(http_timing)
+            _http_timing_recorded = True
+
     for attempt_i in range(max_tries):
+        if http_timing and attempt_i == 1:
+            http_timing.mark_second_attempt_started()
         minimal_thinking = attempt_i > 0
         attempt_timeout = _gemini_attempt_timeout_sec(pass_num, attempt_i, timeout)
         gen_cfg = _gemini_build_generation_config(
@@ -1146,6 +1222,7 @@ def _gemini_generate(
                 f"timeout={attempt_timeout}s attempt={attempt_i + 1}/{max_tries}{_retry_tag}",
             )
         try:
+            t_attempt_wall = time.time()
             with _gemini_pipeline_http_wait(pass_num, int(attempt_timeout)):
                 t_http = time.time()
                 r = _req.post(url, json=payload, timeout=attempt_timeout)
@@ -1162,18 +1239,33 @@ def _gemini_generate(
                     _pv(
                         f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
                     )
+            if http_timing:
+                http_timing.record_success(attempt_i, time.time() - t_attempt_wall)
             _tb_disp = _tb_disp_attempt
             break
         except _req.exceptions.Timeout:
+            if http_timing:
+                http_timing.record_timeout(attempt_i, float(attempt_timeout))
             if attempt_i < max_tries - 1:
                 _mlow = (model or "").lower()
                 _retry_hint = ""
                 if "2.5" in _mlow:
                     if pass_num is not None and int(pass_num) == 1:
                         _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
+                        _next_tb = (
+                            _HURRY_UP_PASS1_TRY2_THINKING
+                            if _pipeline_hurry_up()
+                            else _GEMINI_PASS1_RETRY_THINKING_BUDGET
+                        )
                         _retry_hint = (
                             f" (next attempt: {_next_to}s timeout, "
-                            f"thinkingBudget={_GEMINI_PASS1_RETRY_THINKING_BUDGET})"
+                            f"thinkingBudget={_next_tb})"
+                        )
+                    elif pass_num is not None and int(pass_num) == 2 and _pipeline_hurry_up():
+                        _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
+                        _retry_hint = (
+                            f" (next attempt: {_next_to}s timeout, "
+                            f"thinkingBudget={_HURRY_UP_PASS2_TRY2_THINKING})"
                         )
                     else:
                         _is_pro = "pro" in _mlow and "flash" not in _mlow
@@ -1203,13 +1295,21 @@ def _gemini_generate(
                         f"[gemini] pass {pass_num} stopped: HTTP timeout after {_final_to}s "
                         f"({max_tries} attempt(s); set GEMINI_PASS{pass_num}_TIMEOUT_SEC, "
                         f"GEMINI_REQUEST_TIMEOUT_SEC, or GEMINI_HTTP_RETRIES)",
-                        flush=True,
-                    )
+                    flush=True,
+                )
+            if http_timing:
+                http_timing.exhausted_on_timeout = True
+                _flush_http_timing()
             raise
         except _req.exceptions.RequestException as e:
+            if http_timing:
+                http_timing.pass_failed = True
+                _flush_http_timing()
             if pass_num is not None and _gemini_pass_summary_enabled():
                 print(f"[gemini] pass {pass_num} stopped: request error: {e}", flush=True)
             raise
+
+    _flush_http_timing()
 
     if _cp and pass_num is not None:
         wall = time.time() - t_pass_wall

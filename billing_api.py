@@ -19,6 +19,7 @@ from auth_deps import get_current_user_required
 from billing_store import (
     GUEST_FREE_RUNS_MAX,
     USER_FREE_RUNS_MAX,
+    billing_exempt_user,
     get_billing_store,
     normalize_guest_key,
     subscription_runs_cap,
