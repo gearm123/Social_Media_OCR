@@ -41,7 +41,7 @@ from ocr_translate import (
     _default_status_bar_info,
 )
 from pipeline import prepare_image_crop_info
-from chat_renderer import render_chat
+from chat_renderer import composite_chat_below_top_banner, render_chat, resolve_top_banner_path
 
 PAGE_GAP_PX = 48
 PASS1_BUBBLE_INPUT_PATH = Path(__file__).resolve().parent / "pass1_bubble_input.txt"
@@ -1301,32 +1301,44 @@ def run_pipeline_job(
             contact_name=final_contact_name,
             header_status=final_status_text,
         )
-        pass1_chat = render_chat(pass1_meta, **_render_header)
+        _top_banner = resolve_top_banner_path()
+        if not _top_banner:
+            print(
+                "[pipeline] No top banner image found — Facebook bar is skipped. "
+                "Add and commit `assets/top_banner.png`, or set env `CHAT_TOP_BANNER_PATH` "
+                "to a PNG path on this machine.",
+                flush=True,
+            )
+        pass1_raw = render_chat(pass1_meta, **_render_header)
+        pass2_raw = render_chat(all_meta, **_render_header)
+        pass3_raw = render_chat(final_chat_meta, **_render_header)
+
+        pass1_chat = composite_chat_below_top_banner(pass1_raw, _top_banner)
         pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
         cv2.imwrite(pass1_path, pass1_chat)
 
-        pass2_img = render_chat(all_meta, **_render_header)
+        pass2_img = composite_chat_below_top_banner(pass2_raw, _top_banner)
         pass2_path = os.path.join(RENDER_DIR, "translated_conversation_pass2.png")
         cv2.imwrite(pass2_path, pass2_img)
 
-        pass3_img = render_chat(final_chat_meta, **_render_header)
+        pass3_img = composite_chat_below_top_banner(pass3_raw, _top_banner)
         pass3_path = os.path.join(RENDER_DIR, "translated_conversation_pass3.png")
         cv2.imwrite(pass3_path, pass3_img)
 
         if difficulty >= 3:
             _compare_panels = [
-                (pass1_chat, "Pass 1 Translation"),
-                (pass2_img, "Pass 2 OCR Source Polish (Debug EN)"),
-                (pass3_img, "Pass 3 Reference Resolution"),
+                (pass1_raw, "Pass 1 Translation"),
+                (pass2_raw, "Pass 2 OCR Source Polish (Debug EN)"),
+                (pass3_raw, "Pass 3 Reference Resolution"),
             ]
         elif difficulty == 2:
             _compare_panels = [
-                (pass1_chat, "Pass 1 Translation"),
-                (pass2_img, "Pass 2 OCR Source Polish (Debug EN)"),
+                (pass1_raw, "Pass 1 Translation"),
+                (pass2_raw, "Pass 2 OCR Source Polish (Debug EN)"),
             ]
         else:
             _compare_panels = [
-                (pass1_chat, "Pass 1 Translation"),
+                (pass1_raw, "Pass 1 Translation"),
             ]
         compare_img = _compose_labeled_chat_panels(_compare_panels)
         compare_path = os.path.join(RENDER_DIR, "translated_conversation_compare.png")
@@ -1335,6 +1347,7 @@ def run_pipeline_job(
 
         combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
         final_chat = render_chat(final_render_meta, **_render_header)
+        final_chat = composite_chat_below_top_banner(final_chat, _top_banner)
         cv2.imwrite(combined_path, final_chat)
         _emit_phase("completed", "Final image generated", 1.0)
         if _compact_verbose_logs():

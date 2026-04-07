@@ -1,6 +1,7 @@
 import math
 import os
 import unicodedata
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -1206,3 +1207,187 @@ def render_chat(objects, width=600, speaker_text="", profile_image=None,
 
     final_height = min(max(y + 20, 120), canvas.shape[0])
     return canvas[:final_height, :]
+
+
+# --------------------------------------------------
+# Optional wide top banner (e.g. Facebook-style bar above Messenger render)
+# --------------------------------------------------
+
+# Template match confidence floor for aligning full bar to center-nav strip (``top_banner_center.png``).
+_TOP_BANNER_TEMPLATE_MATCH_MIN = 0.28
+
+
+def _five_icon_strip_inner_span_rel(rw: float) -> Tuple[float, float]:
+    """
+    For a five-icon strip of width *rw* (center crop), model icon centers at ``rw * i / 6`` for
+    ``i = 1 … 5`` (even spacing like Messenger). The **chat** width should match the segment from
+    the midpoint between icons 1–2 to the midpoint between icons 4–5 (half a gap past the outer
+    icons sits on white). Returns ``(inner_width, inner_center_from_left)`` in the same units as *rw*.
+    """
+    rw = float(max(1.0, rw))
+    centers = [rw * i / 6.0 for i in range(1, 6)]
+    inner_l = (centers[0] + centers[1]) / 2.0
+    inner_r = (centers[3] + centers[4]) / 2.0
+    inner_w = max(1.0, inner_r - inner_l)
+    inner_c = (inner_l + inner_r) / 2.0
+    return (inner_w, inner_c)
+
+
+def resolve_top_banner_path() -> Optional[str]:
+    """Full-width bar PNG. Env ``CHAT_TOP_BANNER_PATH`` wins; else ``assets/top_banner.png``."""
+    env = os.environ.get("CHAT_TOP_BANNER_PATH", "").strip()
+    if env and os.path.isfile(env):
+        return env
+    cand = os.path.join(_ASSETS_DIR, "top_banner.png")
+    if os.path.isfile(cand):
+        return cand
+    return None
+
+
+def resolve_top_banner_center_ref_path() -> Optional[str]:
+    """Optional crop of the center nav icons only; used to align that cluster with the chat. ``assets/top_banner_center.png``."""
+    env = os.environ.get("CHAT_TOP_BANNER_CENTER_PATH", "").strip()
+    if env and os.path.isfile(env):
+        return env
+    cand = os.path.join(_ASSETS_DIR, "top_banner_center.png")
+    if os.path.isfile(cand):
+        return cand
+    return None
+
+
+def _banner_to_bgr(banner: np.ndarray) -> np.ndarray:
+    """BGR image; premultiplied flatten of RGBA onto white."""
+    if banner.ndim == 2:
+        return cv2.cvtColor(banner, cv2.COLOR_GRAY2BGR)
+    if banner.shape[2] == 3:
+        return banner
+    if banner.shape[2] == 4:
+        a = banner[:, :, 3:4].astype(np.float32) / 255.0
+        bgr = banner[:, :, :3].astype(np.float32)
+        white = np.full_like(bgr, 255.0)
+        out = bgr * a + white * (1.0 - a)
+        return np.clip(out, 0, 255).astype(np.uint8)
+    return banner[:, :, :3]
+
+
+def _nav_cluster_match_in_banner(
+    full_bgr: np.ndarray,
+    center_ref_path: Optional[str],
+) -> Optional[Tuple[float, float]]:
+    """
+    Match ``center_ref_path`` into the full bar; return ``(x0, rw)``: left edge and width of the
+    matched strip in pixels (``full_bgr`` coordinates, template scaled to bar height). None if unavailable.
+    """
+    if not center_ref_path or not os.path.isfile(center_ref_path):
+        return None
+    ref_raw = cv2.imread(center_ref_path, cv2.IMREAD_UNCHANGED)
+    if ref_raw is None:
+        return None
+    ref_bgr = _banner_to_bgr(ref_raw)
+    fh, fw = full_bgr.shape[:2]
+    rh, rw = ref_bgr.shape[:2]
+    if rh < 4 or rw < 4 or fh < rh + 1 or fw < rw + 1:
+        return None
+    if rh != fh:
+        scale_h = fh / float(rh)
+        new_rw = max(1, int(round(rw * scale_h)))
+        interp = cv2.INTER_AREA if scale_h < 1.0 else cv2.INTER_LINEAR
+        ref_bgr = cv2.resize(ref_bgr, (new_rw, fh), interpolation=interp)
+        rw = ref_bgr.shape[1]
+    if rw >= fw:
+        return None
+    gray_f = cv2.cvtColor(full_bgr, cv2.COLOR_BGR2GRAY)
+    gray_r = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2GRAY)
+    res = cv2.matchTemplate(gray_f, gray_r, cv2.TM_CCOEFF_NORMED)
+    _, max_v, _, max_loc = cv2.minMaxLoc(res)
+    if max_v < _TOP_BANNER_TEMPLATE_MATCH_MIN:
+        return None
+    x0 = float(max_loc[0])
+    return (x0, float(rw))
+
+
+def composite_chat_below_top_banner(
+    chat_bgr: np.ndarray,
+    banner_path: Optional[str],
+    *,
+    bg_bgr: tuple = (255, 255, 255),
+) -> np.ndarray:
+    """
+    Stack the full-width bar (``top_banner.png``) above the rendered chat.
+
+    When the bar is **wider or equal** to the chat (native bar width ``bw0 >= cw``), the bar is kept
+    at native size, the canvas width is ``bw0``, and the chat is pasted below with **horizontal
+    white padding** so both share the same width and the same horizontal center.
+
+    When the bar is **narrower** than the chat and ``top_banner_center.png`` is configured,
+    template-match the five-icon strip in the full bar. The **rendered chat width** (``cw``) is
+    matched to the strip inner span; the bar is scaled uniformly and shifted so that span is
+    centered (legacy).
+
+    When the bar is narrower and there is no center template, the whole bar is scaled to the chat
+    width.
+    """
+    if not banner_path or chat_bgr is None or chat_bgr.size == 0:
+        return chat_bgr
+    raw = cv2.imread(banner_path, cv2.IMREAD_UNCHANGED)
+    if raw is None:
+        return chat_bgr
+
+    banner_bgr = _banner_to_bgr(raw)
+    bh0, bw0 = banner_bgr.shape[:2]
+    if bh0 < 1 or bw0 < 1:
+        return chat_bgr
+
+    ch, cw = chat_bgr.shape[:2]
+    if ch < 1 or cw < 1:
+        return chat_bgr
+
+    # Native bar width ≥ chat: pad chat left/right with ``bg_bgr``; bar unchanged on top.
+    if bw0 >= cw:
+        W, bh = int(bw0), int(bh0)
+        pad_left = (W - cw) // 2
+        canvas_h = bh + ch
+        canvas = np.full((canvas_h, W, 3), bg_bgr, dtype=np.uint8)
+        canvas[0:bh, 0:W] = banner_bgr
+        canvas[bh : bh + ch, pad_left : pad_left + cw] = chat_bgr
+        return canvas
+
+    center_ref = resolve_top_banner_center_ref_path()
+    match = _nav_cluster_match_in_banner(banner_bgr, center_ref)
+
+    if match is not None:
+        x0, cluster_rw = match
+        inner_w0, inner_c_rel = _five_icon_strip_inner_span_rel(cluster_rw)
+        # Map inner (thread) span to full chat canvas width; outer icon halves + extensions → white.
+        scale = float(cw) / float(inner_w0)
+        bw = max(1, int(round(bw0 * scale)))
+        bh = max(1, int(round(bh0 * scale)))
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        banner_bgr = cv2.resize(banner_bgr, (bw, bh), interpolation=interp)
+        inner_center0 = x0 + inner_c_rel
+        inner_center_s = inner_center0 * (float(bw) / float(bw0))
+        x_b = int(round(float(cw) / 2.0 - inner_center_s))
+
+        canvas_h = bh + ch
+        canvas = np.full((canvas_h, cw, 3), bg_bgr, dtype=np.uint8)
+        c_x1 = max(0, x_b)
+        c_x2 = min(cw, x_b + bw)
+        w_copy = c_x2 - c_x1
+        if w_copy > 0:
+            b_x1 = c_x1 - x_b
+            canvas[0:bh, c_x1:c_x2] = banner_bgr[:, b_x1 : b_x1 + w_copy]
+        canvas[bh : bh + ch, :] = chat_bgr
+        return canvas
+
+    # No center template: scale full bar to chat width (fills top row edge-to-edge).
+    scale = float(cw) / float(bw0)
+    bw = int(cw)
+    bh = max(1, int(round(bh0 * scale)))
+    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    banner_bgr = cv2.resize(banner_bgr, (bw, bh), interpolation=interp)
+
+    canvas_h = bh + ch
+    canvas = np.full((canvas_h, cw, 3), bg_bgr, dtype=np.uint8)
+    canvas[0:bh, :] = banner_bgr
+    canvas[bh : bh + ch, :] = chat_bgr
+    return canvas
