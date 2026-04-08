@@ -5,7 +5,8 @@ services:
     name: translate-chat-backend
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    # Pin Python via runtime.txt (3.12.x) so torch/psycopg wheels match; 3.14 default can break hashed installs.
+    buildCommand: pip install --no-cache-dir -r requirements.txt
     startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
