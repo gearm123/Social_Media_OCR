@@ -49,6 +49,37 @@ def verify_google_id_token(id_token_str: str) -> Dict[str, Any]:
     }
 
 
+def verify_google_access_token(access_token: str) -> Dict[str, Any]:
+    """Validate a Google OAuth 2.0 access token via userinfo (custom Sign-in button / token client)."""
+    if not os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip():
+        raise OAuthError("Google sign-in is not configured on this server", 503)
+    tok = access_token.strip()
+    if len(tok) < 10:
+        raise OAuthError("Invalid Google token", 400)
+    r = requests.get(
+        "https://www.googleapis.com/oauth2/v3/userinfo",
+        headers={"Authorization": f"Bearer {tok}"},
+        timeout=15,
+    )
+    if r.status_code != 200:
+        raise OAuthError("Invalid or expired Google token", 401)
+    data = r.json()
+    sub = data.get("sub")
+    if not sub:
+        raise OAuthError("Google did not return a user id", 401)
+    email = (data.get("email") or "").strip().lower()
+    if not email:
+        raise OAuthError(
+            "Google did not return an email. Ensure the token includes email scope (openid email profile).",
+            400,
+        )
+    return {
+        "sub": str(sub),
+        "email": email,
+        "name": (data.get("name") or "").strip() or None,
+    }
+
+
 def facebook_placeholder_email(facebook_user_id: str) -> str:
     raw = "".join(c for c in str(facebook_user_id).strip() if c.isdigit())
     if not raw:

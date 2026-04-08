@@ -14,6 +14,7 @@ from auth_oauth import (
     OAuthError,
     is_reserved_facebook_placeholder_email,
     verify_facebook_access_token,
+    verify_google_access_token,
     verify_google_id_token,
 )
 from auth_password import hash_password, verify_password
@@ -54,7 +55,10 @@ class UserPublic(BaseModel):
 
 
 class GoogleTokenBody(BaseModel):
-    id_token: str = Field(..., min_length=10)
+    """Send either ``id_token`` (GIS button) or ``access_token`` (OAuth2 token client + userinfo)."""
+
+    id_token: Optional[str] = None
+    access_token: Optional[str] = None
 
 
 class FacebookTokenBody(BaseModel):
@@ -159,8 +163,15 @@ def login(body: LoginBody, store: Annotated[UserStore, Depends(get_user_store)])
 def oauth_google(
     body: GoogleTokenBody, store: Annotated[UserStore, Depends(get_user_store)]
 ):
+    tid = (body.id_token or "").strip()
+    tac = (body.access_token or "").strip()
+    if bool(tid) == bool(tac):
+        raise HTTPException(
+            status_code=400,
+            detail="Send exactly one of id_token or access_token",
+        )
     try:
-        profile = verify_google_id_token(body.id_token)
+        profile = verify_google_id_token(tid) if tid else verify_google_access_token(tac)
     except OAuthError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e)) from e
     return _oauth_sign_in(store, "google", profile)

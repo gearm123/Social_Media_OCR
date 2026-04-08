@@ -299,7 +299,7 @@ def root():
             "providers": "GET /auth/providers — OAuth client IDs for the SPA",
             "register": "POST /auth/register JSON {username, email, password}",
             "login": "POST /auth/login JSON {email, password} → Bearer token",
-            "oauth_google": "POST /auth/oauth/google JSON {id_token}",
+            "oauth_google": "POST /auth/oauth/google JSON {id_token} or {access_token}",
             "oauth_facebook": "POST /auth/oauth/facebook JSON {access_token}",
             "me": "GET /auth/me Authorization: Bearer <token>",
         },
