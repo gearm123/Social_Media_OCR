@@ -10,7 +10,12 @@ from pydantic import BaseModel, Field
 
 from auth_deps import get_current_user_required, get_user_store
 from auth_jwt import create_access_token
-from auth_oauth import OAuthError, verify_facebook_access_token, verify_google_id_token
+from auth_oauth import (
+    OAuthError,
+    is_reserved_facebook_placeholder_email,
+    verify_facebook_access_token,
+    verify_google_id_token,
+)
 from auth_password import hash_password, verify_password
 from user_store import (
     OAUTH_PASSWORD_SENTINEL,
@@ -116,6 +121,11 @@ def register(body: RegisterBody, store: Annotated[UserStore, Depends(get_user_st
         validate_password(body.password)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if is_reserved_facebook_placeholder_email(body.email):
+        raise HTTPException(
+            status_code=400,
+            detail="This email is reserved for Facebook sign-in. Use Continue with Facebook or pick another address.",
+        )
     pw_hash = hash_password(body.password)
     try:
         user = store.create_user_with_password(body.email, pw_hash, body.username.strip())

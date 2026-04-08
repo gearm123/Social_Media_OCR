@@ -7,6 +7,11 @@ from typing import Any, Dict
 
 import requests
 
+# Facebook: we intentionally do not request the `email` permission so Meta does not treat
+# sign-in as requiring advanced “email” access / login review for many apps. The DB still
+# needs a unique `email` column, so we store a stable synthetic address per Facebook user id.
+FACEBOOK_OAUTH_EMAIL_SUFFIX = "@fb-oauth.internal"
+
 try:
     from google.oauth2 import id_token as google_id_token
     from google.auth.transport import requests as google_requests
@@ -44,13 +49,25 @@ def verify_google_id_token(id_token_str: str) -> Dict[str, Any]:
     }
 
 
+def facebook_placeholder_email(facebook_user_id: str) -> str:
+    raw = "".join(c for c in str(facebook_user_id).strip() if c.isdigit())
+    if not raw:
+        raw = "0"
+    return f"fb{raw}{FACEBOOK_OAUTH_EMAIL_SUFFIX}"
+
+
+def is_reserved_facebook_placeholder_email(email: str) -> bool:
+    return email.strip().lower().endswith(FACEBOOK_OAUTH_EMAIL_SUFFIX)
+
+
 def verify_facebook_access_token(access_token: str) -> Dict[str, Any]:
     app_id = os.environ.get("FACEBOOK_APP_ID", "").strip()
     app_secret = os.environ.get("FACEBOOK_APP_SECRET", "").strip()
     if not app_id:
         raise OAuthError("Facebook sign-in is not configured on this server", 503)
+    # Only `public_profile` fields — do not request `email` (see module note above).
     params: Dict[str, str] = {
-        "fields": "id,email,name",
+        "fields": "id,name",
         "access_token": access_token,
     }
     if app_secret:
@@ -76,15 +93,13 @@ def verify_facebook_access_token(access_token: str) -> Dict[str, Any]:
     uid = data.get("id")
     if not uid:
         raise OAuthError("Facebook did not return a user id", 401)
+    uid_s = str(uid)
+    # If `email` is ever present (legacy token / app config), prefer it; else synthetic.
     email = (data.get("email") or "").strip().lower()
     if not email:
-        raise OAuthError(
-            "Facebook did not return an email. Ensure the app requests the email permission "
-            "and that your Facebook account has an email on file.",
-            400,
-        )
+        email = facebook_placeholder_email(uid_s)
     return {
-        "sub": str(uid),
+        "sub": uid_s,
         "email": email,
         "name": (data.get("name") or "").strip() or None,
     }
