@@ -672,8 +672,8 @@ def _apply_subscription_entity(sub: dict[str, Any]) -> None:
         store.set_subscription_access_iso(uid, sub_id, ends)
 
 
-@router.post("/webhook")
-async def paddle_webhook(request: Request):
+async def paddle_webhook_handler(request: Request) -> dict:
+    """Shared handler for POST /billing/webhook and compatibility POST /webhook/paddle."""
     if not _webhook_secret():
         raise HTTPException(status_code=503, detail="PADDLE_WEBHOOK_SECRET not configured")
 
@@ -730,3 +730,8 @@ async def paddle_webhook(request: Request):
         raise HTTPException(status_code=500, detail="Webhook handler error")
 
     return {"received": True}
+
+
+@router.post("/webhook")
+async def paddle_webhook(request: Request):
+    return await paddle_webhook_handler(request)

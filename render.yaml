@@ -10,6 +10,9 @@ services:
     startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      # Force 3.12.x so psycopg[binary] and torch install reliably (Render default 3.14 can skip wheels).
+      - key: PYTHON_VERSION
+        value: "3.12.8"
       - key: GEMINI_API_KEY
         sync: false
       - key: GOOGLE_VISION_API_KEY

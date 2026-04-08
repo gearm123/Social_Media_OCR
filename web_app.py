@@ -15,13 +15,14 @@ if os.environ.get("RENDER", "").strip().lower() != "true":
 
     load_dotenv(BASE_DIR / ".env")
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
+from starlette.responses import Response
 
 from auth_api import router as auth_router
 from auth_deps import assert_job_readable, get_current_user_optional, get_job_user
-from billing_api import router as billing_router
+from billing_api import paddle_webhook_handler, router as billing_router
 from billing_store import (
     billing_enforce_enabled,
     billing_exempt_user,
@@ -97,6 +98,12 @@ app.add_middleware(
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(billing_router, prefix="/billing", tags=["billing"])
+
+
+@app.post("/webhook/paddle")
+async def paddle_webhook_alias(request: Request):
+    """Some Paddle setups use this path; canonical URL is POST /billing/webhook."""
+    return await paddle_webhook_handler(request)
 
 
 def _utc_now():
@@ -276,6 +283,12 @@ def _check_smoke_secret(x_smoke_secret: Optional[str]) -> None:
         raise HTTPException(status_code=403, detail="Invalid or missing X-Smoke-Secret")
 
 
+@app.head("/")
+def root_head():
+    """Render port checks may send HEAD /; avoid 405 so the instance is detected as listening."""
+    return Response(status_code=200)
+
+
 @app.get("/")
 def root():
     return {
@@ -294,7 +307,7 @@ def root():
         "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text, difficulty 1–3, hurry_up 1/true when set — default hurry_up off)",
         "cancel_job": "POST /jobs/{job_id}/cancel — request cooperative cancel (checked between pipeline stages)",
         "job_auth": "Set REQUIRE_AUTH_FOR_JOBS=1 to require Bearer token; jobs are scoped to the user",
-        "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/guest-checkout-session (one-time, guest + email), POST /billing/guest-claim-transaction, POST /billing/user-claim-transaction (Bearer + txn, single/debug), POST /billing/portal-session, POST /billing/webhook. BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id",
+        "billing": "GET /billing/status, GET /billing/me, GET /billing/guest-status (X-Guest-Billing-Id), POST /billing/checkout-session, POST /billing/guest-checkout-session (one-time, guest + email), POST /billing/guest-claim-transaction, POST /billing/user-claim-transaction (Bearer + txn, single/debug), POST /billing/portal-session, POST /billing/webhook (alias POST /webhook/paddle). BILLING_ENFORCE=1: POST /jobs needs Bearer or X-Guest-Billing-Id",
         "legal": "GET /legal/terms, GET /legal/privacy (set PUBLIC_CONTACT_EMAIL)",
         "smoke_test": "POST /test/smoke (optional Form: language; Header X-Smoke-Secret if env SMOKE_TEST_SECRET is set)",
     }
