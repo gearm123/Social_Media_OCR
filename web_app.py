@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import shutil
 import traceback
@@ -8,7 +9,11 @@ from threading import Thread
 from typing import Annotated, Optional
 from uuid import uuid4
 
-from dotenv import load_dotenv
+BASE_DIR = Path(__file__).resolve().parent
+if os.environ.get("RENDER", "").strip().lower() != "true":
+    from dotenv import load_dotenv
+
+    load_dotenv(BASE_DIR / ".env")
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,12 +28,11 @@ from billing_store import (
     get_billing_store,
     normalize_guest_key,
 )
+from db_postgres import raw_database_url_from_environment
 from rate_limit import RateLimitMiddleware
 from user_store import UserRecord
 
-
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+_log = logging.getLogger("translate_chat.web")
 
 _sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
 if _sentry_dsn:
@@ -63,6 +67,25 @@ def _cors_allow_origins() -> list[str]:
 
 
 app = FastAPI(title="Translate Chat API", version="0.1.0")
+
+
+@app.on_event("startup")
+def _log_runtime_env_for_debug():
+    """Confirms deploy sees DATABASE_URL (value is never logged)."""
+    has_db = bool(raw_database_url_from_environment())
+    _log.info(
+        "Runtime env: RENDER=%r DATABASE_URL_non_empty=%s RENDER_GIT_COMMIT=%r",
+        os.environ.get("RENDER"),
+        has_db,
+        os.environ.get("RENDER_GIT_COMMIT"),
+    )
+    if os.environ.get("RENDER", "").strip().lower() == "true" and not has_db:
+        _log.warning(
+            "DATABASE_URL is empty. Link translate-chat-db to this web service or set DATABASE_URL "
+            "to the Postgres internal URL."
+        )
+
+
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -279,7 +302,11 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "database_url_configured": bool(raw_database_url_from_environment()),
+        "render_git_commit": os.environ.get("RENDER_GIT_COMMIT"),
+    }
 
 
 @app.get("/legal/terms", response_class=HTMLResponse)

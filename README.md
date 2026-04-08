@@ -59,9 +59,9 @@ The main goal of the project is accurate conversation reconstruction and transla
 
 The FastAPI app (`web_app.py`) exposes translation jobs plus optional **[Paddle Billing](https://www.paddle.com/billing)** (merchant of record). Paddle can pay out to sellers in Israel and handles tax and payment methods; you configure products/prices in Paddle, not a card processor directly.
 
-### Entitlements (SQLite)
+### Entitlements (PostgreSQL)
 
-Stored in the same database file as users (`data/users.sqlite3` by default, or `USER_DB_PATH`):
+Stored in the same database as users. Set **`DATABASE_URL`** (PostgreSQL connection string). On Render, use the **Internal Database URL** from **translate-chat-db** on the **web** service. Tables are created on first use (`users`, `billing_entitlements`, `billing_guest_entitlements`, etc.). **`GET /health`** includes **`database_url_configured`** (boolean; URL is never logged).
 
 - `free_runs_used` / cap of **1** single-image free run per signed-in account (when not subscribed and no credits)
 - `paid_job_credits` (one-time “full run” purchases)
@@ -74,6 +74,7 @@ Stored in the same database file as users (`data/users.sqlite3` by default, or `
 
 | Variable | Purpose |
 |----------|---------|
+| `DATABASE_URL` | PostgreSQL URL for users + billing (`postgresql://…`; `postgres://` is normalized). Also checks `POSTGRES_URL`, or `DATABASE_URL_FILE` (first line = URL). |
 | `BILLING_ENFORCE` | Set to `1` to enforce quotas on `POST /jobs`: signed-in users use Bearer; guests send **X-Guest-Billing-Id** (free tier or guest-paid credits). |
 | `REQUIRE_AUTH_FOR_JOBS` | `1` = user jobs need Bearer; **guest** jobs need the same **X-Guest-Billing-Id** on poll/artifact requests. |
 | `PADDLE_API_KEY` | Paddle server API key (Dashboard → Developer tools) |
@@ -117,6 +118,6 @@ After a successful pipeline run, the server decrements credits or increments fre
 - **CORS:** Set `FRONTEND_URL` (single origin) or `CORS_ORIGINS` (comma-separated, no trailing slashes). If both are empty, the API allows `*` (fine for local dev only). **Custom domain:** After moving the SPA (e.g. from a default Netlify URL to `https://chatreconstruct.com`), set `CORS_ORIGINS` on the API host to **every** origin visitors use — often both apex and `https://www.…` if you serve both. If `FRONTEND_URL` / `CORS_ORIGINS` does not match the `Origin` header, the browser hides the response from JavaScript as **“Failed to fetch”** (e.g. auth **“Could not load provider config”**). A `CORS_ORIGINS` value that parses to no origins (such as a lone comma) has the same effect; fix the env var and redeploy / restart the API.
 - **Rate limits:** In-memory per IP on `POST` (`RATE_LIMIT_*` env vars; disable with `RATE_LIMIT_ENABLED=0`). `/billing/webhook` has a high limit; tune if Paddle shares egress IPs.
 - **Job caps:** `MAX_JOB_FILES` (default 30), `MAX_JOB_UPLOAD_MB` (default 80 total per job).
-- **SQLite:** Default `data/users.sqlite3`. For Render, use a **persistent disk** on a paid instance and set `USER_DB_PATH` to the mount path. Backups: `python scripts/backup_sqlite.py` (see script docstring).
+- **PostgreSQL:** Use Render Postgres (**translate-chat-db**) or another host; set `DATABASE_URL` on the API. Backups: provider snapshots or `pg_dump`.
 - **Monitoring:** Optional `SENTRY_DSN` + `SENTRY_TRACES_SAMPLE_RATE`. Paddle webhooks log to stdout at `INFO` (`translate_chat.billing`).
 - **Legal:** `GET /legal/terms`, `GET /legal/privacy` (set `PUBLIC_CONTACT_EMAIL`).

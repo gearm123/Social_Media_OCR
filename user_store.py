@@ -1,10 +1,8 @@
-"""SQLite user accounts (local file — no external DB). Thread-safe for FastAPI + job threads."""
+"""User accounts in PostgreSQL (``DATABASE_URL``). Thread-safe for FastAPI + job threads."""
 
 from __future__ import annotations
 
-import os
 import re
-import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
@@ -12,13 +10,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from psycopg.errors import UniqueViolation
+from psycopg.rows import dict_row
+
+from db_postgres import get_pool
+
+OAUTH_PASSWORD_SENTINEL = "__oauth_no_password__"
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-# Password login is disabled for rows using this sentinel (social-only accounts).
-OAUTH_PASSWORD_SENTINEL = "__oauth_no_password__"
 
 
 @dataclass(frozen=True)
@@ -30,57 +31,50 @@ class UserRecord:
 
 
 class UserStore:
-    def __init__(self, db_path: Path):
-        self._path = db_path
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _migrate(self, conn: sqlite3.Connection) -> None:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-        if "username" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN username TEXT COLLATE NOCASE")
-        if "oauth_provider" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN oauth_provider TEXT")
-        if "oauth_subject" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN oauth_subject TEXT")
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username "
-            "ON users(username) WHERE username IS NOT NULL AND length(trim(username)) > 0"
-        )
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth "
-            "ON users(oauth_provider, oauth_subject) "
-            "WHERE oauth_provider IS NOT NULL AND oauth_subject IS NOT NULL"
-        )
-        conn.commit()
-
     def _init_db(self) -> None:
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS users (
-                        id TEXT PRIMARY KEY,
-                        email TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                        password_hash TEXT NOT NULL,
-                        created_at TEXT NOT NULL
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS users (
+                            id TEXT PRIMARY KEY,
+                            email TEXT NOT NULL UNIQUE,
+                            password_hash TEXT NOT NULL,
+                            created_at TEXT NOT NULL,
+                            username TEXT,
+                            oauth_provider TEXT,
+                            oauth_subject TEXT
+                        )
+                        """
                     )
-                    """
-                )
+                    cur.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower
+                        ON users (lower(trim(username)))
+                        WHERE username IS NOT NULL AND length(trim(username)) > 0
+                        """
+                    )
+                    cur.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth
+                        ON users (oauth_provider, oauth_subject)
+                        WHERE oauth_provider IS NOT NULL AND oauth_subject IS NOT NULL
+                        """
+                    )
                 conn.commit()
-                self._migrate(conn)
 
-    def _row_to_record(self, row: sqlite3.Row) -> UserRecord:
+    def _row_to_record(self, row: dict[str, Any]) -> UserRecord:
+        un = row.get("username")
         return UserRecord(
             id=row["id"],
             email=row["email"],
-            username=row["username"] if "username" in row.keys() and row["username"] else None,
+            username=un if un else None,
             created_at=row["created_at"],
         )
 
@@ -90,26 +84,35 @@ class UserStore:
         uid = uuid.uuid4().hex
         created = _utc_now_iso()
         un = username.strip()
+        em = email.strip().lower()
         with self._lock:
-            try:
-                with self._connect() as conn:
-                    conn.execute(
-                        """
-                        INSERT INTO users (id, email, password_hash, created_at, username,
-                            oauth_provider, oauth_subject)
-                        VALUES (?, ?, ?, ?, ?, NULL, NULL)
-                        """,
-                        (uid, email.strip().lower(), password_hash, created, un),
-                    )
+            pool = get_pool()
+            with pool.connection() as conn:
+                try:
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO users (id, email, password_hash, created_at, username,
+                                oauth_provider, oauth_subject)
+                            VALUES (%s, %s, %s, %s, %s, NULL, NULL)
+                            """,
+                            (uid, em, password_hash, created, un),
+                        )
                     conn.commit()
-            except sqlite3.IntegrityError as e:
-                msg = str(e).lower()
-                if "users.email" in msg or "email" in msg:
-                    raise ValueError("email already registered") from e
-                if "username" in msg:
-                    raise ValueError("username already taken") from e
-                raise ValueError("could not create account") from e
-        return UserRecord(id=uid, email=email.strip().lower(), username=un, created_at=created)
+                except UniqueViolation as e:
+                    conn.rollback()
+                    msg = str(e).lower()
+                    cname = (e.diag.constraint_name or "").lower()
+                    if "email" in msg or "email" in cname:
+                        raise ValueError("email already registered") from e
+                    if (
+                        "username" in msg
+                        or "username" in cname
+                        or "idx_users_username" in cname
+                    ):
+                        raise ValueError("username already taken") from e
+                    raise ValueError("could not create account") from e
+        return UserRecord(id=uid, email=em, username=un, created_at=created)
 
     def create_oauth_user(
         self,
@@ -125,52 +128,63 @@ class UserStore:
         em = email.strip().lower()
         un = username.strip()
         with self._lock:
-            try:
-                with self._connect() as conn:
-                    conn.execute(
-                        """
-                        INSERT INTO users (id, email, password_hash, created_at, username,
-                            oauth_provider, oauth_subject)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (uid, em, OAUTH_PASSWORD_SENTINEL, created, un, prov, sub),
-                    )
+            pool = get_pool()
+            with pool.connection() as conn:
+                try:
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO users (id, email, password_hash, created_at, username,
+                                oauth_provider, oauth_subject)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (uid, em, OAUTH_PASSWORD_SENTINEL, created, un, prov, sub),
+                        )
                     conn.commit()
-            except sqlite3.IntegrityError as e:
-                msg = str(e).lower()
-                if "email" in msg and "unique" in msg:
-                    raise ValueError("email already registered") from e
-                if "username" in msg:
-                    raise ValueError("username already taken") from e
-                if "oauth" in msg or "idx_users_oauth" in msg:
-                    raise ValueError("oauth account already linked") from e
-                raise ValueError("could not create account") from e
+                except UniqueViolation as e:
+                    conn.rollback()
+                    msg = str(e).lower()
+                    cname = (e.diag.constraint_name or "").lower()
+                    if "email" in msg or "email" in cname:
+                        raise ValueError("email already registered") from e
+                    if "username" in msg or "idx_users_username" in cname:
+                        raise ValueError("username already taken") from e
+                    if "oauth" in cname or "idx_users_oauth" in cname:
+                        raise ValueError("oauth account already linked") from e
+                    raise ValueError("could not create account") from e
         return UserRecord(id=uid, email=em, username=un, created_at=created)
 
     def get_by_oauth(self, provider: str, subject: str) -> Optional[UserRecord]:
         prov = provider.strip().lower()
         sub = subject.strip()
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT id, email, username, created_at FROM users
-                    WHERE oauth_provider = ? AND oauth_subject = ?
-                    """,
-                    (prov, sub),
-                ).fetchone()
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT id, email, username, created_at FROM users
+                        WHERE oauth_provider = %s AND oauth_subject = %s
+                        """,
+                        (prov, sub),
+                    )
+                    row = cur.fetchone()
         return self._row_to_record(row) if row else None
 
     def get_by_email(self, email: str) -> Optional[Tuple[UserRecord, str]]:
         em = email.strip().lower()
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT id, email, username, created_at, password_hash FROM users WHERE email = ?
-                    """,
-                    (em,),
-                ).fetchone()
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT id, email, username, created_at, password_hash FROM users
+                        WHERE email = %s
+                        """,
+                        (em,),
+                    )
+                    row = cur.fetchone()
         if not row:
             return None
         rec = UserRecord(
@@ -183,11 +197,14 @@ class UserStore:
 
     def get_by_id(self, user_id: str) -> Optional[UserRecord]:
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT id, email, username, created_at FROM users WHERE id = ?",
-                    (user_id,),
-                ).fetchone()
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        "SELECT id, email, username, created_at FROM users WHERE id = %s",
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
         if not row:
             return None
         return self._row_to_record(row)
@@ -232,7 +249,6 @@ def suggest_username_from_email_or_name(email: str, name: Optional[str]) -> str:
 
 
 def user_store_from_env(base_dir: Path) -> UserStore:
-    """Default: ``<base_dir>/data/users.sqlite3``. Override with USER_DB_PATH."""
-    raw = os.environ.get("USER_DB_PATH", "").strip()
-    path = Path(raw) if raw else base_dir / "data" / "users.sqlite3"
-    return UserStore(path)
+    """``base_dir`` is unused; configuration is ``DATABASE_URL``."""
+    _ = base_dir
+    return UserStore()

@@ -443,7 +443,7 @@ def guest_claim_paid_transaction(
 ):
     """
     Browser calls this right after Paddle checkout completes (in addition to webhooks).
-    Fixes Render/slow webhook cases where the UI returns before credits exist in SQLite.
+    Fixes Render/slow webhook cases where the UI returns before credits exist in the database.
     """
     gk = normalize_guest_key(x_guest_billing_id)
     if not gk:

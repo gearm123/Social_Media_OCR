@@ -1,14 +1,18 @@
-"""SQLite billing entitlements (same DB file as users). Thread-safe."""
+"""Billing entitlements in PostgreSQL (same ``DATABASE_URL`` as users). Thread-safe."""
 
 from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
+
+from psycopg.errors import UniqueViolation
+from psycopg.rows import dict_row
+
+from db_postgres import get_pool
 
 # Anonymous free tier: client generates id (e.g. UUID hex), sends as X-Guest-Billing-Id
 _GUEST_KEY_RE = re.compile(r"^[a-fA-F0-9]{8,64}$")
@@ -33,11 +37,6 @@ def _utc_now() -> datetime:
 
 def _utc_now_iso() -> str:
     return _utc_now().isoformat()
-
-
-def billing_db_path(base_dir: Path) -> Path:
-    raw = os.environ.get("USER_DB_PATH", "").strip()
-    return Path(raw) if raw else base_dir / "data" / "users.sqlite3"
 
 
 def billing_enforce_enabled() -> bool:
@@ -97,122 +96,83 @@ def access_until_active(access_until: Optional[str]) -> bool:
 
 
 class BillingStore:
-    def __init__(self, db_path: Path):
-        self._path = db_path
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
-
     def _init_db(self) -> None:
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS billing_entitlements (
-                        user_id TEXT PRIMARY KEY,
-                        stripe_customer_id TEXT,
-                        stripe_subscription_id TEXT,
-                        access_until TEXT,
-                        paid_job_credits INTEGER NOT NULL DEFAULT 0,
-                        free_runs_used INTEGER NOT NULL DEFAULT 0,
-                        updated_at TEXT NOT NULL
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS billing_entitlements (
+                            user_id TEXT PRIMARY KEY,
+                            stripe_customer_id TEXT,
+                            stripe_subscription_id TEXT,
+                            access_until TEXT,
+                            paid_job_credits INTEGER NOT NULL DEFAULT 0,
+                            free_runs_used INTEGER NOT NULL DEFAULT 0,
+                            updated_at TEXT NOT NULL,
+                            paddle_customer_id TEXT,
+                            paddle_address_id TEXT,
+                            paddle_subscription_id TEXT,
+                            sub_quota_month TEXT,
+                            sub_quota_used INTEGER NOT NULL DEFAULT 0
+                        )
+                        """
                     )
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS billing_webhook_events (
-                        event_id TEXT PRIMARY KEY,
-                        created_at TEXT NOT NULL
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS billing_webhook_events (
+                            event_id TEXT PRIMARY KEY,
+                            created_at TEXT NOT NULL
+                        )
+                        """
                     )
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS billing_one_time_txn_credits (
-                        transaction_id TEXT PRIMARY KEY,
-                        created_at TEXT NOT NULL
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS billing_one_time_txn_credits (
+                            transaction_id TEXT PRIMARY KEY,
+                            created_at TEXT NOT NULL
+                        )
+                        """
                     )
-                    """
-                )
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_billing_customer "
-                    "ON billing_entitlements(stripe_customer_id) "
-                    "WHERE stripe_customer_id IS NOT NULL"
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS billing_guest_entitlements (
-                        guest_key TEXT PRIMARY KEY,
-                        free_runs_used INTEGER NOT NULL DEFAULT 0,
-                        updated_at TEXT NOT NULL
+                    cur.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_billing_customer
+                        ON billing_entitlements(stripe_customer_id)
+                        WHERE stripe_customer_id IS NOT NULL
+                        """
                     )
-                    """
-                )
-                self._migrate_entitlements(conn)
-                self._migrate_guest_entitlements(conn)
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS billing_guest_entitlements (
+                            guest_key TEXT PRIMARY KEY,
+                            free_runs_used INTEGER NOT NULL DEFAULT 0,
+                            updated_at TEXT NOT NULL,
+                            paid_job_credits INTEGER NOT NULL DEFAULT 0,
+                            paddle_customer_id TEXT,
+                            paddle_address_id TEXT
+                        )
+                        """
+                    )
+                    cur.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_billing_paddle_customer
+                        ON billing_entitlements(paddle_customer_id)
+                        WHERE paddle_customer_id IS NOT NULL
+                        """
+                    )
+                    cur.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_guest_paddle_customer
+                        ON billing_guest_entitlements(paddle_customer_id)
+                        WHERE paddle_customer_id IS NOT NULL
+                        """
+                    )
                 conn.commit()
-
-    def _migrate_entitlements(self, conn: sqlite3.Connection) -> None:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(billing_entitlements)").fetchall()}
-        if "paddle_customer_id" not in cols:
-            conn.execute("ALTER TABLE billing_entitlements ADD COLUMN paddle_customer_id TEXT")
-        if "paddle_address_id" not in cols:
-            conn.execute("ALTER TABLE billing_entitlements ADD COLUMN paddle_address_id TEXT")
-        if "paddle_subscription_id" not in cols:
-            conn.execute("ALTER TABLE billing_entitlements ADD COLUMN paddle_subscription_id TEXT")
-        conn.execute(
-            """
-            UPDATE billing_entitlements SET paddle_customer_id = stripe_customer_id
-            WHERE paddle_customer_id IS NULL AND stripe_customer_id IS NOT NULL
-            """
-        )
-        conn.execute(
-            """
-            UPDATE billing_entitlements SET paddle_subscription_id = stripe_subscription_id
-            WHERE paddle_subscription_id IS NULL AND stripe_subscription_id IS NOT NULL
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_billing_paddle_customer "
-            "ON billing_entitlements(paddle_customer_id) "
-            "WHERE paddle_customer_id IS NOT NULL"
-        )
-        if "sub_quota_month" not in cols:
-            conn.execute(
-                "ALTER TABLE billing_entitlements ADD COLUMN sub_quota_month TEXT"
-            )
-        if "sub_quota_used" not in cols:
-            conn.execute(
-                "ALTER TABLE billing_entitlements ADD COLUMN sub_quota_used INTEGER NOT NULL DEFAULT 0"
-            )
-
-    def _migrate_guest_entitlements(self, conn: sqlite3.Connection) -> None:
-        cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(billing_guest_entitlements)").fetchall()
-        }
-        if "paid_job_credits" not in cols:
-            conn.execute(
-                "ALTER TABLE billing_guest_entitlements ADD COLUMN paid_job_credits INTEGER NOT NULL DEFAULT 0"
-            )
-        if "paddle_customer_id" not in cols:
-            conn.execute(
-                "ALTER TABLE billing_guest_entitlements ADD COLUMN paddle_customer_id TEXT"
-            )
-        if "paddle_address_id" not in cols:
-            conn.execute(
-                "ALTER TABLE billing_guest_entitlements ADD COLUMN paddle_address_id TEXT"
-            )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_guest_paddle_customer "
-            "ON billing_guest_entitlements(paddle_customer_id) "
-            "WHERE paddle_customer_id IS NOT NULL"
-        )
 
     def try_claim_one_time_txn_credit(self, transaction_id: Optional[str]) -> bool:
         """Return True if we should apply one-time credits for this Paddle transaction (first event only)."""
@@ -221,18 +181,21 @@ class BillingStore:
         tid = str(transaction_id).strip()
         now = _utc_now_iso()
         with self._lock:
-            with self._connect() as conn:
+            pool = get_pool()
+            with pool.connection() as conn:
                 try:
-                    conn.execute(
-                        """
-                        INSERT INTO billing_one_time_txn_credits (transaction_id, created_at)
-                        VALUES (?, ?)
-                        """,
-                        (tid, now),
-                    )
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO billing_one_time_txn_credits (transaction_id, created_at)
+                            VALUES (%s, %s)
+                            """,
+                            (tid, now),
+                        )
                     conn.commit()
                     return True
-                except sqlite3.IntegrityError:
+                except UniqueViolation:
+                    conn.rollback()
                     return False
 
     def get_guest_key_by_paddle_customer_id(self, customer_id: Optional[str]) -> Optional[str]:
@@ -240,15 +203,18 @@ class BillingStore:
             return None
         cid = str(customer_id).strip()
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT guest_key FROM billing_guest_entitlements
-                    WHERE paddle_customer_id = ?
-                    LIMIT 1
-                    """,
-                    (cid,),
-                ).fetchone()
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT guest_key FROM billing_guest_entitlements
+                        WHERE paddle_customer_id = %s
+                        LIMIT 1
+                        """,
+                        (cid,),
+                    )
+                    row = cur.fetchone()
         if not row:
             return None
         gk = row["guest_key"]
@@ -257,40 +223,48 @@ class BillingStore:
     def ensure_row(self, user_id: str) -> None:
         now = _utc_now_iso()
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO billing_entitlements (
-                        user_id, stripe_customer_id, stripe_subscription_id,
-                        access_until, paid_job_credits, free_runs_used, updated_at
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO billing_entitlements (
+                            user_id, stripe_customer_id, stripe_subscription_id,
+                            access_until, paid_job_credits, free_runs_used, updated_at,
+                            sub_quota_used
+                        )
+                        VALUES (%s, NULL, NULL, NULL, 0, 0, %s, 0)
+                        ON CONFLICT (user_id) DO NOTHING
+                        """,
+                        (user_id, now),
                     )
-                    VALUES (?, NULL, NULL, NULL, 0, 0, ?)
-                    ON CONFLICT(user_id) DO NOTHING
-                    """,
-                    (user_id, now),
-                )
                 conn.commit()
 
     def get_entitlements(self, user_id: str) -> dict[str, Any]:
         self.ensure_row(user_id)
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT user_id, stripe_customer_id, stripe_subscription_id,
-                           paddle_customer_id, paddle_address_id, paddle_subscription_id,
-                           access_until, paid_job_credits, free_runs_used, updated_at,
-                           sub_quota_month, sub_quota_used
-                    FROM billing_entitlements WHERE user_id = ?
-                    """,
-                    (user_id,),
-                ).fetchone()
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT user_id, stripe_customer_id, stripe_subscription_id,
+                               paddle_customer_id, paddle_address_id, paddle_subscription_id,
+                               access_until, paid_job_credits, free_runs_used, updated_at,
+                               sub_quota_month, sub_quota_used
+                        FROM billing_entitlements WHERE user_id = %s
+                        """,
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
         if not row:
             return {}
         d = dict(row)
         d["paddle_customer_id"] = d.get("paddle_customer_id") or d.get("stripe_customer_id")
         d["paddle_address_id"] = d.get("paddle_address_id")
-        d["paddle_subscription_id"] = d.get("paddle_subscription_id") or d.get("stripe_subscription_id")
+        d["paddle_subscription_id"] = d.get("paddle_subscription_id") or d.get(
+            "stripe_subscription_id"
+        )
         au = d.get("access_until")
         cap = subscription_runs_cap()
         ym = _utc_now().strftime("%Y-%m")
@@ -314,69 +288,81 @@ class BillingStore:
         if not customer_id:
             return None
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT user_id FROM billing_entitlements
-                    WHERE paddle_customer_id = ? OR stripe_customer_id = ?
-                    """,
-                    (customer_id, customer_id),
-                ).fetchone()
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT user_id FROM billing_entitlements
+                        WHERE paddle_customer_id = %s OR stripe_customer_id = %s
+                        """,
+                        (customer_id, customer_id),
+                    )
+                    row = cur.fetchone()
         return row["user_id"] if row else None
 
     def try_claim_webhook_event(self, event_id: str) -> bool:
         """Atomically claim an event. True = we own it and should process; False = duplicate."""
         now = _utc_now_iso()
         with self._lock:
-            try:
-                with self._connect() as conn:
-                    conn.execute(
-                        "INSERT INTO billing_webhook_events (event_id, created_at) VALUES (?, ?)",
-                        (event_id, now),
-                    )
+            pool = get_pool()
+            with pool.connection() as conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO billing_webhook_events (event_id, created_at) VALUES (%s, %s)",
+                            (event_id, now),
+                        )
                     conn.commit()
-                return True
-            except sqlite3.IntegrityError:
-                return False
+                    return True
+                except UniqueViolation:
+                    conn.rollback()
+                    return False
 
     def release_webhook_event(self, event_id: str) -> None:
         """If processing fails, release so the payment provider can retry safely."""
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    "DELETE FROM billing_webhook_events WHERE event_id = ?",
-                    (event_id,),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM billing_webhook_events WHERE event_id = %s",
+                        (event_id,),
+                    )
                 conn.commit()
 
     def set_paddle_customer(self, user_id: str, customer_id: str) -> None:
         now = _utc_now_iso()
         self.ensure_row(user_id)
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_entitlements
-                    SET paddle_customer_id = ?, updated_at = ?
-                    WHERE user_id = ?
-                    """,
-                    (customer_id, now, user_id),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE billing_entitlements
+                        SET paddle_customer_id = %s, updated_at = %s
+                        WHERE user_id = %s
+                        """,
+                        (customer_id, now, user_id),
+                    )
                 conn.commit()
 
     def set_paddle_address(self, user_id: str, address_id: str) -> None:
         now = _utc_now_iso()
         self.ensure_row(user_id)
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_entitlements
-                    SET paddle_address_id = ?, updated_at = ?
-                    WHERE user_id = ?
-                    """,
-                    (address_id, now, user_id),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE billing_entitlements
+                        SET paddle_address_id = %s, updated_at = %s
+                        WHERE user_id = %s
+                        """,
+                        (address_id, now, user_id),
+                    )
                 conn.commit()
 
     def add_job_credits(self, user_id: str, delta: int) -> None:
@@ -385,39 +371,45 @@ class BillingStore:
         now = _utc_now_iso()
         self.ensure_row(user_id)
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_entitlements
-                    SET paid_job_credits = MAX(0, paid_job_credits + ?), updated_at = ?
-                    WHERE user_id = ?
-                    """,
-                    (delta, now, user_id),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE billing_entitlements
+                        SET paid_job_credits = GREATEST(0, paid_job_credits + %s), updated_at = %s
+                        WHERE user_id = %s
+                        """,
+                        (delta, now, user_id),
+                    )
                 conn.commit()
 
     def extend_access_hours(self, user_id: str, hours: float) -> None:
         self.ensure_row(user_id)
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT access_until FROM billing_entitlements WHERE user_id = ?",
-                    (user_id,),
-                ).fetchone()
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        "SELECT access_until FROM billing_entitlements WHERE user_id = %s",
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
                 current_end = _parse_iso(row["access_until"] if row else None)
                 base = _utc_now()
                 if current_end and current_end > base:
                     base = current_end
                 new_end = base + timedelta(hours=hours)
                 now = _utc_now_iso()
-                conn.execute(
-                    """
-                    UPDATE billing_entitlements
-                    SET access_until = ?, updated_at = ?
-                    WHERE user_id = ?
-                    """,
-                    (new_end.isoformat(), now, user_id),
-                )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE billing_entitlements
+                        SET access_until = %s, updated_at = %s
+                        WHERE user_id = %s
+                        """,
+                        (new_end.isoformat(), now, user_id),
+                    )
                 conn.commit()
 
     def set_access_until_unix(self, user_id: str, unix_ts: int) -> None:
@@ -426,15 +418,17 @@ class BillingStore:
         now = _utc_now_iso()
         self.ensure_row(user_id)
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_entitlements
-                    SET access_until = ?, updated_at = ?
-                    WHERE user_id = ?
-                    """,
-                    (dt.isoformat(), now, user_id),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE billing_entitlements
+                        SET access_until = %s, updated_at = %s
+                        WHERE user_id = %s
+                        """,
+                        (dt.isoformat(), now, user_id),
+                    )
                 conn.commit()
 
     def update_subscription_fields(
@@ -451,27 +445,29 @@ class BillingStore:
                 int(access_until_unix), tz=timezone.utc
             ).isoformat()
         with self._lock:
-            with self._connect() as conn:
-                if access_iso is not None:
-                    conn.execute(
-                        """
-                        UPDATE billing_entitlements
-                        SET paddle_subscription_id = ?,
-                            access_until = ?,
-                            updated_at = ?
-                        WHERE user_id = ?
-                        """,
-                        (subscription_id, access_iso, now, user_id),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        UPDATE billing_entitlements
-                        SET paddle_subscription_id = ?, updated_at = ?
-                        WHERE user_id = ?
-                        """,
-                        (subscription_id, now, user_id),
-                    )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    if access_iso is not None:
+                        cur.execute(
+                            """
+                            UPDATE billing_entitlements
+                            SET paddle_subscription_id = %s,
+                                access_until = %s,
+                                updated_at = %s
+                            WHERE user_id = %s
+                            """,
+                            (subscription_id, access_iso, now, user_id),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE billing_entitlements
+                            SET paddle_subscription_id = %s, updated_at = %s
+                            WHERE user_id = %s
+                            """,
+                            (subscription_id, now, user_id),
+                        )
                 conn.commit()
 
     def set_subscription_access_iso(
@@ -491,45 +487,52 @@ class BillingStore:
             dt = dt.replace(tzinfo=timezone.utc)
         normalized = dt.astimezone(timezone.utc).isoformat()
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_entitlements
-                    SET paddle_subscription_id = COALESCE(?, paddle_subscription_id),
-                        access_until = ?,
-                        updated_at = ?
-                    WHERE user_id = ?
-                    """,
-                    (subscription_id, normalized, now, user_id),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE billing_entitlements
+                        SET paddle_subscription_id = COALESCE(%s, paddle_subscription_id),
+                            access_until = %s,
+                            updated_at = %s
+                        WHERE user_id = %s
+                        """,
+                        (subscription_id, normalized, now, user_id),
+                    )
                 conn.commit()
 
     def ensure_guest_row(self, guest_key: str) -> None:
         now = _utc_now_iso()
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO billing_guest_entitlements (guest_key, free_runs_used, updated_at)
-                    VALUES (?, 0, ?)
-                    ON CONFLICT(guest_key) DO NOTHING
-                    """,
-                    (guest_key, now),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO billing_guest_entitlements (guest_key, free_runs_used, updated_at)
+                        VALUES (%s, 0, %s)
+                        ON CONFLICT (guest_key) DO NOTHING
+                        """,
+                        (guest_key, now),
+                    )
                 conn.commit()
 
     def get_guest_entitlements(self, guest_key: str) -> dict[str, Any]:
         self.ensure_guest_row(guest_key)
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT guest_key, free_runs_used, paid_job_credits,
-                           paddle_customer_id, paddle_address_id, updated_at
-                    FROM billing_guest_entitlements WHERE guest_key = ?
-                    """,
-                    (guest_key,),
-                ).fetchone()
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT guest_key, free_runs_used, paid_job_credits,
+                               paddle_customer_id, paddle_address_id, updated_at
+                        FROM billing_guest_entitlements WHERE guest_key = %s
+                        """,
+                        (guest_key,),
+                    )
+                    row = cur.fetchone()
         used = int(row["free_runs_used"] or 0) if row else 0
         credits = int(row["paid_job_credits"] or 0) if row else 0
         return {
@@ -547,14 +550,17 @@ class BillingStore:
             return False, "", "no_files"
         self.ensure_guest_row(guest_key)
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT free_runs_used, paid_job_credits
-                    FROM billing_guest_entitlements WHERE guest_key = ?
-                    """,
-                    (guest_key,),
-                ).fetchone()
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT free_runs_used, paid_job_credits
+                        FROM billing_guest_entitlements WHERE guest_key = %s
+                        """,
+                        (guest_key,),
+                    )
+                    row = cur.fetchone()
         used = int(row["free_runs_used"] or 0) if row else 0
         credits = int(row["paid_job_credits"] or 0) if row else 0
         if credits > 0:
@@ -571,45 +577,51 @@ class BillingStore:
         now = _utc_now_iso()
         self.ensure_guest_row(guest_key)
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_guest_entitlements
-                    SET paid_job_credits = MAX(0, paid_job_credits + ?), updated_at = ?
-                    WHERE guest_key = ?
-                    """,
-                    (delta, now, guest_key),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE billing_guest_entitlements
+                        SET paid_job_credits = GREATEST(0, paid_job_credits + %s), updated_at = %s
+                        WHERE guest_key = %s
+                        """,
+                        (delta, now, guest_key),
+                    )
                 conn.commit()
 
     def set_guest_paddle_customer(self, guest_key: str, customer_id: str) -> None:
         now = _utc_now_iso()
         self.ensure_guest_row(guest_key)
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_guest_entitlements
-                    SET paddle_customer_id = ?, updated_at = ?
-                    WHERE guest_key = ?
-                    """,
-                    (customer_id, now, guest_key),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE billing_guest_entitlements
+                        SET paddle_customer_id = %s, updated_at = %s
+                        WHERE guest_key = %s
+                        """,
+                        (customer_id, now, guest_key),
+                    )
                 conn.commit()
 
     def set_guest_paddle_address(self, guest_key: str, address_id: str) -> None:
         now = _utc_now_iso()
         self.ensure_guest_row(guest_key)
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_guest_entitlements
-                    SET paddle_address_id = ?, updated_at = ?
-                    WHERE guest_key = ?
-                    """,
-                    (address_id, now, guest_key),
-                )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE billing_guest_entitlements
+                        SET paddle_address_id = %s, updated_at = %s
+                        WHERE guest_key = %s
+                        """,
+                        (address_id, now, guest_key),
+                    )
                 conn.commit()
 
     def guest_apply_successful_job(self, guest_key: str, consumption: str) -> None:
@@ -619,25 +631,27 @@ class BillingStore:
         now = _utc_now_iso()
         self.ensure_guest_row(guest_key)
         with self._lock:
-            with self._connect() as conn:
-                if consumption == "guest_credit":
-                    conn.execute(
-                        """
-                        UPDATE billing_guest_entitlements
-                        SET paid_job_credits = MAX(0, paid_job_credits - 1), updated_at = ?
-                        WHERE guest_key = ?
-                        """,
-                        (now, guest_key),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        UPDATE billing_guest_entitlements
-                        SET free_runs_used = MIN(?, free_runs_used + 1), updated_at = ?
-                        WHERE guest_key = ?
-                        """,
-                        (GUEST_FREE_RUNS_MAX, now, guest_key),
-                    )
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    if consumption == "guest_credit":
+                        cur.execute(
+                            """
+                            UPDATE billing_guest_entitlements
+                            SET paid_job_credits = GREATEST(0, paid_job_credits - 1), updated_at = %s
+                            WHERE guest_key = %s
+                            """,
+                            (now, guest_key),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE billing_guest_entitlements
+                            SET free_runs_used = LEAST(%s, free_runs_used + 1), updated_at = %s
+                            WHERE guest_key = %s
+                            """,
+                            (GUEST_FREE_RUNS_MAX, now, guest_key),
+                        )
                 conn.commit()
 
     def can_start_job(self, user_id: str, image_count: int) -> Tuple[bool, str, str]:
@@ -655,61 +669,64 @@ class BillingStore:
         ym = _utc_now().strftime("%Y-%m")
 
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT access_until, paid_job_credits, free_runs_used,
-                           sub_quota_month, sub_quota_used
-                    FROM billing_entitlements WHERE user_id = ?
-                    """,
-                    (user_id,),
-                ).fetchone()
-                if not row:
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT access_until, paid_job_credits, free_runs_used,
+                               sub_quota_month, sub_quota_used
+                        FROM billing_entitlements WHERE user_id = %s
+                        """,
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        conn.commit()
+                        return False, "", "free_exhausted"
+                    au = row["access_until"]
+                    credits = int(row["paid_job_credits"] or 0)
+                    free_used = int(row["free_runs_used"] or 0)
+                    sm = row["sub_quota_month"]
+                    used = int(row["sub_quota_used"] or 0)
+
+                    if access_until_active(au):
+                        if sm != ym:
+                            cur.execute(
+                                """
+                                UPDATE billing_entitlements
+                                SET sub_quota_month = %s, sub_quota_used = 0, updated_at = %s
+                                WHERE user_id = %s
+                                """,
+                                (ym, now_iso, user_id),
+                            )
+                            used = 0
+                        if used < cap:
+                            conn.commit()
+                            return True, "sub_quota", ""
+                        if credits > 0:
+                            conn.commit()
+                            return True, "credit", ""
+                        conn.commit()
+                        return False, "", "quota_exhausted"
+
+                    free_left = max(0, USER_FREE_RUNS_MAX - free_used)
+
+                    if image_count > 1:
+                        if credits > 0:
+                            conn.commit()
+                            return True, "credit", ""
+                        conn.commit()
+                        return False, "", "multi_requires_plan"
+
+                    if free_left > 0:
+                        conn.commit()
+                        return True, "free", ""
+                    if credits > 0:
+                        conn.commit()
+                        return True, "credit", ""
+                    conn.commit()
                     return False, "", "free_exhausted"
-                au = row["access_until"]
-                credits = int(row["paid_job_credits"] or 0)
-                free_used = int(row["free_runs_used"] or 0)
-                sm = row["sub_quota_month"]
-                used = int(row["sub_quota_used"] or 0)
-
-                if access_until_active(au):
-                    if sm != ym:
-                        conn.execute(
-                            """
-                            UPDATE billing_entitlements
-                            SET sub_quota_month = ?, sub_quota_used = 0, updated_at = ?
-                            WHERE user_id = ?
-                            """,
-                            (ym, now_iso, user_id),
-                        )
-                        used = 0
-                    if used < cap:
-                        conn.commit()
-                        return True, "sub_quota", ""
-                    # Monthly included runs used — still allow one-time purchased credits (multi-image).
-                    if credits > 0:
-                        conn.commit()
-                        return True, "credit", ""
-                    conn.commit()
-                    return False, "", "quota_exhausted"
-
-                free_left = max(0, USER_FREE_RUNS_MAX - free_used)
-
-                if image_count > 1:
-                    if credits > 0:
-                        conn.commit()
-                        return True, "credit", ""
-                    conn.commit()
-                    return False, "", "multi_requires_plan"
-
-                if free_left > 0:
-                    conn.commit()
-                    return True, "free", ""
-                if credits > 0:
-                    conn.commit()
-                    return True, "credit", ""
-                conn.commit()
-                return False, "", "free_exhausted"
 
     def apply_successful_job(self, user_id: str, consumption: str) -> None:
         consumption = (consumption or "").strip().lower()
@@ -719,54 +736,57 @@ class BillingStore:
         ym = _utc_now().strftime("%Y-%m")
         self.ensure_row(user_id)
         with self._lock:
-            with self._connect() as conn:
-                if consumption == "credit":
-                    conn.execute(
-                        """
-                        UPDATE billing_entitlements
-                        SET paid_job_credits = MAX(0, paid_job_credits - 1), updated_at = ?
-                        WHERE user_id = ?
-                        """,
-                        (now, user_id),
-                    )
-                elif consumption == "free":
-                    conn.execute(
-                        """
-                        UPDATE billing_entitlements
-                        SET free_runs_used = MIN(?, free_runs_used + 1),
-                            updated_at = ?
-                        WHERE user_id = ?
-                        """,
-                        (USER_FREE_RUNS_MAX, now, user_id),
-                    )
-                elif consumption == "sub_quota":
-                    row = conn.execute(
-                        """
-                        SELECT sub_quota_month, sub_quota_used
-                        FROM billing_entitlements WHERE user_id = ?
-                        """,
-                        (user_id,),
-                    ).fetchone()
-                    sm = row["sub_quota_month"] if row else None
-                    used = int(row["sub_quota_used"] or 0) if row else 0
-                    if sm != ym:
-                        conn.execute(
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    if consumption == "credit":
+                        cur.execute(
                             """
                             UPDATE billing_entitlements
-                            SET sub_quota_month = ?, sub_quota_used = 1, updated_at = ?
-                            WHERE user_id = ?
-                            """,
-                            (ym, now, user_id),
-                        )
-                    else:
-                        conn.execute(
-                            """
-                            UPDATE billing_entitlements
-                            SET sub_quota_used = sub_quota_used + 1, updated_at = ?
-                            WHERE user_id = ?
+                            SET paid_job_credits = GREATEST(0, paid_job_credits - 1), updated_at = %s
+                            WHERE user_id = %s
                             """,
                             (now, user_id),
                         )
+                    elif consumption == "free":
+                        cur.execute(
+                            """
+                            UPDATE billing_entitlements
+                            SET free_runs_used = LEAST(%s, free_runs_used + 1),
+                                updated_at = %s
+                            WHERE user_id = %s
+                            """,
+                            (USER_FREE_RUNS_MAX, now, user_id),
+                        )
+                    elif consumption == "sub_quota":
+                        cur.execute(
+                            """
+                            SELECT sub_quota_month, sub_quota_used
+                            FROM billing_entitlements WHERE user_id = %s
+                            """,
+                            (user_id,),
+                        )
+                        row = cur.fetchone()
+                        sm = row["sub_quota_month"] if row else None
+                        used = int(row["sub_quota_used"] or 0) if row else 0
+                        if sm != ym:
+                            cur.execute(
+                                """
+                                UPDATE billing_entitlements
+                                SET sub_quota_month = %s, sub_quota_used = 1, updated_at = %s
+                                WHERE user_id = %s
+                                """,
+                                (ym, now, user_id),
+                            )
+                        else:
+                            cur.execute(
+                                """
+                                UPDATE billing_entitlements
+                                SET sub_quota_used = sub_quota_used + 1, updated_at = %s
+                                WHERE user_id = %s
+                                """,
+                                (now, user_id),
+                            )
                 conn.commit()
 
 
@@ -776,5 +796,6 @@ _billing_singleton: Optional[BillingStore] = None
 def get_billing_store(base_dir: Path) -> BillingStore:
     global _billing_singleton
     if _billing_singleton is None:
-        _billing_singleton = BillingStore(billing_db_path(base_dir))
+        _ = base_dir
+        _billing_singleton = BillingStore()
     return _billing_singleton

@@ -1,5 +1,5 @@
-# For durable SQLite across deploys: upgrade to a paid instance, add a persistent disk in the Render
-# dashboard, and set USER_DB_PATH to the mount (e.g. /data/users.sqlite3). See README.
+# Users + billing use PostgreSQL. Set DATABASE_URL on this web service to the Internal Database URL
+# from translate-chat-db (Dashboard → database → Connect). Do not commit secrets here.
 services:
   - type: web
     name: translate-chat-backend
