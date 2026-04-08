@@ -1,11 +1,10 @@
-"""Verify OAuth tokens from Google, Facebook, and Apple (Sign in with Apple)."""
+"""Verify OAuth tokens from Google and Facebook."""
 
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-import jwt
 import requests
 
 try:
@@ -88,37 +87,4 @@ def verify_facebook_access_token(access_token: str) -> Dict[str, Any]:
         "sub": str(uid),
         "email": email,
         "name": (data.get("name") or "").strip() or None,
-    }
-
-
-def verify_apple_id_token(id_token_str: str) -> Dict[str, Any]:
-    client_id = os.environ.get("APPLE_CLIENT_ID", "").strip()
-    if not client_id:
-        raise OAuthError("Apple sign-in is not configured on this server", 503)
-    try:
-        jwks_client = jwt.PyJWKClient("https://appleid.apple.com/auth/keys")
-        signing_key = jwks_client.get_signing_key_from_jwt(id_token_str)
-        data = jwt.decode(
-            id_token_str,
-            signing_key.key,
-            algorithms=["RS256"],
-            audience=client_id,
-            issuer="https://appleid.apple.com",
-        )
-    except jwt.PyJWTError as e:
-        raise OAuthError(f"Invalid Apple token: {e}") from e
-    sub = data.get("sub")
-    if not sub:
-        raise OAuthError("Invalid Apple token: missing subject")
-    email = (data.get("email") or "").strip().lower()
-    if not email:
-        raise OAuthError(
-            "Apple did not include an email in this sign-in. "
-            "Use “Share my email” on first sign-in, or sign in with Google/email.",
-            400,
-        )
-    return {
-        "sub": str(sub),
-        "email": email,
-        "name": None,
     }

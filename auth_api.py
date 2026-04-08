@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from auth_deps import get_current_user_required, get_user_store
 from auth_jwt import create_access_token
-from auth_oauth import OAuthError, verify_apple_id_token, verify_facebook_access_token, verify_google_id_token
+from auth_oauth import OAuthError, verify_facebook_access_token, verify_google_id_token
 from auth_password import hash_password, verify_password
 from user_store import (
     OAUTH_PASSWORD_SENTINEL,
@@ -56,17 +56,12 @@ class FacebookTokenBody(BaseModel):
     access_token: str = Field(..., min_length=10)
 
 
-class AppleTokenBody(BaseModel):
-    id_token: str = Field(..., min_length=10)
-
-
 @router.get("/providers")
 def auth_providers():
     """Public OAuth client IDs for the frontend (safe to expose)."""
     return {
         "google_client_id": os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
         "facebook_app_id": os.environ.get("FACEBOOK_APP_ID", "").strip(),
-        "apple_client_id": os.environ.get("APPLE_CLIENT_ID", "").strip(),
     }
 
 
@@ -143,7 +138,7 @@ def login(body: LoginBody, store: Annotated[UserStore, Depends(get_user_store)])
     if pw_hash == OAUTH_PASSWORD_SENTINEL:
         raise HTTPException(
             status_code=401,
-            detail="This account uses social sign-in. Use Google, Apple, or Facebook.",
+            detail="This account uses social sign-in. Use Google or Facebook.",
         )
     if not verify_password(body.password, pw_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -170,17 +165,6 @@ def oauth_facebook(
     except OAuthError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e)) from e
     return _oauth_sign_in(store, "facebook", profile)
-
-
-@router.post("/oauth/apple", response_model=TokenResponse)
-def oauth_apple(
-    body: AppleTokenBody, store: Annotated[UserStore, Depends(get_user_store)]
-):
-    try:
-        profile = verify_apple_id_token(body.id_token)
-    except OAuthError as e:
-        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
-    return _oauth_sign_in(store, "apple", profile)
 
 
 @router.get("/me", response_model=UserPublic)

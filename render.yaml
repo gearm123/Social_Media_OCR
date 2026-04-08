@@ -66,5 +66,3 @@ services:
         sync: false
       - key: FACEBOOK_APP_SECRET
         sync: false
-      - key: APPLE_CLIENT_ID
-        sync: false
