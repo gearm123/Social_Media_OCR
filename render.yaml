@@ -6,7 +6,8 @@ services:
     runtime: python
     plan: free
     # Pin Python via runtime.txt (3.12.x) so torch/psycopg wheels match; 3.14 default can break hashed installs.
-    buildCommand: pip install --no-cache-dir -r requirements.txt
+    # Upgrade pip (better extras resolution), install deps, then fail fast if DB stack is missing.
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install --no-cache-dir -r requirements.txt && python -c "import psycopg; import psycopg_pool"
     startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
