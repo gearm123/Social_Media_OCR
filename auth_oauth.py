@@ -96,10 +96,10 @@ def verify_facebook_access_token(access_token: str) -> Dict[str, Any]:
     app_secret = os.environ.get("FACEBOOK_APP_SECRET", "").strip()
     if not app_id:
         raise OAuthError("Facebook sign-in is not configured on this server", 503)
-    # Only `id` — enough for account linking and synthetic email. Do not request `email`
-    # (see module note above). We do not read name/picture from Graph.
+    # `id` for linking + synthetic email; `name` for a human-readable default username
+    # (see module note: we still do not request `email` from Graph).
     params: Dict[str, str] = {
-        "fields": "id",
+        "fields": "id,name",
         "access_token": access_token,
     }
     if app_secret:
@@ -133,5 +133,5 @@ def verify_facebook_access_token(access_token: str) -> Dict[str, Any]:
     return {
         "sub": uid_s,
         "email": email,
-        "name": None,
+        "name": (data.get("name") or "").strip() or None,
     }
