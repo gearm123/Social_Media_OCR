@@ -4716,9 +4716,16 @@ def translate_conversation_gemini_multimodal(
         if craft_vertical_bands_markdown and str(craft_vertical_bands_markdown).strip()
         else ""
     )
+    _src_hint = (source_language_name or "").strip()
+    _src_lang_section = (
+        f"source language hint: message bubbles are expected to be in {_src_hint}. "
+        "put each bubble's text in text_src in that language; if the image clearly shows another language, use what you see.\n\n"
+        if _src_hint
+        else ""
+    )
     prompt = f"""{intro}
 
-transcribe the conversation in the original language
+{_src_lang_section}transcribe the conversation in the original language
 the first image is the oldest
 
 {craft_section}{bubble_section}transcribe what you see

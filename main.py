@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import copy
 import argparse
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,11 +19,14 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    _root = Path(__file__).resolve().parent
+    if os.environ.get("RENDER", "").strip().lower() != "true":
+        load_dotenv(_root / ".env")
 except ImportError:
     pass
 
-from config import INPUT_DIR, OUTPUT_DIR, JSON_DIR, RENDER_DIR, ocr_engine
+from config import INPUT_DIR, OUTPUT_DIR, JSON_DIR, RENDER_DIR, ocr_engine, translate_en_to
+from output_languages import OutputLanguage, parse_output_language
 import config as runtime_config
 import ocr_translate as ocr_translate_module
 from ocr_translate import (
@@ -39,6 +43,7 @@ from ocr_translate import (
     _compact_verbose_logs,
     _prefer_english_surface,
     _default_status_bar_info,
+    _looks_like_link_text,
 )
 from pipeline import prepare_image_crop_info
 from chat_renderer import composite_chat_below_top_banner, render_chat, resolve_top_banner_path
@@ -617,12 +622,26 @@ def _parse_args():
         ),
     )
     parser.add_argument(
-        "-l", "--language",
+        "-l", "--source-language",
         metavar="CODE",
+        dest="source_language",
         default=None,
         help=(
-            "Source language BCP-47 hint passed to Gemini "
+            "Optional source language BCP-47 hint for Gemini transcription "
             "(e.g. th, zh, ja). Default: infer from screenshots."
+        ),
+    )
+    parser.add_argument(
+        "--language",
+        dest="output_language",
+        type=_parse_output_language_cli,
+        default=OutputLanguage.ENGLISH,
+        metavar="LANG",
+        help=(
+            "Final translation language for translated_conversation.json and translated_conversation.png "
+            "(default: english). The model still resolves meaning in English internally; this only "
+            "localizes the delivered artifact. Per-pass debug/compare PNGs stay in English. "
+            "Names or codes: english, spanish, ja, zh-CN, th, … (see output_languages.OutputLanguage)."
         ),
     )
     parser.add_argument(
@@ -878,6 +897,36 @@ def _merge_chat_with_system_metadata(chat_meta, system_messages):
     return merged
 
 
+def _localize_render_meta_for_output(meta: list, lang: OutputLanguage) -> None:
+    """Mutates *meta* in place: English ``text_en`` (and call-card strings) → *lang*."""
+    if lang == OutputLanguage.ENGLISH:
+        return
+    code = lang.value
+    for item in meta or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "call_notice":
+            for field in ("text_en", "subtitle", "button_text"):
+                v = item.get(field)
+                if isinstance(v, str) and v.strip() and not _looks_like_link_text(v):
+                    item[field] = translate_en_to(v, code) or v
+            continue
+        v = item.get("text_en")
+        if isinstance(v, str) and v.strip() and not _looks_like_link_text(v):
+            item["text_en"] = translate_en_to(v, code) or v
+
+
+def _parse_output_language_cli(value: str) -> OutputLanguage:
+    p = parse_output_language(value)
+    if p is None:
+        raise argparse.ArgumentTypeError(
+            f"unknown output language {value!r}; "
+            "use a name or code such as english, spanish, french, ja, zh-CN, th, ar, hi "
+            "(full list: output_languages.OutputLanguage)."
+        )
+    return p
+
+
 def _parse_bubble_summary_text(raw_text: str, num_images: int):
     raw_lines = [line.strip() for line in (raw_text or "").splitlines()]
     lines = [line for line in raw_lines if line]
@@ -999,12 +1048,14 @@ def run_pipeline_job(
     cancel_check: Optional[Callable[[], bool]] = None,
     difficulty: int = 3,
     hurry_up: bool = False,
+    output_language: Optional[OutputLanguage] = None,
 ):
     def _check_cancel() -> None:
         if cancel_check is not None and cancel_check():
             raise JobCancelledError("Job cancelled by user request")
 
     difficulty = _coerce_pipeline_difficulty(difficulty)
+    target_output_lang = output_language if output_language is not None else OutputLanguage.ENGLISH
     pipeline_start = time.time()
 
     _quiet_phase_stdout = {
@@ -1331,6 +1382,21 @@ def run_pipeline_job(
         # Profile photo from screenshots disabled for now (generic stub in renderer).
         profile_image = None
 
+        json_and_final_meta = final_render_meta
+        display_contact_name = final_contact_name
+        display_status_text = final_status_text
+        if target_output_lang != OutputLanguage.ENGLISH:
+            json_and_final_meta = copy.deepcopy(final_render_meta)
+            _localize_render_meta_for_output(json_and_final_meta, target_output_lang)
+            oc = final_contact_name
+            if oc and not _looks_like_link_text(oc):
+                oc = translate_en_to(oc, target_output_lang.value) or oc
+            display_contact_name = (oc or "Person A").strip() or "Person A"
+            st = final_status_text
+            if st and not _looks_like_link_text(st):
+                st = translate_en_to(st, target_output_lang.value) or st
+            display_status_text = st.strip()
+
         _check_cancel()
 
         _emit_phase("finalizing", "Writing outputs & debug JSON…", 0.92)
@@ -1351,13 +1417,19 @@ def run_pipeline_job(
 
         combined_json_path = os.path.join(JSON_DIR, "translated_conversation.json")
         with open(combined_json_path, "w", encoding="utf-8") as f:
-            json.dump(final_render_meta, f, indent=2, ensure_ascii=False)
+            json.dump(json_and_final_meta, f, indent=2, ensure_ascii=False)
 
         _emit_phase("rendering", "Rendering final images…", 0.96)
-        _render_header = dict(
+        # Per-pass / compare PNGs stay English in the header; only the main artifact uses localized names.
+        _render_header_debug = dict(
             profile_image=profile_image,
             contact_name=final_contact_name,
             header_status=final_status_text,
+        )
+        _render_header_final = dict(
+            profile_image=profile_image,
+            contact_name=display_contact_name,
+            header_status=display_status_text,
         )
         _top_banner = resolve_top_banner_path()
         if not _top_banner:
@@ -1367,9 +1439,9 @@ def run_pipeline_job(
                 "to a PNG path on this machine.",
                 flush=True,
             )
-        pass1_raw = render_chat(pass1_meta, **_render_header)
-        pass2_raw = render_chat(all_meta, **_render_header)
-        pass3_raw = render_chat(final_chat_meta, **_render_header)
+        pass1_raw = render_chat(pass1_meta, **_render_header_debug)
+        pass2_raw = render_chat(all_meta, **_render_header_debug)
+        pass3_raw = render_chat(final_chat_meta, **_render_header_debug)
 
         pass1_chat = composite_chat_below_top_banner(pass1_raw, _top_banner)
         pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
@@ -1404,14 +1476,14 @@ def run_pipeline_job(
             cv2.imwrite(compare_path, compare_img)
 
         combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
-        final_chat = render_chat(final_render_meta, **_render_header)
+        final_chat = render_chat(json_and_final_meta, **_render_header_final)
         final_chat = composite_chat_below_top_banner(final_chat, _top_banner)
         cv2.imwrite(combined_path, final_chat)
         _emit_phase("completed", "Final image generated", 1.0)
         if _compact_verbose_logs():
             _vprint(f"\nfinal_image={combined_path}\n")
         else:
-            _vprint(f"[JOB] messages={len(final_render_meta)} final_image={combined_path}")
+            _vprint(f"[JOB] messages={len(json_and_final_meta)} final_image={combined_path}")
             p1 = gemini_pass_sec.get("pass1")
             p2 = gemini_pass_sec.get("pass2")
             p3 = gemini_pass_sec.get("pass3")
@@ -1425,12 +1497,13 @@ def run_pipeline_job(
     return {
         "job_dir": str(work_dir),
         "language": language,
+        "output_language": target_output_lang.value,
         "difficulty": difficulty,
         "hurry_up": bool(hurry_up),
-        "contact_name": final_contact_name,
-        "status_text": final_status_text,
+        "contact_name": display_contact_name,
+        "status_text": display_status_text,
         "images_processed": len(images),
-        "messages_rendered": len(final_render_meta),
+        "messages_rendered": len(json_and_final_meta),
         "total_runtime_sec": round(time.time() - pipeline_start, 2),
         "gemini_pass_sec": dict(gemini_pass_sec),
         "artifacts": {
@@ -1469,11 +1542,15 @@ def main():
     if _compact_verbose_logs():
         _vprint("\n******[pipeline] Gemini full-vision chat translator************\n")
         _vprint("******************")
-        if args.language:
-            _vprint(f"[pipeline] Source language hint: {args.language}")
+        if args.source_language:
+            _vprint(f"[pipeline] Source language hint: {args.source_language}")
         else:
             _vprint("[pipeline] Source language: infer from screenshots")
         _vprint(f"[pipeline] Found {len(images)} image(s)")
+        _vprint(
+            f"[pipeline] --language (output)={args.output_language.value} "
+            f"({args.output_language.name.lower().replace('_', ' ')})"
+        )
         _vprint(
             f"[pipeline] difficulty={args.difficulty} "
             f"(1=Pass1 only, 2=Pass1–2, 3=full Pass1–3)  "
@@ -1482,11 +1559,15 @@ def main():
         _vprint("*****************\n")
     else:
         _vprint("\n[pipeline] Gemini full-vision chat translator\n")
-        if args.language:
-            _vprint(f"[pipeline] Source language hint: {args.language}")
+        if args.source_language:
+            _vprint(f"[pipeline] Source language hint: {args.source_language}")
         else:
             _vprint("[pipeline] Source language: infer from screenshots")
         _vprint(f"[pipeline] Found {len(images)} image(s) under {INPUT_DIR}")
+        _vprint(
+            f"[pipeline] --language (output)={args.output_language.value} "
+            f"({args.output_language.name.lower().replace('_', ' ')})"
+        )
         _vprint(
             f"[pipeline] difficulty={args.difficulty} "
             f"(1=Pass1 only, 2=Pass1–2, 3=full Pass1–3)  "
@@ -1495,10 +1576,11 @@ def main():
     result = run_pipeline_job(
         images,
         Path(__file__).resolve().parent,
-        language=args.language,
+        language=args.source_language,
         use_project_pass1_bubble_file=True,
         difficulty=args.difficulty,
         hurry_up=args.hurry_up,
+        output_language=args.output_language,
     )
     if not _compact_verbose_logs():
         _vprint(f"[pipeline] Output JSON → {result['artifacts']['json']}")

@@ -39,9 +39,9 @@ def main():
         help="Directory of local sample screenshots. Default: tests/local_inputs, then input_images",
     )
     parser.add_argument(
-        "--language",
+        "--source-language",
         default="th",
-        help="Optional source language hint sent to the backend",
+        help="Optional source language hint sent to the backend as form field 'language'",
     )
     parser.add_argument(
         "--bubble-summary-file",
@@ -87,8 +87,8 @@ def main():
             files.append(("files", (image_path.name, fh, "application/octet-stream")))
 
         data = {}
-        if args.language:
-            data["language"] = args.language
+        if args.source_language:
+            data["language"] = args.source_language
         if bubble_summary_text:
             data["bubble_summary_text"] = bubble_summary_text
 

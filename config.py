@@ -327,3 +327,27 @@ def translate_text(text):
         return translated
     except Exception:
         return ""
+
+
+# English → target (final output localization). Separate cache from auto→en above.
+_en_to_target_cache: dict[tuple[str, str], str] = {}
+
+
+def translate_en_to(text: str, target_code: str) -> str:
+    """Translate *text* from English to *target_code* (Google Translate)."""
+    if not text or not str(text).strip():
+        return ""
+    tgt = (target_code or "en").strip()
+    if tgt.lower() in ("en", "en-us", "en-gb"):
+        return text
+    key = (tgt, text)
+    if key in _en_to_target_cache:
+        return _en_to_target_cache[key]
+    try:
+        out = GoogleTranslator(source="en", target=tgt).translate(text)
+        if not out:
+            return text
+        _en_to_target_cache[key] = out
+        return out
+    except Exception:
+        return text
