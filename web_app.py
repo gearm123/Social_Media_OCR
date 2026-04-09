@@ -300,7 +300,7 @@ def root():
             "register": "POST /auth/register JSON {username, email, password}",
             "login": "POST /auth/login JSON {email, password} → Bearer token",
             "oauth_google": "POST /auth/oauth/google JSON {id_token} or {access_token}",
-            "oauth_facebook": "POST /auth/oauth/facebook JSON {access_token}",
+            "oauth_facebook": "POST /auth/oauth/facebook or /auth/oauth/fb JSON {access_token}",
             "me": "GET /auth/me Authorization: Bearer <token>",
         },
         "create_job": "POST /jobs (multipart: files + optional language, bubble_summary_text, difficulty 1–3, hurry_up 1/true when set — default hurry_up off)",

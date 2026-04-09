@@ -177,15 +177,27 @@ def oauth_google(
     return _oauth_sign_in(store, "google", profile)
 
 
-@router.post("/oauth/facebook", response_model=TokenResponse)
-def oauth_facebook(
-    body: FacebookTokenBody, store: Annotated[UserStore, Depends(get_user_store)]
-):
+def _oauth_facebook_token(body: FacebookTokenBody, store: UserStore) -> TokenResponse:
     try:
         profile = verify_facebook_access_token(body.access_token)
     except OAuthError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e)) from e
     return _oauth_sign_in(store, "facebook", profile)
+
+
+@router.post("/oauth/facebook", response_model=TokenResponse)
+def oauth_facebook(
+    body: FacebookTokenBody, store: Annotated[UserStore, Depends(get_user_store)]
+):
+    return _oauth_facebook_token(body, store)
+
+
+@router.post("/oauth/fb", response_model=TokenResponse)
+def oauth_fb(
+    body: FacebookTokenBody, store: Annotated[UserStore, Depends(get_user_store)]
+):
+    """Same as ``/oauth/facebook``; short path avoids some browser extensions that block URLs containing ``facebook``."""
+    return _oauth_facebook_token(body, store)
 
 
 @router.get("/me", response_model=UserPublic)
