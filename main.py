@@ -635,7 +635,7 @@ def _parse_args():
         "--language",
         dest="output_language",
         type=_parse_output_language_cli,
-        default=OutputLanguage.ENGLISH,
+        default="english",
         metavar="LANG",
         help=(
             "Final translation language for translated_conversation.json and translated_conversation.png "
@@ -917,7 +917,9 @@ def _localize_render_meta_for_output(meta: list, lang: OutputLanguage) -> None:
             item["text_en"] = translate_en_to(v, code) or v
 
 
-def _parse_output_language_cli(value: str) -> OutputLanguage:
+def _parse_output_language_cli(value: str | OutputLanguage) -> OutputLanguage:
+    if isinstance(value, OutputLanguage):
+        return value
     p = parse_output_language(value)
     if p is None:
         raise argparse.ArgumentTypeError(

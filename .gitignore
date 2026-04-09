@@ -1,3 +1,6 @@
+# Local scratch / mistaken saves (not part of the app)
+gtag_test.js
+
 .env
 .env.local
 __pycache__/
