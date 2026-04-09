@@ -159,10 +159,7 @@ def login(body: LoginBody, store: Annotated[UserStore, Depends(get_user_store)])
     return TokenResponse(access_token=create_access_token(user.id))
 
 
-@router.post("/oauth/google", response_model=TokenResponse)
-def oauth_google(
-    body: GoogleTokenBody, store: Annotated[UserStore, Depends(get_user_store)]
-):
+def _oauth_google_token(body: GoogleTokenBody, store: UserStore) -> TokenResponse:
     tid = (body.id_token or "").strip()
     tac = (body.access_token or "").strip()
     if bool(tid) == bool(tac):
@@ -175,6 +172,21 @@ def oauth_google(
     except OAuthError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e)) from e
     return _oauth_sign_in(store, "google", profile)
+
+
+@router.post("/oauth/google", response_model=TokenResponse)
+def oauth_google(
+    body: GoogleTokenBody, store: Annotated[UserStore, Depends(get_user_store)]
+):
+    return _oauth_google_token(body, store)
+
+
+@router.post("/oauth/gsi", response_model=TokenResponse)
+def oauth_gsi(
+    body: GoogleTokenBody, store: Annotated[UserStore, Depends(get_user_store)]
+):
+    """Same as ``/oauth/google``; alternate path for strict filters that block ``google`` in the URL."""
+    return _oauth_google_token(body, store)
 
 
 def _oauth_facebook_token(body: FacebookTokenBody, store: UserStore) -> TokenResponse:
