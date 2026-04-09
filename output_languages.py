@@ -1,8 +1,11 @@
-"""Supported final output languages (Google Translate target codes).
+"""Supported final output languages (Latin / Romance + Germanic families only).
 
-The Gemini pipeline still resolves and glosses in English; strings are then
-machine-translated to the selected target for ``translated_conversation.json``
-and the main rendered image. Per-pass debug PNGs stay English.
+Each :class:`OutputLanguage` value is the ``target`` code accepted by
+``deep_translator.GoogleTranslator`` (Google Translate). Verified against that
+library's supported set (see ``tests/test_output_languages_google.py``).
+
+The Gemini pipeline still resolves in English; these codes are used only for the
+post-step ``translate_en_to`` localization of the main JSON/PNG.
 """
 
 from __future__ import annotations
@@ -10,9 +13,14 @@ from __future__ import annotations
 from enum import Enum
 from typing import Iterable
 
+# ---------------------------------------------------------------------------
+# Enum: Romance (Latin-derived) + Germanic (incl. English / North & West Germanic)
+# Excludes Slavic, Greek, non-European, etc.
+# ---------------------------------------------------------------------------
+
 
 class OutputLanguage(str, Enum):
-    """Google Translate ``target`` codes known to work well for chat UI text."""
+    """Google Translate target codes for Latin-script Romance + Germanic languages."""
 
     ENGLISH = "en"
     SPANISH = "es"
@@ -21,51 +29,28 @@ class OutputLanguage(str, Enum):
     ITALIAN = "it"
     PORTUGUESE = "pt"
     DUTCH = "nl"
-    POLISH = "pl"
-    RUSSIAN = "ru"
-    UKRAINIAN = "uk"
-    CZECH = "cs"
-    ROMANIAN = "ro"
-    GREEK = "el"
-    TURKISH = "tr"
-    ARABIC = "ar"
-    HEBREW = "he"
-    HINDI = "hi"
-    BENGALI = "bn"
-    THAI = "th"
-    VIETNAMESE = "vi"
-    INDONESIAN = "id"
-    MALAY = "ms"
-    FILIPINO = "tl"
-    JAPANESE = "ja"
-    KOREAN = "ko"
-    CHINESE_SIMPLIFIED = "zh-CN"
-    CHINESE_TRADITIONAL = "zh-TW"
-    SWEDISH = "sv"
     DANISH = "da"
+    SWEDISH = "sv"
     NORWEGIAN = "no"
-    FINNISH = "fi"
-    HUNGARIAN = "hu"
-    BULGARIAN = "bg"
-    CROATIAN = "hr"
-    SERBIAN = "sr"
-    SLOVAK = "sk"
-    SLOVENIAN = "sl"
-    LITHUANIAN = "lt"
-    LATVIAN = "lv"
-    ESTONIAN = "et"
-    PERSIAN = "fa"
-    URDU = "ur"
-    TAMIL = "ta"
-    TELUGU = "te"
-    MARATHI = "mr"
-    GUJARATI = "gu"
-    KANNADA = "kn"
-    MALAYALAM = "ml"
-    SWAHILI = "sw"
-    AFRIKAANS = "af"
-    CATALAN = "ca"
     ICELANDIC = "is"
+    AFRIKAANS = "af"
+    ROMANIAN = "ro"
+    LUXEMBOURGISH = "lb"
+
+
+def google_translate_target_code(target_code: str) -> str:
+    """Map a stored / CLI language code to the ``target=`` value for ``GoogleTranslator``.
+
+    All :class:`OutputLanguage` values are two-letter ISO 639-1 codes accepted by
+    ``deep_translator`` as lowercase (validated in ``tests/test_output_languages_google.py``).
+    """
+    raw = (target_code or "en").strip()
+    low = raw.lower()
+    if low in ("en", "en-us", "en-gb"):
+        return "en"
+    if len(raw) == 2:
+        return low
+    return raw
 
 
 # Aliases (CLI / API) → enum member. Keys are lowercased in lookup.
@@ -74,7 +59,7 @@ for _m in OutputLanguage:
     _OUTPUT_LANG_ALIASES[_m.value.lower()] = _m
     _OUTPUT_LANG_ALIASES[_m.name.lower()] = _m
 
-_EXTRA_ALIASES = {
+_EXTRA_ALIASES: dict[str, OutputLanguage] = {
     "eng": OutputLanguage.ENGLISH,
     "ingles": OutputLanguage.ENGLISH,
     "castilian": OutputLanguage.SPANISH,
@@ -92,70 +77,34 @@ _EXTRA_ALIASES = {
     "brazilian": OutputLanguage.PORTUGUESE,
     "nld": OutputLanguage.DUTCH,
     "nederlands": OutputLanguage.DUTCH,
-    "pol": OutputLanguage.POLISH,
-    "polski": OutputLanguage.POLISH,
-    "rus": OutputLanguage.RUSSIAN,
-    "russian": OutputLanguage.RUSSIAN,
-    "українська": OutputLanguage.UKRAINIAN,
-    "ces": OutputLanguage.CZECH,
-    "cze": OutputLanguage.CZECH,
-    "cesky": OutputLanguage.CZECH,
-    "ron": OutputLanguage.ROMANIAN,
-    "ell": OutputLanguage.GREEK,
-    "tur": OutputLanguage.TURKISH,
-    "ara": OutputLanguage.ARABIC,
-    "heb": OutputLanguage.HEBREW,
-    "hin": OutputLanguage.HINDI,
-    "ben": OutputLanguage.BENGALI,
-    "tha": OutputLanguage.THAI,
-    "vie": OutputLanguage.VIETNAMESE,
-    "ind": OutputLanguage.INDONESIAN,
-    "indonesian": OutputLanguage.INDONESIAN,
-    "msa": OutputLanguage.MALAY,
-    "tagalog": OutputLanguage.FILIPINO,
-    "fil": OutputLanguage.FILIPINO,
-    "jpn": OutputLanguage.JAPANESE,
-    "kor": OutputLanguage.KOREAN,
-    "zh": OutputLanguage.CHINESE_SIMPLIFIED,
-    "zh_cn": OutputLanguage.CHINESE_SIMPLIFIED,
-    "zh-cn": OutputLanguage.CHINESE_SIMPLIFIED,
-    "zho": OutputLanguage.CHINESE_SIMPLIFIED,
-    "mandarin": OutputLanguage.CHINESE_SIMPLIFIED,
-    "simplified_chinese": OutputLanguage.CHINESE_SIMPLIFIED,
-    "chinese": OutputLanguage.CHINESE_SIMPLIFIED,
-    "zh_tw": OutputLanguage.CHINESE_TRADITIONAL,
-    "zh-tw": OutputLanguage.CHINESE_TRADITIONAL,
-    "traditional_chinese": OutputLanguage.CHINESE_TRADITIONAL,
+    "flemish": OutputLanguage.DUTCH,
     "swe": OutputLanguage.SWEDISH,
     "svenska": OutputLanguage.SWEDISH,
     "dan": OutputLanguage.DANISH,
     "dansk": OutputLanguage.DANISH,
     "nob": OutputLanguage.NORWEGIAN,
-    "norwegian": OutputLanguage.NORWEGIAN,
-    "fin": OutputLanguage.FINNISH,
-    "hun": OutputLanguage.HUNGARIAN,
-    "magyar": OutputLanguage.HUNGARIAN,
-    "bul": OutputLanguage.BULGARIAN,
-    "hrv": OutputLanguage.CROATIAN,
-    "srp": OutputLanguage.SERBIAN,
-    "slk": OutputLanguage.SLOVAK,
-    "slv": OutputLanguage.SLOVENIAN,
-    "lit": OutputLanguage.LITHUANIAN,
-    "lav": OutputLanguage.LATVIAN,
-    "est": OutputLanguage.ESTONIAN,
-    "fas": OutputLanguage.PERSIAN,
-    "farsi": OutputLanguage.PERSIAN,
-    "urd": OutputLanguage.URDU,
-    "tam": OutputLanguage.TAMIL,
-    "tel": OutputLanguage.TELUGU,
-    "mar": OutputLanguage.MARATHI,
-    "guj": OutputLanguage.GUJARATI,
-    "kan": OutputLanguage.KANNADA,
-    "swa": OutputLanguage.SWAHILI,
+    "norsk": OutputLanguage.NORWEGIAN,
+    "norwegian_bokmal": OutputLanguage.NORWEGIAN,
+    "bokmal": OutputLanguage.NORWEGIAN,
+    "ron": OutputLanguage.ROMANIAN,
+    "rum": OutputLanguage.ROMANIAN,
     "afr": OutputLanguage.AFRIKAANS,
-    "cat": OutputLanguage.CATALAN,
-    "català": OutputLanguage.CATALAN,
+    # Catalan / Galician / Frisian are not separate targets; map to Spanish / Dutch.
+    "ca": OutputLanguage.SPANISH,
+    "catalan": OutputLanguage.SPANISH,
+    "cat": OutputLanguage.SPANISH,
+    "català": OutputLanguage.SPANISH,
+    "gl": OutputLanguage.SPANISH,
+    "galician": OutputLanguage.SPANISH,
+    "glg": OutputLanguage.SPANISH,
+    "galego": OutputLanguage.SPANISH,
+    "fy": OutputLanguage.DUTCH,
+    "frisian": OutputLanguage.DUTCH,
+    "fry": OutputLanguage.DUTCH,
+    "ltz": OutputLanguage.LUXEMBOURGISH,
+    "lux": OutputLanguage.LUXEMBOURGISH,
     "isl": OutputLanguage.ICELANDIC,
+    "íslenska": OutputLanguage.ICELANDIC,
 }
 for _k, _v in _EXTRA_ALIASES.items():
     _OUTPUT_LANG_ALIASES[_k.lower()] = _v

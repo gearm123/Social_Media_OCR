@@ -6,6 +6,8 @@ from pathlib import Path
 import torch
 from deep_translator import GoogleTranslator
 
+from output_languages import google_translate_target_code
+
 # --------------------------------------------------
 # BASE PATHS
 # --------------------------------------------------
@@ -337,9 +339,11 @@ def translate_en_to(text: str, target_code: str) -> str:
     """Translate *text* from English to *target_code* (Google Translate)."""
     if not text or not str(text).strip():
         return ""
-    tgt = (target_code or "en").strip()
-    if tgt.lower() in ("en", "en-us", "en-gb"):
+    tgt_raw = (target_code or "en").strip()
+    tgt_lower = tgt_raw.lower()
+    if tgt_lower in ("en", "en-us", "en-gb"):
         return text
+    tgt = google_translate_target_code(tgt_raw)
     key = (tgt, text)
     if key in _en_to_target_cache:
         return _en_to_target_cache[key]

@@ -641,7 +641,8 @@ def _parse_args():
             "Final translation language for translated_conversation.json and translated_conversation.png "
             "(default: english). The model still resolves meaning in English internally; this only "
             "localizes the delivered artifact. Per-pass debug/compare PNGs stay in English. "
-            "Names or codes: english, spanish, ja, zh-CN, th, … (see output_languages.OutputLanguage)."
+            "Romance + Germanic only: english, spanish, french, german, dutch, swedish, … "
+            "(see output_languages.OutputLanguage)."
         ),
     )
     parser.add_argument(
@@ -921,7 +922,7 @@ def _parse_output_language_cli(value: str) -> OutputLanguage:
     if p is None:
         raise argparse.ArgumentTypeError(
             f"unknown output language {value!r}; "
-            "use a name or code such as english, spanish, french, ja, zh-CN, th, ar, hi "
+            "use a name or code such as english, spanish, french, german, portuguese, dutch "
             "(full list: output_languages.OutputLanguage)."
         )
     return p

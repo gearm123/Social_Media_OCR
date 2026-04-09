@@ -2,9 +2,11 @@
 Rolling statistics for Gemini HTTP passes (Pass 1–3), written when ``PIPELINE_VERBOSE=1`` (``--verbose``).
 
 Human-readable logs (only three pass blocks) live under ``timing_debug/pass_timing_debug.txt`` or
-``timing_debug/pass_timing_debug_hurry_up.txt``. Full Welford state is kept in sidecar JSON files
-(``pass_timing_debug_state.json`` / ``pass_timing_debug_hurry_up_state.json``) so averages stay correct
-across runs. Delete both the ``.txt`` and matching ``*_state.json`` to reset a mode completely.
+``timing_debug/pass_timing_debug_hurry_up.txt``. Each block includes rolling probabilities, including
+``all_http_attempts_timed_out_probability``: share of runs where the pass ended after HTTP read timeouts
+on the final attempt (for two-try passes, both tries timed out). Full Welford state is kept in sidecar
+JSON files (``pass_timing_debug_state.json`` / ``pass_timing_debug_hurry_up_state.json``) so averages stay
+correct across runs. Delete both the ``.txt`` and matching ``*_state.json`` to reset a mode completely.
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ def _empty_pass_block() -> Dict[str, Any]:
         "runs": 0,
         "retry_fallback_count": 0,
         "failed_all_attempts_count": 0,
+        "exhausted_on_timeout_count": 0,
         "try1": {"n": 0, "mean": 0.0, "M2": 0.0},
         "try2": {"n": 0, "mean": 0.0, "M2": 0.0},
         "overall": {"n": 0, "mean": 0.0, "M2": 0.0},
@@ -67,6 +70,7 @@ def _normalize_pass_block(raw: Any) -> Dict[str, Any]:
     out["runs"] = int(block.get("runs", 0))
     out["retry_fallback_count"] = int(block.get("retry_fallback_count", 0))
     out["failed_all_attempts_count"] = int(block.get("failed_all_attempts_count", 0))
+    out["exhausted_on_timeout_count"] = int(block.get("exhausted_on_timeout_count", 0))
     for sub in ("try1", "try2", "overall", "overall_no_timeout"):
         st = block.get(sub)
         if isinstance(st, dict) and "M2" in st and "mean" in st:
@@ -124,12 +128,18 @@ def _public_log_lines(root: Dict[str, Any]) -> List[str]:
         runs = int(block.get("runs", 0))
         rfc = int(block.get("retry_fallback_count", 0))
         fac = int(block.get("failed_all_attempts_count", 0))
+        eto = int(block.get("exhausted_on_timeout_count", 0))
         p_fb = (rfc / runs) if runs else 0.0
         p_fail = (fac / runs) if runs else 0.0
+        p_all_timeouts = (eto / runs) if runs else 0.0
         lines.append(f"# --- {key.upper().replace('_', ' ')} ---")
         lines.append(f"# runs_total: {runs}")
         lines.append(f"# try_1_fallback_probability: {p_fb:.6f}")
         lines.append(f"# try_2_fail_probability: {p_fail:.6f}")
+        lines.append(
+            f"# all_http_attempts_timed_out_probability: {p_all_timeouts:.6f}  "
+            f"(runs where every HTTP attempt for this pass hit read timeout; {eto}/{runs})"
+        )
         for label in ("try1", "try2", "overall"):
             st = block.get(label) or {}
             n = int(st.get("n", 0))
@@ -207,6 +217,9 @@ def record_gemini_pass_http_timing(timing: GeminiPassHttpTiming) -> None:
 
     if timing.exhausted_on_timeout or timing.pass_failed:
         block["failed_all_attempts_count"] = int(block.get("failed_all_attempts_count", 0)) + 1
+
+    if timing.exhausted_on_timeout:
+        block["exhausted_on_timeout_count"] = int(block.get("exhausted_on_timeout_count", 0)) + 1
 
     tc = timing.try_contrib
     if len(tc) >= 1 and tc[0] is not None:
