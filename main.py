@@ -1248,6 +1248,38 @@ def run_pipeline_job(
         )
         gemini_pass_sec["pass1"] = round(time.time() - _t_g1, 2)
         if not ok or not all_meta:
+            failure_reason = str((pass_debug or {}).get("failure_reason") or "").strip()
+            if failure_reason == "request_failed":
+                detail = str((pass_debug or {}).get("exception") or "").strip()
+                raise RuntimeError(
+                    "Gemini Pass 1 request failed."
+                    + (f" {detail}" if detail else "")
+                )
+            if failure_reason == "empty_response":
+                raise RuntimeError("Gemini Pass 1 returned an empty response.")
+            if failure_reason == "json_parse_failed":
+                detail = str((pass_debug or {}).get("parse_error") or "").strip()
+                raise RuntimeError(
+                    "Gemini Pass 1 returned unreadable JSON."
+                    + (f" {detail}" if detail else "")
+                )
+            if failure_reason == "no_messages_parsed":
+                raw_n = (pass_debug or {}).get("raw_message_count")
+                sys_n = (pass_debug or {}).get("system_message_count")
+                raise RuntimeError(
+                    "Gemini Pass 1 returned JSON, but no usable chat messages were parsed."
+                    + (
+                        f" rows={raw_n} system_rows={sys_n}"
+                        if raw_n is not None and sys_n is not None
+                        else ""
+                    )
+                )
+            if failure_reason == "no_page_images":
+                raise RuntimeError("No usable page images were available for Gemini Pass 1.")
+            if failure_reason == "gemini_not_configured":
+                raise RuntimeError("Gemini is not configured for this pipeline.")
+            if failure_reason == "meta_build_empty":
+                raise RuntimeError("Gemini Pass 1 produced messages, but render metadata was empty.")
             raise RuntimeError("Gemini did not return a usable conversation.")
 
         _check_cancel()

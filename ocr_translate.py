@@ -4749,8 +4749,19 @@ def translate_conversation_gemini_multimodal(
 
     Returns ``(success, contact_name, meta_list_for_render_chat, pre_ocr_english_meta_for_render_chat, pass_debug)``.
     """
+    def _pass1_failure(
+        reason: str,
+        contact_name_out: str = "",
+        pre_ocr_meta_out=None,
+        extra: Optional[dict] = None,
+    ):
+        payload = {"failure_reason": reason}
+        if extra:
+            payload.update(extra)
+        return False, contact_name_out, [], list(pre_ocr_meta_out or []), payload
+
     if not _gemini_discover_if_needed():
-        return False, "", [], [], {}
+        return _pass1_failure("gemini_not_configured")
 
     timeout = gemini_pass_timeout_sec(1)
     b64_list = []
@@ -4771,7 +4782,7 @@ def translate_conversation_gemini_multimodal(
 
     if not b64_list:
         print("[GEMINI] No page images to send")
-        return False, "", [], [], {}
+        return _pass1_failure("no_page_images")
 
     intro = "these are images representing a conversation on facebook messenger between two speakers"
     hint = (contact_hint or "").strip()
@@ -4838,12 +4849,16 @@ output json only."""
     except Exception as e:
         print(f"[GEMINI] Request failed: {e}")
         _write_gemini_debug_vision_only(prompt, f"ERROR: {e}", "")
-        return False, hint or "", [], [], {}
+        return _pass1_failure(
+            "request_failed",
+            hint or "",
+            extra={"exception": str(e)},
+        )
 
     if not raw or not raw.strip():
         print("[GEMINI] Empty response from full-vision translation")
         _write_gemini_debug_vision_only(prompt, raw or "", "", api_payload=api_payload)
-        return False, hint or "", [], [], {}
+        return _pass1_failure("empty_response", hint or "")
 
     _finish_warn(api_payload)
     parse_err = None
@@ -4858,7 +4873,11 @@ output json only."""
         _write_gemini_debug_vision_only(
             prompt, raw, f"JSON ERROR: {parse_err}", api_payload=api_payload
         )
-        return False, hint or "", [], [], {}
+        return _pass1_failure(
+            "json_parse_failed",
+            hint or "",
+            extra={"parse_error": str(parse_err)},
+        )
 
     gmsgs = _filter_pass1_messages(gmsgs)
     pass1_system_msgs = []
@@ -4897,7 +4916,14 @@ output json only."""
     if not pass1_chat_msgs:
         print("[GEMINI] Parsed JSON but no messages")
         _write_gemini_debug_vision_only(prompt, raw, "NO MESSAGES PARSED", api_payload=api_payload)
-        return False, contact_name, [], [], {}
+        return _pass1_failure(
+            "no_messages_parsed",
+            contact_name,
+            extra={
+                "raw_message_count": len(gmsgs),
+                "system_message_count": system_count,
+            },
+        )
 
     pass1_footer = json.dumps(
         {
@@ -4959,21 +4985,26 @@ output json only."""
 
     meta = _meta_from_gemini_messages(final_msgs)
     if not meta:
-        return False, contact_name, [], pre_ocr_meta, {
-            "pass1_count": len(pass1_source_msgs),
-            "pass1_total_count": len(pass1_source_msgs),
-            "pass1_system_count": system_count,
-            "pass2_count": len(pass2_effective_msgs),
-            "pass2_effective_count": pass2_effective_count,
-            "pass2_crop_refine": pass2_meta,
-            "pass3_count": 0,
-            "first_pass_only": False,
-            "third_pass_skipped": True,
-            "pass1_messages": pass1_source_msgs,
-            "pass1_system_messages": pass1_system_msgs,
-            "pass2_crop_messages": pass2_effective_msgs,
-            "pass3_messages": [],
-        }
+        return _pass1_failure(
+            "meta_build_empty",
+            contact_name,
+            pre_ocr_meta_out=pre_ocr_meta,
+            extra={
+                "pass1_count": len(pass1_source_msgs),
+                "pass1_total_count": len(pass1_source_msgs),
+                "pass1_system_count": system_count,
+                "pass2_count": len(pass2_effective_msgs),
+                "pass2_effective_count": pass2_effective_count,
+                "pass2_crop_refine": pass2_meta,
+                "pass3_count": 0,
+                "first_pass_only": False,
+                "third_pass_skipped": True,
+                "pass1_messages": pass1_source_msgs,
+                "pass1_system_messages": pass1_system_msgs,
+                "pass2_crop_messages": pass2_effective_msgs,
+                "pass3_messages": [],
+            },
+        )
 
     if _compact_verbose_logs():
         print(
