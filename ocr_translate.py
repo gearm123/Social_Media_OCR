@@ -91,7 +91,7 @@ def gemini_pass_timeout_sec(pass_num: int) -> int:
 
     1. ``GEMINI_PASS{n}_TIMEOUT_SEC`` for the pass number of that HTTP call when set and valid.
     2. Else ``GEMINI_REQUEST_TIMEOUT_SEC`` when set and valid.
-    3. Else pass **1** defaults to **83** s; passes **2–3** to **70** s; any other pass number defaults
+    3. Else pass **1** defaults to **66** s; passes **2–3** to **70** s; any other pass number defaults
        to **50** s (each pass may retry on timeout where enabled; see ``GEMINI_HTTP_RETRIES``).
 
     Minimum 30 seconds.
@@ -110,7 +110,7 @@ def gemini_pass_timeout_sec(pass_num: int) -> int:
         except ValueError:
             pass
     if n == 1:
-        default = 83
+        default = 66
     elif n in (2, 3):
         default = 70
     else:
@@ -121,7 +121,8 @@ def gemini_pass_timeout_sec(pass_num: int) -> int:
 def _gemini_http_extra_retries_on_timeout() -> int:
     """Extra ``generateContent`` attempts after :class:`requests.exceptions.Timeout`.
 
-    Default **1** → **2** attempts total per call. Set ``GEMINI_HTTP_RETRIES=0`` to disable.
+    Default **1** → **2** attempts for most passes. Pass **1** uses **3** attempts when this env var is
+    unset (see ``_gemini_http_max_tries_for_pass``). Set ``GEMINI_HTTP_RETRIES=0`` to disable extras.
     Capped at 5 extra retries.
     """
     v = os.environ.get("GEMINI_HTTP_RETRIES", "").strip()
@@ -136,14 +137,18 @@ def _gemini_http_extra_retries_on_timeout() -> int:
 
 
 def _gemini_http_max_tries_for_pass(pass_num: Optional[int]) -> int:
-    """Passes **2** and **3**: single HTTP attempt unless ``--hurry-up`` enables a Pass 2 retry.
+    """Pass **2**: **2** HTTP attempts (timeout retry). Pass **3**: single attempt.
 
-    Pass **1** and hurry-up Pass **2**: ``1 + GEMINI_HTTP_RETRIES`` (default 2 attempts).
+    Pass **1** (when ``GEMINI_HTTP_RETRIES`` is unset): **3** attempts; else ``1 + GEMINI_HTTP_RETRIES``.
+    Other passes: ``1 + GEMINI_HTTP_RETRIES`` (default **2** attempts).
     """
-    if pass_num is not None and int(pass_num) == 2 and _pipeline_hurry_up():
+    if pass_num is not None and int(pass_num) == 2:
         return 2
-    if pass_num is not None and int(pass_num) in (2, 3):
+    if pass_num is not None and int(pass_num) == 3:
         return 1
+    if pass_num is not None and int(pass_num) == 1:
+        if not os.environ.get("GEMINI_HTTP_RETRIES", "").strip():
+            return 3
     return 1 + _gemini_http_extra_retries_on_timeout()
 
 
@@ -154,42 +159,61 @@ def _gemini_attempt_timeout_sec(
 ) -> int:
     """Per-attempt HTTP read timeout.
 
-    Pass **1**: first try *base_timeout* (from ``gemini_pass_timeout_sec(1)``, default **83** s);
-    second try **50** s. Passes **2–3**: use *base_timeout* from ``gemini_pass_timeout_sec`` (default
-    **70** s each; single attempt each).
+    Pass **1**: first try *base_timeout* (from ``gemini_pass_timeout_sec(1)``, default **66** s);
+    second try **80** s; third try **40** s. Pass **2** (normal): **36** s then **22** s. Pass **3** (normal):
+    **36** s (single attempt).
 
-    ``--hurry-up``: Pass **1** both tries **30** s; Pass **2** **20** s then **15** s; Pass **3** **20** s.
+    ``--hurry-up``: Pass **1** **35** s, then **45** s, then **27** s; Pass **2** **18** s then **10** s;
+    Pass **3** **16** s.
     """
     if _pipeline_hurry_up() and pass_num is not None:
         pn = int(pass_num)
         if pn == 1:
-            return 30
+            if attempt_i == 0:
+                return 35
+            if attempt_i == 1:
+                return 45
+            return 27
         if pn == 2:
-            return 20 if attempt_i == 0 else 15
+            return 18 if attempt_i == 0 else 10
         if pn == 3:
-            return 20
+            return 16
     base = int(max(30, round(float(base_timeout))))
     if pass_num is None:
         return base
     pn = int(pass_num)
     if pn == 1 and attempt_i > 0:
-        return max(30, 50)
-    if pn in (2, 3):
-        return base
+        if attempt_i == 1:
+            return max(30, 80)
+        return max(30, 40)
+    if pn == 2:
+        if attempt_i == 0:
+            return 36
+        return 22
+    if pn == 3:
+        return 36
     return base
 
 
 # Gemini 2.5 Pro: API allows ``thinkingBudget`` only in **128…32768** (cannot disable with 0).
 _GEMINI_25_PRO_MIN_THINKING_BUDGET = 128
-# Pass 1 only: second HTTP attempt (after timeout on first). **50** s read timeout in
+# Pass 1 only: second HTTP attempt (after timeout on first). **80** s read timeout in
 # ``_gemini_attempt_timeout_sec``; **1920** thinking budget here (not Pass 2).
 _GEMINI_PASS1_RETRY_THINKING_BUDGET = 1920
+# Pass 1 third HTTP attempt: **40** s read timeout; **960** thinking budget.
+_GEMINI_PASS1_RETRY3_THINKING_BUDGET = 960
+# Pass 2 second HTTP attempt (take-your-time timeout retry): **1920** thinking budget.
+_GEMINI_PASS2_RETRY_THINKING_BUDGET = 1920
+# Pass 3 first attempt (take-your-time): **1920** thinking budget.
+_GEMINI_PASS3_TRY1_THINKING_BUDGET = 1920
 # Pass 4+ or *pass_num* unset: first-attempt ``thinkingBudget`` for **Gemini 2.5**.
 _GEMINI_FIRST_TRY_THINKING_BUDGET = 3840
-# ``--hurry-up``: explicit thinking budgets (2.5); see ``_gemini_build_generation_config``.
+# ``--hurry-up`` / ``PIPELINE_HURRY_UP=1`` — ground truth (timeouts in ``_gemini_attempt_timeout_sec``):
+#   Pass 1: 35s/1920, 45s/960, 27s/960  |  Pass 2: 18s/960, 10s/480  |  Pass 3: 16s/960
+# See ``_gemini_build_generation_config`` for how budgets attach to each attempt.
 _HURRY_UP_PASS1_TRY1_THINKING = 1920
 _HURRY_UP_PASS1_TRY2_THINKING = 960
-_HURRY_UP_PASS2_TRY1_THINKING = 1920
+_HURRY_UP_PASS2_TRY1_THINKING = 960
 _HURRY_UP_PASS2_TRY2_THINKING = 480
 _HURRY_UP_PASS3_TRY1_THINKING = 960
 
@@ -202,6 +226,7 @@ def _gemini_build_generation_config(
     *,
     use_json_output: bool,
     minimal_thinking: bool,
+    attempt_i: int = 0,
 ) -> Dict[str, Any]:
     """Build ``generationConfig`` for ``generateContent`` (**Gemini 2.5**).
 
@@ -210,8 +235,12 @@ def _gemini_build_generation_config(
     - **Pass 1**, first HTTP attempt: omit ``thinkingConfig`` (no explicit thinking budget).
     - **Pass 1**, second HTTP attempt (timeout retry only): ``thinkingBudget`` =
       ``_GEMINI_PASS1_RETRY_THINKING_BUDGET`` (**1920**), clamped to the model range.
-    - **Pass 2**, single attempt: omit ``thinkingConfig``.
-    - **Pass 3**, single attempt: omit ``thinkingConfig``.
+    - **Pass 1**, third HTTP attempt: ``thinkingBudget`` = ``_GEMINI_PASS1_RETRY3_THINKING_BUDGET`` (**960**).
+    - **Pass 2** (normal): first HTTP attempt — omit ``thinkingConfig``; second (timeout retry) —
+      ``thinkingBudget`` **1920** (``_GEMINI_PASS2_RETRY_THINKING_BUDGET``).
+    - **Pass 2** (``--hurry-up``): fixed budgets per attempt (see constants below).
+    - **Pass 3** (normal): ``thinkingBudget`` **1920** (``_GEMINI_PASS3_TRY1_THINKING_BUDGET``).
+    - **Pass 3** (``--hurry-up``): ``_HURRY_UP_PASS3_TRY1_THINKING`` (**960**).
     - **Pass 4+** or *pass_num* unset (e.g. status bar): first attempt **3840** (clamped); HTTP
       timeout retry → **Pro** **128** / **Flash** ``0``.
 
@@ -232,7 +261,11 @@ def _gemini_build_generation_config(
         pn = int(pass_num) if pass_num is not None else None
         if _pipeline_hurry_up() and pn in (1, 2, 3):
             if pn == 1:
-                _tb = _HURRY_UP_PASS1_TRY2_THINKING if minimal_thinking else _HURRY_UP_PASS1_TRY1_THINKING
+                _tb = (
+                    _HURRY_UP_PASS1_TRY1_THINKING
+                    if attempt_i == 0
+                    else _HURRY_UP_PASS1_TRY2_THINKING
+                )
             elif pn == 2:
                 _tb = _HURRY_UP_PASS2_TRY2_THINKING if minimal_thinking else _HURRY_UP_PASS2_TRY1_THINKING
             else:
@@ -242,9 +275,33 @@ def _gemini_build_generation_config(
             else:
                 _tb = max(0, min(int(_tb), 24576))
             gen_cfg["thinkingConfig"] = {"thinkingBudget": _tb}
+        elif pn == 2 and not _pipeline_hurry_up():
+            if minimal_thinking:
+                _tb = _GEMINI_PASS2_RETRY_THINKING_BUDGET
+                if is_25_pro:
+                    _tb = max(_GEMINI_25_PRO_MIN_THINKING_BUDGET, min(int(_tb), 32768))
+                else:
+                    _tb = max(0, min(int(_tb), 24576))
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": _tb}
+            elif not _compact_verbose_logs():
+                _pv(
+                    "[GEMINI] Pass 2: thinkingConfig omitted "
+                    "(no explicit thinking budget).",
+                )
+        elif pn == 3 and not _pipeline_hurry_up():
+            _tb = _GEMINI_PASS3_TRY1_THINKING_BUDGET
+            if is_25_pro:
+                _tb = max(_GEMINI_25_PRO_MIN_THINKING_BUDGET, min(int(_tb), 32768))
+            else:
+                _tb = max(0, min(int(_tb), 24576))
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": _tb}
         elif pn == 1:
             if minimal_thinking:
-                _tb = _GEMINI_PASS1_RETRY_THINKING_BUDGET
+                _tb = (
+                    _GEMINI_PASS1_RETRY_THINKING_BUDGET
+                    if attempt_i <= 1
+                    else _GEMINI_PASS1_RETRY3_THINKING_BUDGET
+                )
                 if is_25_pro:
                     _tb = max(_GEMINI_25_PRO_MIN_THINKING_BUDGET, min(int(_tb), 32768))
                 else:
@@ -263,10 +320,10 @@ def _gemini_build_generation_config(
             else:
                 gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
         else:
-            if pn in (2, 3):
+            if pn == 2:
                 if not _compact_verbose_logs():
                     _pv(
-                        f"[GEMINI] Pass {pn} first try: thinkingConfig omitted "
+                        "[GEMINI] Pass 2 first try: thinkingConfig omitted "
                         "(no explicit thinking budget).",
                     )
             else:
@@ -1126,10 +1183,13 @@ def _gemini_generate(
     *pass_num* drives thinking budget, HTTP timeout, and retry count.
 
     **Gemini 2.5** (passes **1–3**): pass **1** — no ``thinkingConfig`` on first try (Pro: historical
-    omit; **83** s default HTTP read timeout); second try **1920** thinking budget,
-    **50** s. Passes **2–3** — single try, no ``thinkingConfig`` (default timeouts from env).
-    With ``PIPELINE_HURRY_UP`` / ``--hurry-up``, all three passes use fixed ``thinkingBudget`` and
-    shorter per-attempt timeouts; pass **2** may retry once on HTTP timeout.
+    omit; **66** s default HTTP read timeout); second try **1920** thinking budget, **80** s; third try
+    **960** thinking budget, **40** s. Pass **2** — **36** s / **22** s per attempt; first try omits
+    ``thinkingConfig``, second try **1920** thinking budget. Pass **3** — **36** s, **1920** thinking budget
+    (single try).
+    With ``PIPELINE_HURRY_UP`` / ``--hurry-up``, passes **1–3** use fixed ``thinkingBudget`` and shorter
+    timeouts: pass **1** **35**/**45**/**27** s with **1920**/**960**/**960** thinking; pass **2** retries once
+    (**18** s / **10** s; **960** / **480** thinking); pass **3** **16** s, **960** thinking.
     Pass **4+** / unset: **3840** first try; retry **Pro** **128** / **Flash** ``0``.
     See ``_gemini_build_generation_config`` and ``_gemini_attempt_timeout_sec``.
 
@@ -1209,6 +1269,7 @@ def _gemini_generate(
             max_out,
             use_json_output=use_json_output,
             minimal_thinking=minimal_thinking,
+            attempt_i=attempt_i,
         )
         _tc = gen_cfg.get("thinkingConfig") or {}
         _tb_disp_attempt = _tc.get("thinkingBudget")
@@ -1262,20 +1323,29 @@ def _gemini_generate(
                 if "2.5" in _mlow:
                     if pass_num is not None and int(pass_num) == 1:
                         _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
-                        _next_tb = (
-                            _HURRY_UP_PASS1_TRY2_THINKING
-                            if _pipeline_hurry_up()
-                            else _GEMINI_PASS1_RETRY_THINKING_BUDGET
-                        )
+                        if _pipeline_hurry_up():
+                            _next_tb = _HURRY_UP_PASS1_TRY2_THINKING
+                        else:
+                            _na = attempt_i + 1
+                            _next_tb = (
+                                _GEMINI_PASS1_RETRY_THINKING_BUDGET
+                                if _na == 1
+                                else _GEMINI_PASS1_RETRY3_THINKING_BUDGET
+                            )
                         _retry_hint = (
                             f" (next attempt: {_next_to}s timeout, "
                             f"thinkingBudget={_next_tb})"
                         )
-                    elif pass_num is not None and int(pass_num) == 2 and _pipeline_hurry_up():
+                    elif pass_num is not None and int(pass_num) == 2:
                         _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
+                        _next_tb = (
+                            _HURRY_UP_PASS2_TRY2_THINKING
+                            if _pipeline_hurry_up()
+                            else _GEMINI_PASS2_RETRY_THINKING_BUDGET
+                        )
                         _retry_hint = (
                             f" (next attempt: {_next_to}s timeout, "
-                            f"thinkingBudget={_HURRY_UP_PASS2_TRY2_THINKING})"
+                            f"thinkingBudget={_next_tb})"
                         )
                     else:
                         _is_pro = "pro" in _mlow and "flash" not in _mlow
