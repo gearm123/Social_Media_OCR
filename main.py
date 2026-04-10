@@ -1534,17 +1534,22 @@ def run_pipeline_job(
         pass2_raw = render_chat(all_meta, **_render_header_debug)
         pass3_raw = render_chat(final_chat_meta, **_render_header_debug)
 
+        def _write_required_image(path: str, image, artifact_label: str) -> None:
+            ok = bool(cv2.imwrite(path, image))
+            if not ok or not os.path.exists(path):
+                raise RuntimeError(f"{artifact_label} could not be written.")
+
         pass1_chat = composite_chat_below_top_banner(pass1_raw, _top_banner)
         pass1_path = os.path.join(RENDER_DIR, "translated_conversation_pass1.png")
-        cv2.imwrite(pass1_path, pass1_chat)
+        _write_required_image(pass1_path, pass1_chat, "Pass 1 image")
 
         pass2_img = composite_chat_below_top_banner(pass2_raw, _top_banner)
         pass2_path = os.path.join(RENDER_DIR, "translated_conversation_pass2.png")
-        cv2.imwrite(pass2_path, pass2_img)
+        _write_required_image(pass2_path, pass2_img, "Pass 2 image")
 
         pass3_img = composite_chat_below_top_banner(pass3_raw, _top_banner)
         pass3_path = os.path.join(RENDER_DIR, "translated_conversation_pass3.png")
-        cv2.imwrite(pass3_path, pass3_img)
+        _write_required_image(pass3_path, pass3_img, "Pass 3 image")
 
         if difficulty >= 3:
             _compare_panels = [
@@ -1564,12 +1569,12 @@ def run_pipeline_job(
         compare_img = _compose_labeled_chat_panels(_compare_panels)
         compare_path = os.path.join(RENDER_DIR, "translated_conversation_compare.png")
         if compare_img is not None:
-            cv2.imwrite(compare_path, compare_img)
+            _write_required_image(compare_path, compare_img, "Compare image")
 
         combined_path = os.path.join(RENDER_DIR, "translated_conversation.png")
         final_chat = render_chat(json_and_final_meta, **_render_header_final)
         final_chat = composite_chat_below_top_banner(final_chat, _top_banner)
-        cv2.imwrite(combined_path, final_chat)
+        _write_required_image(combined_path, final_chat, "Final image")
         _emit_phase("completed", "Final image generated", 1.0)
         if _compact_verbose_logs():
             _vprint(f"\nfinal_image={combined_path}\n")
