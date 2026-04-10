@@ -1294,10 +1294,13 @@ def _gemini_generate(
             record_gemini_pass_http_timing(http_timing)
             _http_timing_recorded = True
 
-    def _retry_eta_penalty_sec(attempt_i: int, attempt_timeout: int, attempt_elapsed_sec: float) -> float:
-        if attempt_i <= 0:
-            return round(max(0.0, float(attempt_elapsed_sec)) + max(1.0, float(attempt_timeout)), 1)
-        return round(max(1.0, float(attempt_timeout)), 1)
+    def _retry_eta_penalty_sec(attempt_timeout: int, retry_delay_sec: float) -> float:
+        """Extra total ETA to add for one more Gemini retry attempt.
+
+        This should reflect only future work added by the retry itself. Elapsed time is already
+        visible in the live timer, so do not add it again here.
+        """
+        return round(max(1.0, float(attempt_timeout)) + max(0.0, float(retry_delay_sec)), 1)
 
     for attempt_i in range(max_tries):
         if (
@@ -1379,9 +1382,8 @@ def _gemini_generate(
                 err_text = _redact_gemini_api_key(str(e))
                 max_status_retries = _gemini_http_extra_retries_on_transient_status()
                 if _is_transient_gemini_http_status(status_code) and transient_status_retry_i < max_status_retries:
-                    attempt_elapsed = time.time() - t_attempt_wall
-                    added_eta_sec = _retry_eta_penalty_sec(attempt_i, attempt_timeout, attempt_elapsed)
                     retry_delay = _gemini_transient_status_retry_delay_sec(transient_status_retry_i)
+                    added_eta_sec = _retry_eta_penalty_sec(attempt_timeout, retry_delay)
                     retry_label = (
                         f"Pass {pass_num} — Gemini {status_code} retrying current attempt…"
                         if pass_num is not None
