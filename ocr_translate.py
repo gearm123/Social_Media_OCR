@@ -176,13 +176,13 @@ def _gemini_http_extra_retries_on_transient_status() -> int:
     """Extra retries for transient upstream Gemini HTTP responses like 503."""
     raw = os.environ.get("GEMINI_TRANSIENT_HTTP_RETRIES", "").strip()
     if not raw:
-        return 2
+        return 4
     if raw.lower() in ("0", "false", "no", "off"):
         return 0
     try:
-        return max(0, min(int(raw), 4))
+        return max(0, min(int(raw), 6))
     except ValueError:
-        return 2
+        return 4
 
 
 def _is_transient_gemini_http_status(status_code: int) -> bool:
@@ -190,7 +190,7 @@ def _is_transient_gemini_http_status(status_code: int) -> bool:
 
 
 def _gemini_transient_status_retry_delay_sec(retry_i: int) -> float:
-    return min(6.0, 1.0 + retry_i * 1.5)
+    return min(10.0, 1.5 * (2 ** max(0, int(retry_i))))
 
 
 def _redact_gemini_api_key(text: str) -> str:
@@ -1345,6 +1345,7 @@ def _gemini_generate(
         transient_status_retry_i = 0
         attempt_succeeded = False
         timed_out = False
+        advance_to_next_attempt = False
         while True:
             try:
                 t_attempt_wall = time.time()
@@ -1407,6 +1408,32 @@ def _gemini_generate(
                     transient_status_retry_i += 1
                     time.sleep(retry_delay)
                     continue
+                if _is_transient_gemini_http_status(status_code) and attempt_i < max_tries - 1:
+                    next_attempt_i = attempt_i + 1
+                    next_timeout = _gemini_attempt_timeout_sec(pass_num, next_attempt_i, timeout)
+                    _notify_gemini_retry(
+                        {
+                            "label": (
+                                f"Pass {pass_num} — Gemini {status_code} retrying the pass…"
+                                if pass_num is not None
+                                else f"Gemini {status_code} retrying the pass…"
+                            ),
+                            "added_eta_sec": float(max(1, next_timeout)),
+                            "reset_phase_started_at": True,
+                            "pass_num": int(pass_num) if pass_num is not None else None,
+                            "attempt_i": int(next_attempt_i),
+                            "attempt_timeout_sec": int(next_timeout),
+                            "status_code": status_code,
+                        }
+                    )
+                    print(
+                        f"[GEMINI] HTTP {status_code} persisted on pass={pass_num!r} "
+                        f"(attempt {attempt_i + 1}/{max_tries}) — moving to next attempt "
+                        f"{next_attempt_i + 1}/{max_tries} with timeout={next_timeout}s…",
+                        flush=True,
+                    )
+                    advance_to_next_attempt = True
+                    break
                 if http_timing:
                     http_timing.pass_failed = True
                     _flush_http_timing()
@@ -1423,6 +1450,8 @@ def _gemini_generate(
                 raise RuntimeError(err_text)
         if attempt_succeeded:
             break
+        if advance_to_next_attempt:
+            continue
         if timed_out:
             if http_timing:
                 http_timing.record_timeout(attempt_i, float(attempt_timeout))
