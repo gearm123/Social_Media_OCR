@@ -132,7 +132,7 @@ def _make_pipeline_stage_writer(job_id: str):
     def _cb(payload: dict) -> None:
         phase = str(payload.get("phase") or "running")
         extra: dict = {}
-        if phase != last_phase["v"]:
+        if phase != last_phase["v"] or bool(payload.get("reset_phase_started_at")):
             last_phase["v"] = phase
             extra["phase_started_at"] = _utc_now()
         _write_status(
@@ -142,6 +142,7 @@ def _make_pipeline_stage_writer(job_id: str):
             stage_label=payload.get("label"),
             progress=payload.get("progress"),
             pipeline_elapsed_sec=payload.get("elapsed_sec"),
+            eta_extra_sec=payload.get("eta_extra_sec"),
             **extra,
         )
 
@@ -215,6 +216,7 @@ def _run_job(
             stage_label="Starting…",
             progress=0.0,
             pipeline_elapsed_sec=0.0,
+            eta_extra_sec=0.0,
             phase_started_at=_utc_now(),
         )
         result = run_pipeline_job(
@@ -484,6 +486,7 @@ async def create_job(
         stage_label="Queued — waiting to start…",
         progress=0.0,
         pipeline_elapsed_sec=0.0,
+        eta_extra_sec=0.0,
         phase_started_at=_utc_now(),
         created_at=_utc_now(),
         language=language,

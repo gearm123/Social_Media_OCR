@@ -1041,6 +1041,15 @@ def _override_runtime_dirs(
             os.environ["PIPELINE_HURRY_UP"] = prev_hurry
 
 
+@contextmanager
+def _install_gemini_retry_notifier(cb):
+    ocr_translate_module.set_gemini_retry_notifier(cb)
+    try:
+        yield
+    finally:
+        ocr_translate_module.clear_gemini_retry_notifier()
+
+
 def run_pipeline_job(
     image_paths,
     work_dir,
@@ -1060,6 +1069,12 @@ def run_pipeline_job(
     difficulty = _coerce_pipeline_difficulty(difficulty)
     target_output_lang = output_language if output_language is not None else OutputLanguage.ENGLISH
     pipeline_start = time.time()
+    retry_eta_extra_sec = 0.0
+    current_phase_state: Dict[str, Any] = {
+        "phase": "starting",
+        "label": "Starting…",
+        "progress": 0.0,
+    }
 
     _quiet_phase_stdout = {
         "pass_1": "Pass 1…",
@@ -1069,17 +1084,22 @@ def run_pipeline_job(
         "completed": "Done.",
     }
 
-    def _emit_phase(phase_id: str, label: str, progress: float) -> None:
+    def _emit_phase(phase_id: str, label: str, progress: float, **extra_fields: Any) -> None:
         """Notify API/UI and print status (full line if verbose; short milestones otherwise)."""
         _check_cancel()
         elapsed = round(time.time() - pipeline_start, 1)
         prog = max(0.0, min(1.0, float(progress)))
+        current_phase_state["phase"] = phase_id
+        current_phase_state["label"] = label
+        current_phase_state["progress"] = prog
         payload: Dict[str, Any] = {
             "phase": phase_id,
             "label": label,
             "progress": prog,
             "elapsed_sec": elapsed,
+            "eta_extra_sec": round(retry_eta_extra_sec, 1),
         }
+        payload.update(extra_fields)
         if on_stage is not None:
             try:
                 on_stage(payload)
@@ -1118,6 +1138,40 @@ def run_pipeline_job(
             f"[pipeline] {label}  progress={int(round(prog * 100))}%  elapsed={elapsed}s",
             flush=True,
         )
+
+    def _on_gemini_retry(payload: Dict[str, Any]) -> None:
+        nonlocal retry_eta_extra_sec
+        if bool(payload.get("clear_retry_label")):
+            _check_cancel()
+            clear_payload: Dict[str, Any] = {
+                "phase": str(current_phase_state.get("phase") or "running"),
+                "label": str(current_phase_state.get("label") or "Processing…"),
+                "progress": float(current_phase_state.get("progress") or 0.0),
+                "elapsed_sec": round(time.time() - pipeline_start, 1),
+                "eta_extra_sec": round(retry_eta_extra_sec, 1),
+            }
+            if on_stage is not None:
+                try:
+                    on_stage(clear_payload)
+                except Exception:
+                    pass
+            return
+        added_eta = max(0.0, float(payload.get("added_eta_sec") or 0.0))
+        retry_eta_extra_sec = round(retry_eta_extra_sec + added_eta, 1)
+        _check_cancel()
+        retry_payload: Dict[str, Any] = {
+            "phase": str(current_phase_state.get("phase") or "running"),
+            "label": str(payload.get("label") or current_phase_state.get("label") or "Retrying…"),
+            "progress": float(current_phase_state.get("progress") or 0.0),
+            "elapsed_sec": round(time.time() - pipeline_start, 1),
+            "eta_extra_sec": round(retry_eta_extra_sec, 1),
+            "reset_phase_started_at": bool(payload.get("reset_phase_started_at")),
+        }
+        if on_stage is not None:
+            try:
+                on_stage(retry_payload)
+            except Exception:
+                pass
 
     work_dir = Path(work_dir)
     input_dir = work_dir / "input_images"
@@ -1159,7 +1213,7 @@ def run_pipeline_job(
         debug_dir,
         pipeline_timing_difficulty=difficulty,
         hurry_up=hurry_up,
-    ):
+    ), _install_gemini_retry_notifier(_on_gemini_retry):
         if not _compact_verbose_logs():
             _vprint(f"[JOB] job_dir={work_dir}")
         if _compact_verbose_logs():

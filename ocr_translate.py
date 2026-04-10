@@ -27,12 +27,32 @@ from pass_timing_debug import GeminiPassHttpTiming, record_gemini_pass_http_timi
 # Populated after the first OCR call from ocr_and_translate_full_image.
 _source_lang_code = "auto"
 _source_lang_name = "the source language"
+_gemini_retry_notifier = threading.local()
 
 
 def _set_source_language(code: str, name: str):
     global _source_lang_code, _source_lang_name
     _source_lang_code = code
     _source_lang_name = name
+
+
+def set_gemini_retry_notifier(cb) -> None:
+    _gemini_retry_notifier.cb = cb
+
+
+def clear_gemini_retry_notifier() -> None:
+    if hasattr(_gemini_retry_notifier, "cb"):
+        delattr(_gemini_retry_notifier, "cb")
+
+
+def _notify_gemini_retry(payload: dict) -> None:
+    cb = getattr(_gemini_retry_notifier, "cb", None)
+    if cb is None:
+        return
+    try:
+        cb(payload)
+    except Exception:
+        pass
 
 
 def _pipeline_verbose() -> bool:
@@ -150,6 +170,31 @@ def _gemini_http_max_tries_for_pass(pass_num: Optional[int]) -> int:
         if not os.environ.get("GEMINI_HTTP_RETRIES", "").strip():
             return 3
     return 1 + _gemini_http_extra_retries_on_timeout()
+
+
+def _gemini_http_extra_retries_on_transient_status() -> int:
+    """Extra retries for transient upstream Gemini HTTP responses like 503."""
+    raw = os.environ.get("GEMINI_TRANSIENT_HTTP_RETRIES", "").strip()
+    if not raw:
+        return 2
+    if raw.lower() in ("0", "false", "no", "off"):
+        return 0
+    try:
+        return max(0, min(int(raw), 4))
+    except ValueError:
+        return 2
+
+
+def _is_transient_gemini_http_status(status_code: int) -> bool:
+    return int(status_code) in (429, 500, 502, 503, 504)
+
+
+def _gemini_transient_status_retry_delay_sec(retry_i: int) -> float:
+    return min(6.0, 1.0 + retry_i * 1.5)
+
+
+def _redact_gemini_api_key(text: str) -> str:
+    return re.sub(r"(key=)[^&\s]+", r"\1[REDACTED]", str(text or ""))
 
 
 def _gemini_attempt_timeout_sec(
@@ -1249,6 +1294,11 @@ def _gemini_generate(
             record_gemini_pass_http_timing(http_timing)
             _http_timing_recorded = True
 
+    def _retry_eta_penalty_sec(attempt_i: int, attempt_timeout: int, attempt_elapsed_sec: float) -> float:
+        if attempt_i <= 0:
+            return round(max(0.0, float(attempt_elapsed_sec)) + max(1.0, float(attempt_timeout)), 1)
+        return round(max(1.0, float(attempt_timeout)), 1)
+
     for attempt_i in range(max_tries):
         if (
             _cp
@@ -1292,29 +1342,88 @@ def _gemini_generate(
                 f"max_tokens={gen_cfg['maxOutputTokens']} thinkingBudget={_tb_disp_attempt!r} "
                 f"timeout={attempt_timeout}s attempt={attempt_i + 1}/{max_tries}{_retry_tag}",
             )
-        try:
-            t_attempt_wall = time.time()
-            with _gemini_pipeline_http_wait(pass_num, int(attempt_timeout)):
-                t_http = time.time()
-                r = _req.post(url, json=payload, timeout=attempt_timeout)
-                recv_lat = time.time() - t_http
-                http_code = int(r.status_code)
-                if not _cp:
-                    _pv(
-                        f"[GEMINI] HTTP response received in {recv_lat:.1f}s with status {http_code}",
+        transient_status_retry_i = 0
+        attempt_succeeded = False
+        timed_out = False
+        while True:
+            try:
+                t_attempt_wall = time.time()
+                with _gemini_pipeline_http_wait(pass_num, int(attempt_timeout)):
+                    t_http = time.time()
+                    r = _req.post(url, json=payload, timeout=attempt_timeout)
+                    recv_lat = time.time() - t_http
+                    http_code = int(r.status_code)
+                    if not _cp:
+                        _pv(
+                            f"[GEMINI] HTTP response received in {recv_lat:.1f}s with status {http_code}",
+                        )
+                    r.raise_for_status()
+                    t_json = time.time()
+                    data = r.json()
+                    if not _cp:
+                        _pv(
+                            f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
+                        )
+                if http_timing:
+                    http_timing.record_success(attempt_i, time.time() - t_attempt_wall)
+                _tb_disp = _tb_disp_attempt
+                if transient_status_retry_i > 0:
+                    _notify_gemini_retry({"clear_retry_label": True})
+                attempt_succeeded = True
+                break
+            except _req.exceptions.Timeout:
+                timed_out = True
+                break
+            except _req.exceptions.HTTPError as e:
+                status_code = int(getattr(getattr(e, "response", None), "status_code", 0) or 0)
+                err_text = _redact_gemini_api_key(str(e))
+                max_status_retries = _gemini_http_extra_retries_on_transient_status()
+                if _is_transient_gemini_http_status(status_code) and transient_status_retry_i < max_status_retries:
+                    attempt_elapsed = time.time() - t_attempt_wall
+                    added_eta_sec = _retry_eta_penalty_sec(attempt_i, attempt_timeout, attempt_elapsed)
+                    retry_delay = _gemini_transient_status_retry_delay_sec(transient_status_retry_i)
+                    retry_label = (
+                        f"Pass {pass_num} — Gemini {status_code} retrying current attempt…"
+                        if pass_num is not None
+                        else f"Gemini {status_code} retrying current attempt…"
                     )
-                r.raise_for_status()
-                t_json = time.time()
-                data = r.json()
-                if not _cp:
-                    _pv(
-                        f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
+                    _notify_gemini_retry(
+                        {
+                            "label": retry_label,
+                            "added_eta_sec": added_eta_sec,
+                            "reset_phase_started_at": True,
+                            "pass_num": int(pass_num) if pass_num is not None else None,
+                            "attempt_i": int(attempt_i),
+                            "attempt_timeout_sec": int(attempt_timeout),
+                            "status_code": status_code,
+                        }
                     )
-            if http_timing:
-                http_timing.record_success(attempt_i, time.time() - t_attempt_wall)
-            _tb_disp = _tb_disp_attempt
+                    print(
+                        f"[GEMINI] HTTP {status_code} on pass={pass_num!r} "
+                        f"(attempt {attempt_i + 1}/{max_tries}, retry {transient_status_retry_i + 1}/{max_status_retries}) "
+                        f"— retrying same attempt in {retry_delay:.1f}s…",
+                        flush=True,
+                    )
+                    transient_status_retry_i += 1
+                    time.sleep(retry_delay)
+                    continue
+                if http_timing:
+                    http_timing.pass_failed = True
+                    _flush_http_timing()
+                if pass_num is not None and _gemini_pass_summary_enabled():
+                    print(f"[gemini] pass {pass_num} stopped: HTTP {status_code}: {err_text}", flush=True)
+                raise RuntimeError(err_text)
+            except _req.exceptions.RequestException as e:
+                err_text = _redact_gemini_api_key(str(e))
+                if http_timing:
+                    http_timing.pass_failed = True
+                    _flush_http_timing()
+                if pass_num is not None and _gemini_pass_summary_enabled():
+                    print(f"[gemini] pass {pass_num} stopped: request error: {err_text}", flush=True)
+                raise RuntimeError(err_text)
+        if attempt_succeeded:
             break
-        except _req.exceptions.Timeout:
+        if timed_out:
             if http_timing:
                 http_timing.record_timeout(attempt_i, float(attempt_timeout))
             if attempt_i < max_tries - 1:
@@ -1380,14 +1489,7 @@ def _gemini_generate(
             if http_timing:
                 http_timing.exhausted_on_timeout = True
                 _flush_http_timing()
-            raise
-        except _req.exceptions.RequestException as e:
-            if http_timing:
-                http_timing.pass_failed = True
-                _flush_http_timing()
-            if pass_num is not None and _gemini_pass_summary_enabled():
-                print(f"[gemini] pass {pass_num} stopped: request error: {e}", flush=True)
-            raise
+            raise _req.exceptions.Timeout()
 
     _flush_http_timing()
 
