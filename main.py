@@ -1305,6 +1305,8 @@ def run_pipeline_job(
             failure_reason = str((pass_debug or {}).get("failure_reason") or "").strip()
             if failure_reason == "request_failed":
                 detail = str((pass_debug or {}).get("exception") or "").strip()
+                if detail.startswith("SERVERS_OVERLOADED:"):
+                    raise RuntimeError(detail)
                 raise RuntimeError(
                     "Gemini Pass 1 request failed."
                     + (f" {detail}" if detail else "")
