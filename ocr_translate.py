@@ -190,7 +190,24 @@ def _is_transient_gemini_http_status(status_code: int) -> bool:
 
 
 def _gemini_transient_status_retry_delay_sec(retry_i: int) -> float:
-    return min(10.0, 1.5 * (2 ** max(0, int(retry_i))))
+    """Delay between retries for transient Gemini HTTP statuses.
+
+    Defaults to a slower 4s / 8s / 16s backoff so short upstream overload windows do not burn through
+    all transient retries immediately. Both the base and cap are env-overridable.
+    """
+    raw_base = os.environ.get("GEMINI_TRANSIENT_HTTP_RETRY_BASE_DELAY_SEC", "").strip()
+    raw_cap = os.environ.get("GEMINI_TRANSIENT_HTTP_RETRY_MAX_DELAY_SEC", "").strip()
+    try:
+        base = float(raw_base) if raw_base else 4.0
+    except ValueError:
+        base = 4.0
+    try:
+        cap = float(raw_cap) if raw_cap else 30.0
+    except ValueError:
+        cap = 30.0
+    base = max(0.5, base)
+    cap = max(base, cap)
+    return min(cap, base * (2 ** max(0, int(retry_i))))
 
 
 def _redact_gemini_api_key(text: str) -> str:
@@ -1348,6 +1365,8 @@ def _gemini_generate(
         transient_status_retry_i = 0
         attempt_succeeded = False
         timed_out = False
+        exhausted_transient_status_code: Optional[int] = None
+        exhausted_transient_error_text = ""
         while True:
             try:
                 t_attempt_wall = time.time()
@@ -1409,15 +1428,15 @@ def _gemini_generate(
                     transient_status_retry_i += 1
                     time.sleep(retry_delay)
                     continue
+                if _is_transient_gemini_http_status(status_code):
+                    exhausted_transient_status_code = status_code
+                    exhausted_transient_error_text = err_text
+                    break
                 if http_timing:
                     http_timing.pass_failed = True
                     _flush_http_timing()
                 if pass_num is not None and _gemini_pass_summary_enabled():
                     print(f"[gemini] pass {pass_num} stopped: HTTP {status_code}: {err_text}", flush=True)
-                if _is_transient_gemini_http_status(status_code) and pass_num is not None and int(pass_num) == 1:
-                    raise RuntimeError(
-                        "SERVERS_OVERLOADED: Gemini Pass 1 stayed unavailable after transient retries."
-                    )
                 raise RuntimeError(err_text)
             except _req.exceptions.RequestException as e:
                 err_text = _redact_gemini_api_key(str(e))
@@ -1429,6 +1448,32 @@ def _gemini_generate(
                 raise RuntimeError(err_text)
         if attempt_succeeded:
             break
+        if exhausted_transient_status_code is not None:
+            status_code = int(exhausted_transient_status_code)
+            if attempt_i < max_tries - 1:
+                _notify_gemini_retry({"clear_retry_label": True})
+                _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
+                print(
+                    f"[GEMINI] HTTP {status_code} kept failing on pass={pass_num!r} "
+                    f"(attempt {attempt_i + 1}/{max_tries}) — advancing to next attempt "
+                    f"with timeout={_next_to}s.",
+                    flush=True,
+                )
+                continue
+            if http_timing:
+                http_timing.pass_failed = True
+                _flush_http_timing()
+            if pass_num is not None and _gemini_pass_summary_enabled():
+                print(
+                    f"[gemini] pass {pass_num} stopped: HTTP {status_code} after transient retries: "
+                    f"{exhausted_transient_error_text}",
+                    flush=True,
+                )
+            if pass_num is not None and int(pass_num) == 1:
+                raise RuntimeError(
+                    "SERVERS_OVERLOADED: Gemini Pass 1 stayed unavailable after all attempts and transient retries."
+                )
+            raise RuntimeError(exhausted_transient_error_text or f"HTTP {status_code}")
         if timed_out:
             if http_timing:
                 http_timing.record_timeout(attempt_i, float(attempt_timeout))
