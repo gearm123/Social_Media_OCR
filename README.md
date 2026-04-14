@@ -120,4 +120,8 @@ After a successful pipeline run, the server decrements credits or increments fre
 - **Job caps:** `MAX_JOB_FILES` (default 30), `MAX_JOB_UPLOAD_MB` (default 80 total per job).
 - **PostgreSQL:** Use Render Postgres (**translate-chat-db**) or another host; set `DATABASE_URL` on the API. Backups: provider snapshots or `pg_dump`.
 - **Monitoring:** Optional `SENTRY_DSN` + `SENTRY_TRACES_SAMPLE_RATE`. Set `MONITOR_READ_TOKEN` to enable `GET /monitor/activity` and `GET /monitor/usage`. The usage report is stored in its own PostgreSQL table and tracks live counters such as total algorithm runs, free-trial attempts, users signed up today, and total users. Paddle webhooks log to stdout at `INFO` (`translate_chat.billing`).
+- **Windows fetch command:** after setting `MONITOR_READ_TOKEN`, run:
+```powershell
+Invoke-RestMethod -Uri "https://YOUR_BACKEND_URL/monitor/usage" -Headers @{ "X-Monitor-Token" = "YOUR_MONITOR_READ_TOKEN" } | ConvertTo-Json -Depth 10
+```
 - **Legal:** `GET /legal/terms`, `GET /legal/privacy` (set `PUBLIC_CONTACT_EMAIL`).

@@ -63,6 +63,17 @@ class _FakeUsageStore:
 
 
 class TestUsageReport(unittest.TestCase):
+    def test_table_exists_accepts_dict_row_shape(self):
+        class _FakeCursor:
+            def execute(self, *_args, **_kwargs):
+                return None
+
+            def fetchone(self):
+                return {"regclass_name": "users"}
+
+        store = usage_report.UsageReportStore.__new__(usage_report.UsageReportStore)
+        self.assertTrue(store._table_exists(_FakeCursor(), "users"))
+
     def test_note_updates_use_store_when_available(self):
         fake_store = _FakeUsageStore()
         pass_outcomes = {

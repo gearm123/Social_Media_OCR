@@ -82,9 +82,16 @@ class UsageReportStore:
                 conn.commit()
 
     def _table_exists(self, cur, table_name: str) -> bool:
-        cur.execute("SELECT to_regclass(%s)", (f"public.{table_name}",))
+        cur.execute(
+            "SELECT to_regclass(%s) AS regclass_name",
+            (f"public.{table_name}",),
+        )
         row = cur.fetchone()
-        return bool(row and row[0])
+        if not row:
+            return False
+        if isinstance(row, dict):
+            return bool(row.get("regclass_name"))
+        return bool(row[0])
 
     def _query_scalar(self, cur, sql: str, params: tuple = ()) -> int:
         cur.execute(sql, params)
