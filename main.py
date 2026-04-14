@@ -1161,8 +1161,12 @@ def run_pipeline_job(
                 except Exception:
                     pass
             return
-        added_eta = max(0.0, float(payload.get("added_eta_sec") or 0.0))
-        retry_eta_extra_sec = round(retry_eta_extra_sec + added_eta, 1)
+        eta_extra = payload.get("eta_extra_sec")
+        if eta_extra is None:
+            added_eta = max(0.0, float(payload.get("added_eta_sec") or 0.0))
+            retry_eta_extra_sec = round(retry_eta_extra_sec + added_eta, 1)
+        else:
+            retry_eta_extra_sec = round(max(0.0, float(eta_extra)), 1)
         _check_cancel()
         retry_payload: Dict[str, Any] = {
             "phase": str(current_phase_state.get("phase") or "running"),

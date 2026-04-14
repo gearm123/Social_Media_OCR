@@ -1345,13 +1345,14 @@ def _gemini_generate(
             record_gemini_pass_http_timing(http_timing)
             _http_timing_recorded = True
 
-    def _retry_eta_penalty_sec(attempt_timeout: int, retry_delay_sec: float) -> float:
-        """Extra total ETA to add for one more Gemini retry attempt.
+    def _retry_eta_elapsed_sec(started_at: float) -> float:
+        """Return the wasted time so far for the current pass.
 
-        This should reflect only future work added by the retry itself. Elapsed time is already
-        visible in the live timer, so do not add it again here.
+        The frontend treats ``eta_extra_sec`` as an absolute extra duration, so report the real
+        elapsed wall time for the pass that is being retried instead of a synthetic timeout/backoff
+        estimate.
         """
-        return round(max(1.0, float(attempt_timeout)) + max(0.0, float(retry_delay_sec)), 1)
+        return round(max(0.0, time.time() - float(started_at)), 1)
 
     timed_out_attempts = 0
 
@@ -1439,7 +1440,7 @@ def _gemini_generate(
                 max_status_retries = _gemini_http_extra_retries_on_transient_status()
                 if _is_transient_gemini_http_status(status_code) and transient_status_retry_i < max_status_retries:
                     retry_delay = _gemini_transient_status_retry_delay_sec(transient_status_retry_i)
-                    added_eta_sec = _retry_eta_penalty_sec(attempt_timeout, retry_delay)
+                    eta_extra_sec = _retry_eta_elapsed_sec(t_pass_wall)
                     retry_label = (
                         f"Pass {pass_num} — Gemini {status_code} retrying current attempt…"
                         if pass_num is not None
@@ -1448,7 +1449,7 @@ def _gemini_generate(
                     _notify_gemini_retry(
                         {
                             "label": retry_label,
-                            "added_eta_sec": added_eta_sec,
+                            "eta_extra_sec": eta_extra_sec,
                             "reset_phase_started_at": True,
                             "pass_num": int(pass_num) if pass_num is not None else None,
                             "attempt_i": int(attempt_i),

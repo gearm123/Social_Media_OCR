@@ -104,6 +104,16 @@ class TestGeminiRetryBehavior(unittest.TestCase):
         self.assertEqual(post_mock.call_count, 5)
         self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [4.0, 8.0, 16.0])
         self.assertTrue(any(event.get("clear_retry_label") for event in retry_events))
+        retry_eta_values = [
+            event.get("eta_extra_sec")
+            for event in retry_events
+            if not event.get("clear_retry_label")
+        ]
+        self.assertTrue(retry_eta_values)
+        self.assertTrue(all(value is not None and value >= 0 for value in retry_eta_values))
+        self.assertTrue(
+            all("added_eta_sec" not in event for event in retry_events if not event.get("clear_retry_label"))
+        )
         self.assertEqual(
             ocr_translate.get_gemini_pass_outcomes().get(1, {}).get("successful_attempt"),
             2,

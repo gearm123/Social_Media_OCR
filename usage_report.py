@@ -36,6 +36,26 @@ def _log_missing_db_once() -> None:
     _log.info("usage report skipped: DATABASE_URL not configured")
 
 
+def _log_report_snapshot(event: str, report: Optional[dict[str, Any]]) -> None:
+    if not isinstance(report, dict):
+        _log.info("usage report %s", event)
+        return
+    _log.info(
+        (
+            "usage report %s: runs_total=%s completed=%s failed=%s free_trials=%s "
+            "users_total=%s users_today=%s updated_at=%s"
+        ),
+        event,
+        int(report.get("algorithm_runs_total") or 0),
+        int(report.get("algorithm_runs_completed_total") or 0),
+        int(report.get("algorithm_runs_failed_total") or 0),
+        int(report.get("free_trial_attempts_total") or 0),
+        int(report.get("users_total") or 0),
+        int(report.get("users_signed_up_today") or 0),
+        report.get("updated_at"),
+    )
+
+
 class UsageReportStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -433,6 +453,7 @@ def note_algorithm_started() -> bool:
         return False
     try:
         store.record_run_started()
+        _log_report_snapshot("updated after algorithm start", store.read_report())
     except Exception:
         _log.exception("usage report update failed for algorithm start")
         return False
@@ -445,6 +466,7 @@ def note_algorithm_completed(pass_outcomes: Optional[dict[str, Any]] = None) -> 
         return False
     try:
         store.record_run_completed(pass_outcomes)
+        _log_report_snapshot("updated after algorithm completion", store.read_report())
     except Exception:
         _log.exception("usage report update failed for algorithm completion")
         return False
@@ -457,6 +479,7 @@ def note_algorithm_failed(pass_outcomes: Optional[dict[str, Any]] = None) -> boo
         return False
     try:
         store.record_run_failed(pass_outcomes)
+        _log_report_snapshot("updated after algorithm failure", store.read_report())
     except Exception:
         _log.exception("usage report update failed for algorithm failure")
         return False
@@ -469,6 +492,7 @@ def note_free_trial_attempt() -> bool:
         return False
     try:
         store.increment_free_trial_attempts()
+        _log_report_snapshot("updated after free trial attempt", store.read_report())
     except Exception:
         _log.exception("usage report update failed for free trial attempt")
         return False
@@ -481,6 +505,7 @@ def note_user_signup() -> bool:
         return False
     try:
         store.refresh_user_totals()
+        _log_report_snapshot("updated after user signup", store.read_report())
     except Exception:
         _log.exception("usage report update failed for user signup")
         return False
@@ -492,7 +517,9 @@ def read_usage_report() -> Optional[dict[str, Any]]:
     if store is None:
         return None
     try:
-        return store.read_report()
+        report = store.read_report()
+        _log_report_snapshot("read", report)
+        return report
     except Exception:
         _log.exception("usage report read failed")
         return None
