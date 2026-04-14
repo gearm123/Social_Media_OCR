@@ -1072,14 +1072,45 @@ def _translate_or_preserve_text(text):
 _BLOCK_SEP = "\n<<<MSG>>>\n"
 _gemini_api_key = None
 _gemini_active_model = None   # (model_name, api_version) tuple once found
+_gemini_model_candidates = None
 
 # Preferred model name substrings in priority order
 _GEMINI_PREFER = ["gemini-2.5", "gemini-2.0", "gemini-1.5"]
 
 
-def _gemini_discover_model(api_key):
-    """Query ListModels to find the best generateContent-capable model."""
+def _gemini_sort_model_candidates(candidates: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """Sort discovered Gemini models by preferred family, then Pro before Flash."""
+
+    def _priority(item: Tuple[str, str]) -> Tuple[int, int, str, str]:
+        name, ver = item
+        lname = (name or "").lower()
+        pref_rank = len(_GEMINI_PREFER)
+        for i, pref in enumerate(_GEMINI_PREFER):
+            if pref in lname:
+                pref_rank = i
+                break
+        if "pro" in lname and "flash" not in lname:
+            variant_rank = 0
+        elif "flash" in lname:
+            variant_rank = 1
+        else:
+            variant_rank = 2
+        return (pref_rank, variant_rank, lname, ver or "")
+
+    unique: List[Tuple[str, str]] = []
+    seen: Set[Tuple[str, str]] = set()
+    for item in candidates or []:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return sorted(unique, key=_priority)
+
+
+def _gemini_discover_models(api_key: str) -> List[Tuple[str, str]]:
+    """Query ListModels to find generateContent-capable models in priority order."""
     import requests as _req
+
     for ver in ("v1beta", "v1"):
         try:
             r = _req.get(
@@ -1089,28 +1120,25 @@ def _gemini_discover_model(api_key):
             if r.status_code != 200:
                 continue
             models = r.json().get("models", [])
-            # Keep only models that support generateContent
             capable = [
-                m["name"].replace("models/", "")
+                (m["name"].replace("models/", ""), ver)
                 for m in models
                 if "generateContent" in m.get("supportedGenerationMethods", [])
                 and "name" in m
             ]
-            if not capable:
-                continue
-            # Pick highest-priority model, preferring Pro over Flash.
-            for pref in _GEMINI_PREFER:
-                for name in capable:
-                    if pref in name and "pro" in name:
-                        return name, ver
-                for name in capable:
-                    if pref in name and "flash" in name:
-                        return name, ver
-            # Fallback: first capable model
-            return capable[0], ver
+            if capable:
+                return _gemini_sort_model_candidates(capable)
         except Exception as e:
             _pv(f"[GEMINI] ListModels error ({ver}): {e}")
-    return None, None
+    return []
+
+
+def _gemini_discover_model(api_key):
+    """Query ListModels to find the best generateContent-capable model."""
+    models = _gemini_discover_models(api_key)
+    if not models:
+        return None, None
+    return models[0]
 
 
 class GeminiApiResult(NamedTuple):
@@ -1123,26 +1151,52 @@ class GeminiApiResult(NamedTuple):
 
 def _gemini_discover_if_needed() -> bool:
     """Load API key from env and pick a model. Returns False if Gemini is unavailable."""
-    global _gemini_api_key, _gemini_active_model
+    global _gemini_api_key, _gemini_active_model, _gemini_model_candidates
 
     if _gemini_api_key is None:
         _gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip() or None
     if not _gemini_api_key:
         return False
-    if _gemini_active_model is None:
+    if _gemini_active_model is None or not _gemini_model_candidates:
         if not _compact_verbose_logs():
             _pv("[GEMINI] Discovering available models...")
-        model, ver = _gemini_discover_model(_gemini_api_key)
-        if model:
-            _gemini_active_model = (model, ver)
+        models = _gemini_discover_models(_gemini_api_key)
+        if models:
+            _gemini_model_candidates = list(models)
+            _gemini_active_model = models[0]
             if _compact_verbose_logs():
                 print("**************", flush=True)
-            _pv(f"[GEMINI] Using model: {model} (API {ver})")
+            _pv(
+                "[GEMINI] Using model: "
+                f"{_gemini_active_model[0]} (API {_gemini_active_model[1]})"
+            )
         else:
             _pv("[GEMINI] No generateContent-capable model found — refinement disabled")
             _gemini_api_key = ""
             return False
     return True
+
+
+def _gemini_failover_chain(active_model: Tuple[str, str]) -> List[Tuple[str, str]]:
+    chain: List[Tuple[str, str]] = []
+    seen: Set[Tuple[str, str]] = set()
+    for item in [active_model] + list(_gemini_model_candidates or []):
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        chain.append(item)
+    return chain
+
+
+def _gemini_activate_model(model_info: Tuple[str, str], *, reason: Optional[str] = None) -> None:
+    global _gemini_active_model
+    prev = _gemini_active_model
+    _gemini_active_model = model_info
+    if reason and prev != model_info:
+        print(
+            f"[GEMINI] Switching model from {prev[0]} to {model_info[0]} ({reason}).",
+            flush=True,
+        )
 
 
 def _gemini_candidate_finish_reason(api_payload: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -1328,11 +1382,7 @@ def _gemini_generate(
     if not _gemini_discover_if_needed():
         return None
 
-    model, ver = _gemini_active_model
-    url = (
-        f"https://generativelanguage.googleapis.com/{ver}/models/"
-        f"{model}:generateContent?key={_gemini_api_key}"
-    )
+    model_chain = _gemini_failover_chain(_gemini_active_model)
 
     parts = []
     if image_b64_list:
@@ -1385,121 +1435,202 @@ def _gemini_generate(
         return round(max(0.0, time.time() - float(started_at)), 1)
 
     timed_out_attempts = 0
+    attempt_succeeded = False
+    active_model_idx = 0
+    active_model_name = model_chain[0][0]
+    last_attempt_i = 0
+    transient_status_retry_i = 0
 
-    for attempt_i in range(max_tries):
-        if (
-            _cp
-            and pass_num is not None
-            and int(pass_num) == 1
-            and attempt_i == 0
-        ):
-            print("**********PASS1**********", flush=True)
-            print("", flush=True)
-        if http_timing and attempt_i == 1:
-            http_timing.mark_second_attempt_started()
-        minimal_thinking = attempt_i > 0
-        attempt_timeout = _gemini_attempt_timeout_sec(pass_num, attempt_i, timeout)
-        gen_cfg = _gemini_build_generation_config(
-            model,
-            pass_num,
-            temperature,
-            max_out,
-            use_json_output=use_json_output,
-            minimal_thinking=minimal_thinking,
-            attempt_i=attempt_i,
+    while active_model_idx < len(model_chain):
+        model, ver = model_chain[active_model_idx]
+        active_model_name = model
+        url = (
+            f"https://generativelanguage.googleapis.com/{ver}/models/"
+            f"{model}:generateContent?key={_gemini_api_key}"
         )
-        _tc = gen_cfg.get("thinkingConfig") or {}
-        _tb_disp_attempt = _tc.get("thinkingBudget")
-        payload: Dict[str, Any] = {
-            "contents": [{"parts": parts}],
-            "generationConfig": gen_cfg,
-        }
-        if use_relaxed_safety:
-            payload["safetySettings"] = [
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
-            ]
-        if not (_cp and pass_num == 3):
-            _retry_tag = " minimal_thinking=1" if minimal_thinking else ""
-            _pv(
-                f"[GEMINI] generateContent POST: model={model} pass={pass_num!r} "
-                f"images_in_payload={image_count} prompt_chars={prompt_chars} "
-                f"max_tokens={gen_cfg['maxOutputTokens']} thinkingBudget={_tb_disp_attempt!r} "
-                f"timeout={attempt_timeout}s attempt={attempt_i + 1}/{max_tries}{_retry_tag}",
+        if active_model_idx > 0:
+            _gemini_activate_model(
+                (model, ver),
+                reason=f"fallback for upstream instability on pass {pass_num}",
             )
-        transient_status_retry_i = 0
-        attempt_succeeded = False
-        timed_out = False
-        exhausted_transient_status_code: Optional[int] = None
-        exhausted_transient_error_text = ""
-        while True:
-            try:
-                t_attempt_wall = time.time()
-                with _gemini_pipeline_http_wait(pass_num, int(attempt_timeout)):
-                    t_http = time.time()
-                    r = _req.post(url, json=payload, timeout=attempt_timeout)
-                    recv_lat = time.time() - t_http
-                    http_code = int(r.status_code)
-                    if not _cp:
-                        _pv(
-                            f"[GEMINI] HTTP response received in {recv_lat:.1f}s with status {http_code}",
+        switch_to_next_model = False
+
+        for attempt_i in range(max_tries):
+            last_attempt_i = attempt_i
+            if (
+                _cp
+                and pass_num is not None
+                and int(pass_num) == 1
+                and active_model_idx == 0
+                and attempt_i == 0
+            ):
+                print("**********PASS1**********", flush=True)
+                print("", flush=True)
+            if http_timing and active_model_idx == 0 and attempt_i == 1:
+                http_timing.mark_second_attempt_started()
+            minimal_thinking = attempt_i > 0
+            attempt_timeout = _gemini_attempt_timeout_sec(pass_num, attempt_i, timeout)
+            gen_cfg = _gemini_build_generation_config(
+                model,
+                pass_num,
+                temperature,
+                max_out,
+                use_json_output=use_json_output,
+                minimal_thinking=minimal_thinking,
+                attempt_i=attempt_i,
+            )
+            _tc = gen_cfg.get("thinkingConfig") or {}
+            _tb_disp_attempt = _tc.get("thinkingBudget")
+            payload: Dict[str, Any] = {
+                "contents": [{"parts": parts}],
+                "generationConfig": gen_cfg,
+            }
+            if use_relaxed_safety:
+                payload["safetySettings"] = [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+                ]
+            if not (_cp and pass_num == 3):
+                _retry_tag = " minimal_thinking=1" if minimal_thinking else ""
+                _pv(
+                    f"[GEMINI] generateContent POST: model={model} pass={pass_num!r} "
+                    f"images_in_payload={image_count} prompt_chars={prompt_chars} "
+                    f"max_tokens={gen_cfg['maxOutputTokens']} thinkingBudget={_tb_disp_attempt!r} "
+                    f"timeout={attempt_timeout}s attempt={attempt_i + 1}/{max_tries}{_retry_tag}",
+                )
+            transient_status_retry_i = 0
+            timed_out = False
+            exhausted_transient_status_code: Optional[int] = None
+            exhausted_transient_error_text = ""
+            while True:
+                try:
+                    t_attempt_wall = time.time()
+                    with _gemini_pipeline_http_wait(pass_num, int(attempt_timeout)):
+                        t_http = time.time()
+                        r = _req.post(url, json=payload, timeout=attempt_timeout)
+                        recv_lat = time.time() - t_http
+                        http_code = int(r.status_code)
+                        if not _cp:
+                            _pv(
+                                f"[GEMINI] HTTP response received in {recv_lat:.1f}s with status {http_code}",
+                            )
+                        r.raise_for_status()
+                        t_json = time.time()
+                        data = r.json()
+                        if not _cp:
+                            _pv(
+                                f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
+                            )
+                    if http_timing:
+                        http_timing.record_success(attempt_i, time.time() - t_attempt_wall)
+                    _tb_disp = _tb_disp_attempt
+                    if transient_status_retry_i > 0:
+                        _notify_gemini_retry({"clear_retry_label": True})
+                    attempt_succeeded = True
+                    break
+                except _req.exceptions.Timeout:
+                    timed_out = True
+                    timed_out_attempts += 1
+                    break
+                except _req.exceptions.HTTPError as e:
+                    status_code = int(getattr(getattr(e, "response", None), "status_code", 0) or 0)
+                    err_text = _redact_gemini_api_key(str(e))
+                    max_status_retries = _gemini_http_extra_retries_on_transient_status()
+                    if _is_transient_gemini_http_status(status_code) and transient_status_retry_i < max_status_retries:
+                        retry_delay = _gemini_transient_status_retry_delay_sec(transient_status_retry_i)
+                        eta_extra_sec = _retry_eta_elapsed_sec(t_pass_wall)
+                        retry_label = (
+                            f"Pass {pass_num} — Gemini {status_code} retrying current attempt…"
+                            if pass_num is not None
+                            else f"Gemini {status_code} retrying current attempt…"
                         )
-                    r.raise_for_status()
-                    t_json = time.time()
-                    data = r.json()
-                    if not _cp:
-                        _pv(
-                            f"[GEMINI] Response JSON parsed in {time.time()-t_json:.1f}s",
+                        _notify_gemini_retry(
+                            {
+                                "label": retry_label,
+                                "eta_extra_sec": eta_extra_sec,
+                                "reset_phase_started_at": True,
+                                "pass_num": int(pass_num) if pass_num is not None else None,
+                                "attempt_i": int(attempt_i),
+                                "attempt_timeout_sec": int(attempt_timeout),
+                                "status_code": status_code,
+                            }
                         )
-                if http_timing:
-                    http_timing.record_success(attempt_i, time.time() - t_attempt_wall)
-                _tb_disp = _tb_disp_attempt
-                if transient_status_retry_i > 0:
+                        print(
+                            f"[GEMINI] HTTP {status_code} on pass={pass_num!r} "
+                            f"(attempt {attempt_i + 1}/{max_tries}, retry {transient_status_retry_i + 1}/{max_status_retries}) "
+                            f"— retrying same attempt in {retry_delay:.1f}s…",
+                            flush=True,
+                        )
+                        transient_status_retry_i += 1
+                        time.sleep(retry_delay)
+                        continue
+                    if _is_transient_gemini_http_status(status_code):
+                        exhausted_transient_status_code = status_code
+                        exhausted_transient_error_text = err_text
+                        break
+                    if http_timing:
+                        http_timing.pass_failed = True
+                        _flush_http_timing()
+                    _record_gemini_pass_outcome(
+                        pass_num,
+                        status="failed",
+                        successful_attempt=None,
+                        max_tries=max_tries,
+                        timed_out_attempts=timed_out_attempts,
+                        transient_status_retry_count=transient_status_retry_i,
+                        final_http_status=status_code,
+                        model=active_model_name,
+                        model_failovers=max(0, active_model_idx),
+                    )
+                    if pass_num is not None and _gemini_pass_summary_enabled():
+                        print(f"[gemini] pass {pass_num} stopped: HTTP {status_code}: {err_text}", flush=True)
+                    raise RuntimeError(err_text)
+                except _req.exceptions.RequestException as e:
+                    err_text = _redact_gemini_api_key(str(e))
+                    if http_timing:
+                        http_timing.pass_failed = True
+                        _flush_http_timing()
+                    _record_gemini_pass_outcome(
+                        pass_num,
+                        status="failed",
+                        successful_attempt=None,
+                        max_tries=max_tries,
+                        timed_out_attempts=timed_out_attempts,
+                        transient_status_retry_count=transient_status_retry_i,
+                        final_http_status=http_code or None,
+                        model=active_model_name,
+                        model_failovers=max(0, active_model_idx),
+                    )
+                    if pass_num is not None and _gemini_pass_summary_enabled():
+                        print(f"[gemini] pass {pass_num} stopped: request error: {err_text}", flush=True)
+                    raise RuntimeError(err_text)
+            if attempt_succeeded:
+                break
+            if exhausted_transient_status_code is not None:
+                status_code = int(exhausted_transient_status_code)
+                if active_model_idx < len(model_chain) - 1:
                     _notify_gemini_retry({"clear_retry_label": True})
-                attempt_succeeded = True
-                break
-            except _req.exceptions.Timeout:
-                timed_out = True
-                timed_out_attempts += 1
-                break
-            except _req.exceptions.HTTPError as e:
-                status_code = int(getattr(getattr(e, "response", None), "status_code", 0) or 0)
-                err_text = _redact_gemini_api_key(str(e))
-                max_status_retries = _gemini_http_extra_retries_on_transient_status()
-                if _is_transient_gemini_http_status(status_code) and transient_status_retry_i < max_status_retries:
-                    retry_delay = _gemini_transient_status_retry_delay_sec(transient_status_retry_i)
-                    eta_extra_sec = _retry_eta_elapsed_sec(t_pass_wall)
-                    retry_label = (
-                        f"Pass {pass_num} — Gemini {status_code} retrying current attempt…"
-                        if pass_num is not None
-                        else f"Gemini {status_code} retrying current attempt…"
-                    )
-                    _notify_gemini_retry(
-                        {
-                            "label": retry_label,
-                            "eta_extra_sec": eta_extra_sec,
-                            "reset_phase_started_at": True,
-                            "pass_num": int(pass_num) if pass_num is not None else None,
-                            "attempt_i": int(attempt_i),
-                            "attempt_timeout_sec": int(attempt_timeout),
-                            "status_code": status_code,
-                        }
-                    )
+                    next_model = model_chain[active_model_idx + 1][0]
                     print(
-                        f"[GEMINI] HTTP {status_code} on pass={pass_num!r} "
-                        f"(attempt {attempt_i + 1}/{max_tries}, retry {transient_status_retry_i + 1}/{max_status_retries}) "
-                        f"— retrying same attempt in {retry_delay:.1f}s…",
+                        f"[GEMINI] HTTP {status_code} kept failing on pass={pass_num!r} "
+                        f"(model={model}, attempt {attempt_i + 1}/{max_tries}) — "
+                        f"switching to fallback model {next_model}.",
                         flush=True,
                     )
-                    transient_status_retry_i += 1
-                    time.sleep(retry_delay)
-                    continue
-                if _is_transient_gemini_http_status(status_code):
-                    exhausted_transient_status_code = status_code
-                    exhausted_transient_error_text = err_text
+                    switch_to_next_model = True
                     break
+                if attempt_i < max_tries - 1:
+                    _notify_gemini_retry({"clear_retry_label": True})
+                    _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
+                    print(
+                        f"[GEMINI] HTTP {status_code} kept failing on pass={pass_num!r} "
+                        f"(attempt {attempt_i + 1}/{max_tries}) — advancing to next attempt "
+                        f"with timeout={_next_to}s.",
+                        flush=True,
+                    )
+                    continue
                 if http_timing:
                     http_timing.pass_failed = True
                     _flush_http_timing()
@@ -1511,167 +1642,141 @@ def _gemini_generate(
                     timed_out_attempts=timed_out_attempts,
                     transient_status_retry_count=transient_status_retry_i,
                     final_http_status=status_code,
+                    model=active_model_name,
+                    model_failovers=max(0, active_model_idx),
                 )
                 if pass_num is not None and _gemini_pass_summary_enabled():
-                    print(f"[gemini] pass {pass_num} stopped: HTTP {status_code}: {err_text}", flush=True)
-                raise RuntimeError(err_text)
-            except _req.exceptions.RequestException as e:
-                err_text = _redact_gemini_api_key(str(e))
+                    print(
+                        f"[gemini] pass {pass_num} stopped: HTTP {status_code} after transient retries: "
+                        f"{exhausted_transient_error_text}",
+                        flush=True,
+                    )
+                if pass_num is not None and int(pass_num) == 1:
+                    _log_servers_overloaded_trigger(
+                        pass_num=pass_num,
+                        reason="transient_http_status_exhausted",
+                        max_tries=max_tries,
+                        transient_status_retry_count=transient_status_retry_i,
+                        timed_out_attempts=timed_out_attempts,
+                        final_http_status=status_code,
+                    )
+                    raise RuntimeError(
+                        "SERVERS_OVERLOADED: Gemini Pass 1 stayed unavailable after all attempts and transient retries."
+                    )
+                raise RuntimeError(exhausted_transient_error_text or f"HTTP {status_code}")
+            if timed_out:
                 if http_timing:
-                    http_timing.pass_failed = True
-                    _flush_http_timing()
-                _record_gemini_pass_outcome(
-                    pass_num,
-                    status="failed",
-                    successful_attempt=None,
-                    max_tries=max_tries,
-                    timed_out_attempts=timed_out_attempts,
-                    transient_status_retry_count=transient_status_retry_i,
-                    final_http_status=http_code or None,
-                )
-                if pass_num is not None and _gemini_pass_summary_enabled():
-                    print(f"[gemini] pass {pass_num} stopped: request error: {err_text}", flush=True)
-                raise RuntimeError(err_text)
-        if attempt_succeeded:
-            break
-        if exhausted_transient_status_code is not None:
-            status_code = int(exhausted_transient_status_code)
-            if attempt_i < max_tries - 1:
-                _notify_gemini_retry({"clear_retry_label": True})
-                _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
-                print(
-                    f"[GEMINI] HTTP {status_code} kept failing on pass={pass_num!r} "
-                    f"(attempt {attempt_i + 1}/{max_tries}) — advancing to next attempt "
-                    f"with timeout={_next_to}s.",
-                    flush=True,
-                )
-                continue
-            if http_timing:
-                http_timing.pass_failed = True
-                _flush_http_timing()
-            _record_gemini_pass_outcome(
-                pass_num,
-                status="failed",
-                successful_attempt=None,
-                max_tries=max_tries,
-                timed_out_attempts=timed_out_attempts,
-                transient_status_retry_count=transient_status_retry_i,
-                final_http_status=status_code,
-            )
-            if pass_num is not None and _gemini_pass_summary_enabled():
-                print(
-                    f"[gemini] pass {pass_num} stopped: HTTP {status_code} after transient retries: "
-                    f"{exhausted_transient_error_text}",
-                    flush=True,
-                )
-            if pass_num is not None and int(pass_num) == 1:
-                _log_servers_overloaded_trigger(
-                    pass_num=pass_num,
-                    reason="transient_http_status_exhausted",
-                    max_tries=max_tries,
-                    transient_status_retry_count=transient_status_retry_i,
-                    timed_out_attempts=timed_out_attempts,
-                    final_http_status=status_code,
-                )
-                raise RuntimeError(
-                    "SERVERS_OVERLOADED: Gemini Pass 1 stayed unavailable after all attempts and transient retries."
-                )
-            raise RuntimeError(exhausted_transient_error_text or f"HTTP {status_code}")
-        if timed_out:
-            if http_timing:
-                http_timing.record_timeout(attempt_i, float(attempt_timeout))
-            if attempt_i < max_tries - 1:
-                _mlow = (model or "").lower()
-                _retry_hint = ""
-                if "2.5" in _mlow:
-                    if pass_num is not None and int(pass_num) == 1:
-                        _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
-                        if _pipeline_hurry_up():
-                            _next_tb = _HURRY_UP_PASS1_TRY2_THINKING
-                        else:
-                            _na = attempt_i + 1
-                            _next_tb = (
-                                _GEMINI_PASS1_RETRY_THINKING_BUDGET
-                                if _na == 1
-                                else _GEMINI_PASS1_RETRY3_THINKING_BUDGET
+                    http_timing.record_timeout(attempt_i, float(attempt_timeout))
+                if attempt_i < max_tries - 1:
+                    _mlow = (model or "").lower()
+                    _retry_hint = ""
+                    if "2.5" in _mlow:
+                        if pass_num is not None and int(pass_num) == 1:
+                            _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
+                            if _pipeline_hurry_up():
+                                _next_tb = _HURRY_UP_PASS1_TRY2_THINKING
+                            else:
+                                _na = attempt_i + 1
+                                _next_tb = (
+                                    _GEMINI_PASS1_RETRY_THINKING_BUDGET
+                                    if _na == 1
+                                    else _GEMINI_PASS1_RETRY3_THINKING_BUDGET
+                                )
+                            _retry_hint = (
+                                f" (next attempt: {_next_to}s timeout, "
+                                f"thinkingBudget={_next_tb})"
                             )
-                        _retry_hint = (
-                            f" (next attempt: {_next_to}s timeout, "
-                            f"thinkingBudget={_next_tb})"
-                        )
-                    elif pass_num is not None and int(pass_num) == 2:
-                        _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
-                        _next_tb = (
-                            _HURRY_UP_PASS2_TRY2_THINKING
-                            if _pipeline_hurry_up()
-                            else _GEMINI_PASS2_RETRY_THINKING_BUDGET
-                        )
-                        _retry_hint = (
-                            f" (next attempt: {_next_to}s timeout, "
-                            f"thinkingBudget={_next_tb})"
+                        elif pass_num is not None and int(pass_num) == 2:
+                            _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
+                            _next_tb = (
+                                _HURRY_UP_PASS2_TRY2_THINKING
+                                if _pipeline_hurry_up()
+                                else _GEMINI_PASS2_RETRY_THINKING_BUDGET
+                            )
+                            _retry_hint = (
+                                f" (next attempt: {_next_to}s timeout, "
+                                f"thinkingBudget={_next_tb})"
+                            )
+                        else:
+                            _is_pro = "pro" in _mlow and "flash" not in _mlow
+                            _retry_hint = (
+                                f" (next attempt: thinkingBudget="
+                                f"{_GEMINI_25_PRO_MIN_THINKING_BUDGET} for 2.5 Pro)"
+                                if _is_pro
+                                else " (next attempt: thinkingBudget=0)"
+                            )
+                    print(
+                        f"[GEMINI] HTTP timeout after {attempt_timeout}s "
+                        f"(attempt {attempt_i + 1}/{max_tries}, pass={pass_num!r}) — retrying…{_retry_hint}",
+                        flush=True,
+                    )
+                    continue
+                if active_model_idx < len(model_chain) - 1:
+                    next_model = model_chain[active_model_idx + 1][0]
+                    print(
+                        f"[GEMINI] HTTP timeouts exhausted on pass={pass_num!r} "
+                        f"(model={model}) — switching to fallback model {next_model}.",
+                        flush=True,
+                    )
+                    switch_to_next_model = True
+                    break
+                if pass_num is not None and _gemini_pass_summary_enabled():
+                    _final_to = _gemini_attempt_timeout_sec(pass_num, max_tries - 1, timeout)
+                    if int(pass_num) in (2, 3):
+                        print(
+                            f"[gemini] pass {pass_num} stopped: HTTP timeout after {_final_to}s "
+                            f"({max_tries} attempt(s); set GEMINI_PASS{pass_num}_TIMEOUT_SEC or "
+                            f"GEMINI_REQUEST_TIMEOUT_SEC)",
+                            flush=True,
                         )
                     else:
-                        _is_pro = "pro" in _mlow and "flash" not in _mlow
-                        _retry_hint = (
-                            f" (next attempt: thinkingBudget="
-                            f"{_GEMINI_25_PRO_MIN_THINKING_BUDGET} for 2.5 Pro)"
-                            if _is_pro
-                            else " (next attempt: thinkingBudget=0)"
+                        print(
+                            f"[gemini] pass {pass_num} stopped: HTTP timeout after {_final_to}s "
+                            f"({max_tries} attempt(s); set GEMINI_PASS{pass_num}_TIMEOUT_SEC, "
+                            f"GEMINI_REQUEST_TIMEOUT_SEC, or GEMINI_HTTP_RETRIES)",
+                            flush=True,
                         )
-                print(
-                    f"[GEMINI] HTTP timeout after {attempt_timeout}s "
-                    f"(attempt {attempt_i + 1}/{max_tries}, pass={pass_num!r}) — retrying…{_retry_hint}",
-                    flush=True,
-                )
-                continue
-            if pass_num is not None and _gemini_pass_summary_enabled():
-                _final_to = _gemini_attempt_timeout_sec(pass_num, max_tries - 1, timeout)
-                if int(pass_num) in (2, 3):
-                    print(
-                        f"[gemini] pass {pass_num} stopped: HTTP timeout after {_final_to}s "
-                        f"({max_tries} attempt(s); set GEMINI_PASS{pass_num}_TIMEOUT_SEC or "
-                        f"GEMINI_REQUEST_TIMEOUT_SEC)",
-                        flush=True,
-                    )
-                else:
-                    print(
-                        f"[gemini] pass {pass_num} stopped: HTTP timeout after {_final_to}s "
-                        f"({max_tries} attempt(s); set GEMINI_PASS{pass_num}_TIMEOUT_SEC, "
-                        f"GEMINI_REQUEST_TIMEOUT_SEC, or GEMINI_HTTP_RETRIES)",
-                    flush=True,
-                )
-            if http_timing:
-                http_timing.exhausted_on_timeout = True
-                _flush_http_timing()
-            _record_gemini_pass_outcome(
-                pass_num,
-                status="timeout_exhausted",
-                successful_attempt=None,
-                max_tries=max_tries,
-                timed_out_attempts=timed_out_attempts,
-                transient_status_retry_count=transient_status_retry_i,
-                final_http_status=http_code or None,
-            )
-            if pass_num is not None and int(pass_num) == 1:
-                _log_servers_overloaded_trigger(
-                    pass_num=pass_num,
-                    reason="timeout_exhausted",
+                if http_timing:
+                    http_timing.exhausted_on_timeout = True
+                    _flush_http_timing()
+                _record_gemini_pass_outcome(
+                    pass_num,
+                    status="timeout_exhausted",
+                    successful_attempt=None,
                     max_tries=max_tries,
-                    transient_status_retry_count=transient_status_retry_i,
                     timed_out_attempts=timed_out_attempts,
+                    transient_status_retry_count=transient_status_retry_i,
                     final_http_status=http_code or None,
-                    final_attempt_timeout_sec=_gemini_attempt_timeout_sec(pass_num, max_tries - 1, timeout),
+                    model=active_model_name,
+                    model_failovers=max(0, active_model_idx),
                 )
-            raise _req.exceptions.Timeout()
+                if pass_num is not None and int(pass_num) == 1:
+                    _log_servers_overloaded_trigger(
+                        pass_num=pass_num,
+                        reason="timeout_exhausted",
+                        max_tries=max_tries,
+                        transient_status_retry_count=transient_status_retry_i,
+                        timed_out_attempts=timed_out_attempts,
+                        final_http_status=http_code or None,
+                        final_attempt_timeout_sec=_gemini_attempt_timeout_sec(pass_num, max_tries - 1, timeout),
+                    )
+                raise _req.exceptions.Timeout()
+        if attempt_succeeded:
+            break
+        if not switch_to_next_model:
+            break
+        active_model_idx += 1
 
     _flush_http_timing()
     result_meta = {
         "status": "success",
-        "successful_attempt": int(attempt_i) + 1,
+        "successful_attempt": int(last_attempt_i) + 1,
         "max_tries": max_tries,
         "timed_out_attempts": timed_out_attempts,
         "transient_status_retry_count": transient_status_retry_i,
         "final_http_status": http_code or None,
+        "model": active_model_name,
+        "model_failovers": max(0, active_model_idx),
     }
     _record_gemini_pass_outcome(pass_num, **result_meta)
 

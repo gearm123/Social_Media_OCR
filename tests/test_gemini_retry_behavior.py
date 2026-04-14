@@ -39,6 +39,8 @@ class _FakeResponse:
 class TestGeminiRetryBehavior(unittest.TestCase):
     def setUp(self):
         ocr_translate.reset_gemini_pass_outcomes()
+        ocr_translate._gemini_active_model = None
+        ocr_translate._gemini_model_candidates = None
 
     def test_transient_status_retry_delay_defaults_are_spread_out(self):
         with patch.dict(
@@ -165,6 +167,74 @@ class TestGeminiRetryBehavior(unittest.TestCase):
             ocr_translate.get_gemini_pass_outcomes().get(3, {}).get("successful_attempt"),
             2,
         )
+
+    def test_pass1_fails_over_to_fallback_model_after_transient_status_exhaustion(self):
+        payload = {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"text": "ok-via-flash"}]},
+                }
+            ],
+            "usageMetadata": {},
+        }
+        responses = [_FakeResponse(503) for _ in range(4)] + [_FakeResponse(200, payload)]
+        post_urls = []
+
+        def _fake_post(url, json=None, timeout=None):
+            post_urls.append(url)
+            resp = responses.pop(0)
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
+
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_HTTP_RETRIES": "",
+                "GEMINI_TRANSIENT_HTTP_RETRIES": "",
+                "GEMINI_TRANSIENT_HTTP_RETRY_BASE_DELAY_SEC": "",
+                "GEMINI_TRANSIENT_HTTP_RETRY_MAX_DELAY_SEC": "",
+            },
+            clear=False,
+        ), patch.object(
+            ocr_translate, "_gemini_discover_if_needed", return_value=True
+        ), patch.object(
+            ocr_translate, "_gemini_pipeline_http_wait", side_effect=lambda *_a, **_k: _noop_wait()
+        ), patch.object(
+            ocr_translate, "_gemini_build_generation_config", return_value={"maxOutputTokens": 1024}
+        ), patch.object(
+            ocr_translate, "_compact_verbose_logs", return_value=False
+        ), patch.object(
+            ocr_translate, "_pipeline_verbose", return_value=False
+        ), patch.object(
+            ocr_translate, "_notify_gemini_retry"
+        ), patch.object(
+            ocr_translate, "_gemini_api_key", "test-key"
+        ), patch.object(
+            ocr_translate,
+            "_gemini_active_model",
+            ("gemini-2.5-pro", "v1beta"),
+        ), patch.object(
+            ocr_translate,
+            "_gemini_model_candidates",
+            [
+                ("gemini-2.5-pro", "v1beta"),
+                ("gemini-2.5-flash", "v1beta"),
+            ],
+        ), patch(
+            "requests.post", side_effect=_fake_post
+        ), patch(
+            "time.sleep"
+        ):
+            result = ocr_translate._gemini_generate("hello", timeout=66, pass_num=1)
+
+        self.assertEqual(result.text, "ok-via-flash")
+        self.assertEqual(result.meta["successful_attempt"], 1)
+        self.assertEqual(result.meta["model"], "gemini-2.5-flash")
+        self.assertEqual(result.meta["model_failovers"], 1)
+        self.assertTrue(all("gemini-2.5-pro" in url for url in post_urls[:4]))
+        self.assertIn("gemini-2.5-flash", post_urls[4])
 
     def test_pass1_logs_overload_trigger_after_transient_status_exhaustion(self):
         responses = [_FakeResponse(503) for _ in range(12)]

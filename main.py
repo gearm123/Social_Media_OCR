@@ -67,6 +67,54 @@ def _vprint(*args, **kwargs) -> None:
         kwargs.setdefault("flush", True)
         print(*args, **kwargs)
 
+
+def _format_pass_attempt_log(pass_name: str, meta: Optional[Dict[str, Any]]) -> str:
+    """Build a compact production log line for non-ideal pass attempts."""
+    if not isinstance(meta, dict) or not meta:
+        return ""
+    interesting = any(
+        (
+            int(meta.get("successful_attempt") or 0) > 1,
+            int(meta.get("timed_out_attempts") or 0) > 0,
+            int(meta.get("transient_status_retry_count") or 0) > 0,
+            int(meta.get("model_failovers") or 0) > 0,
+            str(meta.get("status") or "").strip() in ("failed", "timeout_exhausted"),
+            str(meta.get("reason") or "").strip() in ("wrapper_exception", "request_failed"),
+        )
+    )
+    if not interesting:
+        return ""
+    details = [f"status={meta.get('status') or 'unknown'}"]
+    successful_attempt = meta.get("successful_attempt")
+    max_tries = meta.get("max_tries")
+    if successful_attempt is not None:
+        attempt_text = str(successful_attempt)
+        if max_tries is not None:
+            attempt_text += f"/{max_tries}"
+        details.append(f"attempt={attempt_text}")
+    elif max_tries is not None:
+        details.append(f"max_tries={max_tries}")
+    for key in (
+        "timed_out_attempts",
+        "transient_status_retry_count",
+        "final_http_status",
+        "model",
+        "model_failovers",
+        "reason",
+    ):
+        value = meta.get(key)
+        if value is None or value == "":
+            continue
+        details.append(f"{key}={value}")
+    return f"[pipeline] {pass_name} attempts summary: " + " ".join(details)
+
+
+def _log_pass_attempts(pass_name: str, meta: Optional[Dict[str, Any]]) -> None:
+    line = _format_pass_attempt_log(pass_name, meta)
+    if line:
+        print(line, flush=True)
+
+
 # UI strings that appear in phone status bars but are NOT contact names
 _STATUS_BAR_NOISE = {
     "am", "pm", "lte", "5g", "4g", "3g", "wifi", "ok",
@@ -1311,6 +1359,7 @@ def run_pipeline_job(
         )
         gemini_pass_sec["pass1"] = round(time.time() - _t_g1, 2)
         pass_outcomes["pass1"] = get_gemini_pass_outcomes().get(1) or {}
+        _log_pass_attempts("pass1", pass_outcomes["pass1"])
         if not ok or not all_meta:
             failure_reason = str((pass_debug or {}).get("failure_reason") or "").strip()
             if failure_reason == "request_failed":
@@ -1412,10 +1461,17 @@ def run_pipeline_job(
                     "applied": False,
                     "successful_attempt": last_p2.get("successful_attempt"),
                     "status": last_p2.get("status"),
+                    "max_tries": last_p2.get("max_tries"),
+                    "timed_out_attempts": last_p2.get("timed_out_attempts"),
+                    "transient_status_retry_count": last_p2.get("transient_status_retry_count"),
+                    "final_http_status": last_p2.get("final_http_status"),
+                    "model": last_p2.get("model"),
+                    "model_failovers": last_p2.get("model_failovers"),
                     "reason": "wrapper_exception",
                 }
             gemini_pass_sec["pass2"] = round(time.time() - _t_g2, 2)
             pass_outcomes["pass2"] = pass2_meta
+            _log_pass_attempts("pass2", pass2_meta)
             if contact_name2:
                 contact_name = contact_name2
         else:
@@ -1478,10 +1534,17 @@ def run_pipeline_job(
                     "applied": False,
                     "successful_attempt": last_p3.get("successful_attempt"),
                     "status": last_p3.get("status"),
+                    "max_tries": last_p3.get("max_tries"),
+                    "timed_out_attempts": last_p3.get("timed_out_attempts"),
+                    "transient_status_retry_count": last_p3.get("transient_status_retry_count"),
+                    "final_http_status": last_p3.get("final_http_status"),
+                    "model": last_p3.get("model"),
+                    "model_failovers": last_p3.get("model_failovers"),
                     "reason": "wrapper_exception",
                 }
             gemini_pass_sec["pass3"] = round(time.time() - _t_g3, 2)
             pass_outcomes["pass3"] = pass3_meta
+            _log_pass_attempts("pass3", pass3_meta)
             if contact_name3:
                 contact_name = contact_name3
         else:

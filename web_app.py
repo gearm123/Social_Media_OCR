@@ -297,6 +297,15 @@ def _run_job(
             prior_status = _load_status(job_id)
         except HTTPException:
             prior_status = {}
+        if pass_outcomes:
+            try:
+                print(
+                    "[pipeline] job failure pass outcomes: "
+                    + json.dumps(pass_outcomes, ensure_ascii=False, sort_keys=True),
+                    flush=True,
+                )
+            except Exception:
+                pass
         _write_status(
             job_id,
             status="failed",
@@ -312,6 +321,7 @@ def _run_job(
             billing_consumption=billing_consumption,
             failure_stage=prior_status.get("stage"),
             error_summary=str(exc),
+            pass_outcomes=pass_outcomes,
             **actor_fields(user_id=billing_user_id, guest_key=billing_guest_key),
         )
         note_algorithm_failed(pass_outcomes)
