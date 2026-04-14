@@ -166,6 +166,96 @@ class TestGeminiRetryBehavior(unittest.TestCase):
             2,
         )
 
+    def test_pass1_logs_overload_trigger_after_transient_status_exhaustion(self):
+        responses = [_FakeResponse(503) for _ in range(12)]
+
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_HTTP_RETRIES": "",
+                "GEMINI_TRANSIENT_HTTP_RETRIES": "",
+                "GEMINI_TRANSIENT_HTTP_RETRY_BASE_DELAY_SEC": "",
+                "GEMINI_TRANSIENT_HTTP_RETRY_MAX_DELAY_SEC": "",
+            },
+            clear=False,
+        ), patch.object(
+            ocr_translate, "_gemini_discover_if_needed", return_value=True
+        ), patch.object(
+            ocr_translate, "_gemini_pipeline_http_wait", side_effect=lambda *_a, **_k: _noop_wait()
+        ), patch.object(
+            ocr_translate, "_gemini_build_generation_config", return_value={"maxOutputTokens": 1024}
+        ), patch.object(
+            ocr_translate, "_compact_verbose_logs", return_value=False
+        ), patch.object(
+            ocr_translate, "_pipeline_verbose", return_value=False
+        ), patch.object(
+            ocr_translate, "_notify_gemini_retry"
+        ), patch.object(
+            ocr_translate, "_log_servers_overloaded_trigger"
+        ) as overload_log, patch.object(
+            ocr_translate, "_gemini_api_key", "test-key"
+        ), patch.object(
+            ocr_translate, "_gemini_active_model", ("gemini-2.5-pro", "v1beta")
+        ), patch(
+            "requests.post", side_effect=responses
+        ), patch(
+            "time.sleep"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "SERVERS_OVERLOADED"):
+                ocr_translate._gemini_generate("hello", timeout=66, pass_num=1)
+
+        overload_log.assert_called_once_with(
+            pass_num=1,
+            reason="transient_http_status_exhausted",
+            max_tries=3,
+            transient_status_retry_count=3,
+            timed_out_attempts=0,
+            final_http_status=503,
+        )
+
+    def test_pass1_logs_overload_trigger_after_timeout_exhaustion(self):
+        responses = [requests.exceptions.Timeout(), requests.exceptions.Timeout(), requests.exceptions.Timeout()]
+
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_HTTP_RETRIES": "",
+            },
+            clear=False,
+        ), patch.object(
+            ocr_translate, "_gemini_discover_if_needed", return_value=True
+        ), patch.object(
+            ocr_translate, "_gemini_pipeline_http_wait", side_effect=lambda *_a, **_k: _noop_wait()
+        ), patch.object(
+            ocr_translate, "_gemini_build_generation_config", return_value={"maxOutputTokens": 1024}
+        ), patch.object(
+            ocr_translate, "_compact_verbose_logs", return_value=False
+        ), patch.object(
+            ocr_translate, "_pipeline_verbose", return_value=False
+        ), patch.object(
+            ocr_translate, "_notify_gemini_retry"
+        ), patch.object(
+            ocr_translate, "_log_servers_overloaded_trigger"
+        ) as overload_log, patch.object(
+            ocr_translate, "_gemini_api_key", "test-key"
+        ), patch.object(
+            ocr_translate, "_gemini_active_model", ("gemini-2.5-pro", "v1beta")
+        ), patch(
+            "requests.post", side_effect=responses
+        ):
+            with self.assertRaises(requests.exceptions.Timeout):
+                ocr_translate._gemini_generate("hello", timeout=66, pass_num=1)
+
+        overload_log.assert_called_once_with(
+            pass_num=1,
+            reason="timeout_exhausted",
+            max_tries=3,
+            transient_status_retry_count=0,
+            timed_out_attempts=3,
+            final_http_status=None,
+            final_attempt_timeout_sec=40,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

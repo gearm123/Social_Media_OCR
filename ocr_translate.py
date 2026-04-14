@@ -88,6 +88,36 @@ def _record_gemini_pass_outcome(pass_num: Optional[int], **payload: Any) -> None
     _gemini_pass_outcomes.data = data
 
 
+def _log_servers_overloaded_trigger(
+    *,
+    pass_num: Optional[int],
+    reason: str,
+    max_tries: int,
+    transient_status_retry_count: int = 0,
+    timed_out_attempts: int = 0,
+    final_http_status: Optional[int] = None,
+    final_attempt_timeout_sec: Optional[int] = None,
+) -> None:
+    if pass_num is None:
+        return
+    try:
+        pn = int(pass_num)
+    except (TypeError, ValueError):
+        return
+    details = [
+        f"pass={pn}",
+        f"reason={reason}",
+        f"attempts={int(max_tries)}",
+        f"transient_retries={int(transient_status_retry_count)}",
+        f"timed_out_attempts={int(timed_out_attempts)}",
+    ]
+    if final_http_status is not None:
+        details.append(f"final_http_status={int(final_http_status)}")
+    if final_attempt_timeout_sec is not None:
+        details.append(f"final_attempt_timeout_sec={int(final_attempt_timeout_sec)}")
+    print(f"[GEMINI] SERVERS_OVERLOADED trigger: {' '.join(details)}", flush=True)
+
+
 def _pipeline_verbose() -> bool:
     return os.environ.get("PIPELINE_VERBOSE", "").strip().lower() in ("1", "true", "yes")
 
@@ -1535,6 +1565,14 @@ def _gemini_generate(
                     flush=True,
                 )
             if pass_num is not None and int(pass_num) == 1:
+                _log_servers_overloaded_trigger(
+                    pass_num=pass_num,
+                    reason="transient_http_status_exhausted",
+                    max_tries=max_tries,
+                    transient_status_retry_count=transient_status_retry_i,
+                    timed_out_attempts=timed_out_attempts,
+                    final_http_status=status_code,
+                )
                 raise RuntimeError(
                     "SERVERS_OVERLOADED: Gemini Pass 1 stayed unavailable after all attempts and transient retries."
                 )
@@ -1614,6 +1652,16 @@ def _gemini_generate(
                 transient_status_retry_count=transient_status_retry_i,
                 final_http_status=http_code or None,
             )
+            if pass_num is not None and int(pass_num) == 1:
+                _log_servers_overloaded_trigger(
+                    pass_num=pass_num,
+                    reason="timeout_exhausted",
+                    max_tries=max_tries,
+                    transient_status_retry_count=transient_status_retry_i,
+                    timed_out_attempts=timed_out_attempts,
+                    final_http_status=http_code or None,
+                    final_attempt_timeout_sec=_gemini_attempt_timeout_sec(pass_num, max_tries - 1, timeout),
+                )
             raise _req.exceptions.Timeout()
 
     _flush_http_timing()
