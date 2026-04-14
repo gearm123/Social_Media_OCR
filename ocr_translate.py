@@ -28,6 +28,7 @@ from pass_timing_debug import GeminiPassHttpTiming, record_gemini_pass_http_timi
 _source_lang_code = "auto"
 _source_lang_name = "the source language"
 _gemini_retry_notifier = threading.local()
+_gemini_pass_outcomes = threading.local()
 
 
 def _set_source_language(code: str, name: str):
@@ -53,6 +54,38 @@ def _notify_gemini_retry(payload: dict) -> None:
         cb(payload)
     except Exception:
         pass
+
+
+def reset_gemini_pass_outcomes() -> None:
+    _gemini_pass_outcomes.data = {}
+
+
+def get_gemini_pass_outcomes() -> Dict[int, Dict[str, Any]]:
+    raw = getattr(_gemini_pass_outcomes, "data", {}) or {}
+    out: Dict[int, Dict[str, Any]] = {}
+    for key, value in raw.items():
+        try:
+            pk = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            out[pk] = dict(value)
+    return out
+
+
+def _record_gemini_pass_outcome(pass_num: Optional[int], **payload: Any) -> None:
+    if pass_num is None:
+        return
+    try:
+        pn = int(pass_num)
+    except (TypeError, ValueError):
+        return
+    if pn not in (1, 2, 3):
+        return
+    data = get_gemini_pass_outcomes()
+    payload["pass_num"] = pn
+    data[pn] = payload
+    _gemini_pass_outcomes.data = data
 
 
 def _pipeline_verbose() -> bool:
@@ -157,7 +190,7 @@ def _gemini_http_extra_retries_on_timeout() -> int:
 
 
 def _gemini_http_max_tries_for_pass(pass_num: Optional[int]) -> int:
-    """Pass **2**: **2** HTTP attempts (timeout retry). Pass **3**: single attempt.
+    """Pass **2**: **2** HTTP attempts (timeout retry). Pass **3**: **2** attempts.
 
     Pass **1** (when ``GEMINI_HTTP_RETRIES`` is unset): **3** attempts; else ``1 + GEMINI_HTTP_RETRIES``.
     Other passes: ``1 + GEMINI_HTTP_RETRIES`` (default **2** attempts).
@@ -165,7 +198,7 @@ def _gemini_http_max_tries_for_pass(pass_num: Optional[int]) -> int:
     if pass_num is not None and int(pass_num) == 2:
         return 2
     if pass_num is not None and int(pass_num) == 3:
-        return 1
+        return 2
     if pass_num is not None and int(pass_num) == 1:
         if not os.environ.get("GEMINI_HTTP_RETRIES", "").strip():
             return 3
@@ -223,10 +256,10 @@ def _gemini_attempt_timeout_sec(
 
     Pass **1**: first try *base_timeout* (from ``gemini_pass_timeout_sec(1)``, default **66** s);
     second try **80** s; third try **40** s. Pass **2** (normal): **36** s then **22** s. Pass **3** (normal):
-    **36** s (single attempt).
+    **36** s then **24** s.
 
     ``--hurry-up``: Pass **1** **35** s, then **45** s, then **27** s; Pass **2** **18** s then **10** s;
-    Pass **3** **16** s.
+    Pass **3** **16** s then **10** s.
     """
     if _pipeline_hurry_up() and pass_num is not None:
         pn = int(pass_num)
@@ -239,7 +272,7 @@ def _gemini_attempt_timeout_sec(
         if pn == 2:
             return 18 if attempt_i == 0 else 10
         if pn == 3:
-            return 16
+            return 16 if attempt_i == 0 else 10
     base = int(max(30, round(float(base_timeout))))
     if pass_num is None:
         return base
@@ -253,7 +286,7 @@ def _gemini_attempt_timeout_sec(
             return 36
         return 22
     if pn == 3:
-        return 36
+        return 36 if attempt_i == 0 else 24
     return base
 
 
@@ -1055,6 +1088,7 @@ class GeminiApiResult(NamedTuple):
 
     text: str
     response_json: Optional[Dict[str, Any]]
+    meta: Optional[Dict[str, Any]] = None
 
 
 def _gemini_discover_if_needed() -> bool:
@@ -1247,11 +1281,11 @@ def _gemini_generate(
     **Gemini 2.5** (passes **1–3**): pass **1** — no ``thinkingConfig`` on first try (Pro: historical
     omit; **66** s default HTTP read timeout); second try **1920** thinking budget, **80** s; third try
     **960** thinking budget, **40** s. Pass **2** — **36** s / **22** s per attempt; first try omits
-    ``thinkingConfig``, second try **1920** thinking budget. Pass **3** — **36** s, **1920** thinking budget
-    (single try).
+    ``thinkingConfig``, second try **1920** thinking budget. Pass **3** — **36** s then **24** s, with retry
+    using minimal thinking on the second attempt.
     With ``PIPELINE_HURRY_UP`` / ``--hurry-up``, passes **1–3** use fixed ``thinkingBudget`` and shorter
     timeouts: pass **1** **35**/**45**/**27** s with **1920**/**960**/**960** thinking; pass **2** retries once
-    (**18** s / **10** s; **960** / **480** thinking); pass **3** **16** s, **960** thinking.
+    (**18** s / **10** s; **960** / **480** thinking); pass **3** **16** s / **10** s, **960** then retry-minimal thinking.
     Pass **4+** / unset: **3840** first try; retry **Pro** **128** / **Flash** ``0``.
     See ``_gemini_build_generation_config`` and ``_gemini_attempt_timeout_sec``.
 
@@ -1318,6 +1352,8 @@ def _gemini_generate(
         visible in the live timer, so do not add it again here.
         """
         return round(max(1.0, float(attempt_timeout)) + max(0.0, float(retry_delay_sec)), 1)
+
+    timed_out_attempts = 0
 
     for attempt_i in range(max_tries):
         if (
@@ -1395,6 +1431,7 @@ def _gemini_generate(
                 break
             except _req.exceptions.Timeout:
                 timed_out = True
+                timed_out_attempts += 1
                 break
             except _req.exceptions.HTTPError as e:
                 status_code = int(getattr(getattr(e, "response", None), "status_code", 0) or 0)
@@ -1435,6 +1472,15 @@ def _gemini_generate(
                 if http_timing:
                     http_timing.pass_failed = True
                     _flush_http_timing()
+                _record_gemini_pass_outcome(
+                    pass_num,
+                    status="failed",
+                    successful_attempt=None,
+                    max_tries=max_tries,
+                    timed_out_attempts=timed_out_attempts,
+                    transient_status_retry_count=transient_status_retry_i,
+                    final_http_status=status_code,
+                )
                 if pass_num is not None and _gemini_pass_summary_enabled():
                     print(f"[gemini] pass {pass_num} stopped: HTTP {status_code}: {err_text}", flush=True)
                 raise RuntimeError(err_text)
@@ -1443,6 +1489,15 @@ def _gemini_generate(
                 if http_timing:
                     http_timing.pass_failed = True
                     _flush_http_timing()
+                _record_gemini_pass_outcome(
+                    pass_num,
+                    status="failed",
+                    successful_attempt=None,
+                    max_tries=max_tries,
+                    timed_out_attempts=timed_out_attempts,
+                    transient_status_retry_count=transient_status_retry_i,
+                    final_http_status=http_code or None,
+                )
                 if pass_num is not None and _gemini_pass_summary_enabled():
                     print(f"[gemini] pass {pass_num} stopped: request error: {err_text}", flush=True)
                 raise RuntimeError(err_text)
@@ -1463,6 +1518,15 @@ def _gemini_generate(
             if http_timing:
                 http_timing.pass_failed = True
                 _flush_http_timing()
+            _record_gemini_pass_outcome(
+                pass_num,
+                status="failed",
+                successful_attempt=None,
+                max_tries=max_tries,
+                timed_out_attempts=timed_out_attempts,
+                transient_status_retry_count=transient_status_retry_i,
+                final_http_status=status_code,
+            )
             if pass_num is not None and _gemini_pass_summary_enabled():
                 print(
                     f"[gemini] pass {pass_num} stopped: HTTP {status_code} after transient retries: "
@@ -1540,9 +1604,27 @@ def _gemini_generate(
             if http_timing:
                 http_timing.exhausted_on_timeout = True
                 _flush_http_timing()
+            _record_gemini_pass_outcome(
+                pass_num,
+                status="timeout_exhausted",
+                successful_attempt=None,
+                max_tries=max_tries,
+                timed_out_attempts=timed_out_attempts,
+                transient_status_retry_count=transient_status_retry_i,
+                final_http_status=http_code or None,
+            )
             raise _req.exceptions.Timeout()
 
     _flush_http_timing()
+    result_meta = {
+        "status": "success",
+        "successful_attempt": int(attempt_i) + 1,
+        "max_tries": max_tries,
+        "timed_out_attempts": timed_out_attempts,
+        "transient_status_retry_count": transient_status_retry_i,
+        "final_http_status": http_code or None,
+    }
+    _record_gemini_pass_outcome(pass_num, **result_meta)
 
     if _cp and pass_num is not None:
         wall = time.time() - t_pass_wall
@@ -1602,7 +1684,7 @@ def _gemini_generate(
             out_chars=0,
             note="no_candidates",
         )
-        return GeminiApiResult("", data)
+        return GeminiApiResult("", data, result_meta)
 
     c0 = candidates[0]
     fr = c0.get("finishReason")
@@ -1638,7 +1720,7 @@ def _gemini_generate(
         out_chars=len(text),
         note="",
     )
-    return GeminiApiResult(text, data)
+    return GeminiApiResult(text, data, result_meta)
 
 
 def _resize_image_for_gemini_vision(img, max_long_edge=16384, min_short_edge=800):
@@ -4161,8 +4243,19 @@ def _gemini_ocr_hints_refine_pass(
     Merge step forces ``text_src`` back to Pass 1 for any index with
     ``ocr_match_verified`` false, regardless of model output.
     """
+    def _pass2_meta(
+        applied: bool, gres: Optional[GeminiApiResult] = None, reason: str = ""
+    ) -> Dict[str, Any]:
+        gmeta = (getattr(gres, "meta", None) or {}) if gres is not None else {}
+        return {
+            "applied": bool(applied),
+            "successful_attempt": gmeta.get("successful_attempt"),
+            "status": gmeta.get("status"),
+            "reason": reason or None,
+        }
+
     if not pass1_messages:
-        return pass1_messages, contact_name
+        return pass1_messages, contact_name, _pass2_meta(False, reason="missing_pass1_messages")
 
     expected_n = len(pass1_messages)
     if ocr_match_verified is not None:
@@ -4170,7 +4263,9 @@ def _gemini_ocr_hints_refine_pass(
             ocr_match_verified = None
         elif not any(ocr_match_verified):
             _pv("[GEMINI] Pass 2 skipped — no Pass 1 row matched an OCR cluster above confidence / ambiguity thresholds")
-            return [dict(m) for m in pass1_messages], contact_name
+            return [dict(m) for m in pass1_messages], contact_name, _pass2_meta(
+                False, reason="no_verified_ocr_matches"
+            )
 
     payload_messages = []
     for i, m in enumerate(pass1_messages):
@@ -4258,7 +4353,7 @@ Output JSON only:
     except Exception as e:
         print(f"[GEMINI] Pass 2 failed: {e}")
         _append_gemini_debug_pass2(prompt, f"ERROR: {e}", "PASS 2 — OCR-guided rewrite")
-        return pass1_messages, contact_name
+        return pass1_messages, contact_name, _pass2_meta(False, reason="request_failed")
 
     if not raw.strip():
         _pv("[GEMINI] Pass 2 empty — retrying once with shorter OCR hints")
@@ -4285,18 +4380,20 @@ Output JSON only:
         except Exception as e:
             print(f"[GEMINI] Pass 2 retry failed: {e}")
             _append_gemini_debug_pass2(retry_prompt, f"ERROR: {e}", "PASS 2 — OCR-guided rewrite retry")
-            return pass1_messages, contact_name
+            return pass1_messages, contact_name, _pass2_meta(False, reason="retry_request_failed")
         if not raw.strip():
             print("[GEMINI] Pass 2 empty after retry — keeping Pass 1 transcript")
             _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite retry")
-            return pass1_messages, contact_name
+            return pass1_messages, contact_name, _pass2_meta(
+                False, gres, "empty_after_retry"
+            )
 
     try:
         name2, msgs2, _ledger2 = _parse_gemini_full_vision_json(raw)
     except json.JSONDecodeError as e:
         print(f"[GEMINI] Pass 2 JSON parse failed: {e}")
         _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
-        return pass1_messages, contact_name
+        return pass1_messages, contact_name, _pass2_meta(False, gres, "json_parse_failed")
 
     if not msgs2 or len(msgs2) != len(pass1_messages):
         _pv(
@@ -4304,7 +4401,9 @@ Output JSON only:
             "keeping Pass 1 transcript"
         )
         _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
-        return pass1_messages, contact_name
+        return pass1_messages, contact_name, _pass2_meta(
+            False, gres, "message_count_mismatch"
+        )
 
     role_drift_indices = []
     for i, m in enumerate(msgs2):
@@ -4349,7 +4448,7 @@ Output JSON only:
     final_name = (name2 or contact_name or "").strip() or contact_name
     if not role_drift_indices:
         _append_gemini_debug_pass2(prompt, raw, "PASS 2 — OCR-guided rewrite")
-    return merged, final_name
+    return merged, final_name, _pass2_meta(True, gres)
 
 
 def _default_status_bar_info(contact_hint: str) -> dict:
@@ -4413,8 +4512,25 @@ def _gemini_reference_resolution_pass(
     status_bar_b64: Optional[str] = None,
 ):
     """Pass 3: reference resolution + final English; optionally same call reads one status-bar crop."""
+    def _pass3_meta(
+        applied: bool, gres: Optional[GeminiApiResult] = None, reason: str = ""
+    ) -> Dict[str, Any]:
+        gmeta = (getattr(gres, "meta", None) or {}) if gres is not None else {}
+        return {
+            "applied": bool(applied),
+            "successful_attempt": gmeta.get("successful_attempt"),
+            "status": gmeta.get("status"),
+            "reason": reason or None,
+        }
+
     if not pass2_messages:
-        return pass2_messages, contact_name, [], _default_status_bar_info(contact_name)
+        return (
+            pass2_messages,
+            contact_name,
+            [],
+            _default_status_bar_info(contact_name),
+            _pass3_meta(False, reason="missing_pass2_messages"),
+        )
 
     def _normalize_reference_text(text: str) -> list:
         return re.findall(r"[a-z0-9']+", (text or "").lower())
@@ -4573,12 +4689,19 @@ Output JSON only:
             contact_name,
             [],
             _default_status_bar_info(contact_name),
+            _pass3_meta(False, reason="request_failed"),
         )
 
     if not raw.strip():
         _pv("[GEMINI] Pass 3 reference empty — keeping Pass 2 translation fallback")
         _append_gemini_debug_pass2(prompt, raw, _pass3_dbg)
-        return _pass3_fallback_rows(), contact_name, [], _default_status_bar_info(contact_name)
+        return (
+            _pass3_fallback_rows(),
+            contact_name,
+            [],
+            _default_status_bar_info(contact_name),
+            _pass3_meta(False, gres, "empty_response"),
+        )
 
     try:
         payload_text = _extract_json_object(raw) or raw.strip()
@@ -4586,7 +4709,13 @@ Output JSON only:
     except json.JSONDecodeError as e:
         print(f"[GEMINI] Pass 3 reference JSON parse failed: {e}")
         _append_gemini_debug_pass2(prompt, raw, _pass3_dbg)
-        return _pass3_fallback_rows(), contact_name, [], _default_status_bar_info(contact_name)
+        return (
+            _pass3_fallback_rows(),
+            contact_name,
+            [],
+            _default_status_bar_info(contact_name),
+            _pass3_meta(False, gres, "json_parse_failed"),
+        )
 
     name2 = (data.get("contact_name") or contact_name or "").strip() or contact_name
     msgs2 = data.get("messages") or []
@@ -4601,6 +4730,7 @@ Output JSON only:
             contact_name,
             [],
             _status_bar_info_from_pass3_merged_response(data, contact_name),
+            _pass3_meta(False, gres, "message_count_mismatch"),
         )
 
     status_info = _status_bar_info_from_pass3_merged_response(data, name2 or contact_name)
@@ -4666,7 +4796,7 @@ Output JSON only:
         )
     else:
         _append_gemini_debug_pass2(prompt, raw, _pass3_dbg)
-    return resolved, name2, debug_rows, status_info
+    return resolved, name2, debug_rows, status_info, _pass3_meta(True, gres)
 
 
 def _parse_gemini_status_bar_json(raw: str) -> dict:

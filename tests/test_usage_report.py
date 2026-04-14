@@ -18,22 +18,39 @@ import web_app
 
 class _FakeUsageStore:
     def __init__(self):
-        self.algorithm_runs = 0
+        self.algorithm_starts = 0
+        self.algorithm_completions = []
+        self.algorithm_failures = []
         self.free_trial_attempts = 0
         self.user_refreshes = 0
         self.report = {
             "algorithm_runs_total": 7,
+            "algorithm_runs_completed_total": 5,
+            "algorithm_runs_failed_total": 2,
             "free_trial_attempts_total": 3,
             "users_total": 12,
             "users_signed_up_today": 2,
             "signup_day": "2026-04-14",
             "last_algorithm_run_at": "2026-04-14T12:00:00+00:00",
+            "pass1_timeout_failures_total": 1,
+            "pass2_success_try1_total": 3,
+            "pass2_success_try2_total": 1,
+            "pass2_meaningful_runs_total": 4,
+            "pass3_success_try1_total": 2,
+            "pass3_success_try2_total": 0,
+            "pass3_meaningful_runs_total": 2,
             "updated_at": "2026-04-14T12:05:00+00:00",
             "storage": "postgres",
         }
 
-    def increment_algorithm_runs(self):
-        self.algorithm_runs += 1
+    def record_run_started(self):
+        self.algorithm_starts += 1
+
+    def record_run_completed(self, pass_outcomes=None):
+        self.algorithm_completions.append(pass_outcomes)
+
+    def record_run_failed(self, pass_outcomes=None):
+        self.algorithm_failures.append(pass_outcomes)
 
     def increment_free_trial_attempts(self):
         self.free_trial_attempts += 1
@@ -48,19 +65,32 @@ class _FakeUsageStore:
 class TestUsageReport(unittest.TestCase):
     def test_note_updates_use_store_when_available(self):
         fake_store = _FakeUsageStore()
+        pass_outcomes = {
+            "pass2": {"applied": True, "successful_attempt": 2},
+            "pass3": {"applied": False, "successful_attempt": None},
+        }
         with patch.object(usage_report, "get_usage_report_store", return_value=fake_store):
-            self.assertTrue(usage_report.note_algorithm_run())
+            self.assertTrue(usage_report.note_algorithm_started())
+            self.assertTrue(usage_report.note_algorithm_completed(pass_outcomes))
+            self.assertTrue(usage_report.note_algorithm_failed({"pass1": {"status": "timeout_exhausted"}}))
             self.assertTrue(usage_report.note_free_trial_attempt())
             self.assertTrue(usage_report.note_user_signup())
             self.assertEqual(usage_report.read_usage_report(), fake_store.report)
 
-        self.assertEqual(fake_store.algorithm_runs, 1)
+        self.assertEqual(fake_store.algorithm_starts, 1)
+        self.assertEqual(fake_store.algorithm_completions, [pass_outcomes])
+        self.assertEqual(
+            fake_store.algorithm_failures,
+            [{"pass1": {"status": "timeout_exhausted"}}],
+        )
         self.assertEqual(fake_store.free_trial_attempts, 1)
         self.assertEqual(fake_store.user_refreshes, 1)
 
     def test_note_updates_skip_cleanly_without_db(self):
         with patch.object(usage_report, "get_usage_report_store", return_value=None):
-            self.assertFalse(usage_report.note_algorithm_run())
+            self.assertFalse(usage_report.note_algorithm_started())
+            self.assertFalse(usage_report.note_algorithm_completed())
+            self.assertFalse(usage_report.note_algorithm_failed())
             self.assertFalse(usage_report.note_free_trial_attempt())
             self.assertFalse(usage_report.note_user_signup())
             self.assertIsNone(usage_report.read_usage_report())
@@ -68,11 +98,20 @@ class TestUsageReport(unittest.TestCase):
     def test_monitor_usage_endpoint_returns_usage_payload(self):
         report = {
             "algorithm_runs_total": 19,
+            "algorithm_runs_completed_total": 17,
+            "algorithm_runs_failed_total": 2,
             "free_trial_attempts_total": 5,
             "users_total": 44,
             "users_signed_up_today": 6,
             "signup_day": "2026-04-14",
             "last_algorithm_run_at": "2026-04-14T13:00:00+00:00",
+            "pass1_timeout_failures_total": 1,
+            "pass2_success_try1_total": 9,
+            "pass2_success_try2_total": 3,
+            "pass2_meaningful_runs_total": 12,
+            "pass3_success_try1_total": 6,
+            "pass3_success_try2_total": 0,
+            "pass3_meaningful_runs_total": 6,
             "updated_at": "2026-04-14T13:01:00+00:00",
             "storage": "postgres",
         }

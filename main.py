@@ -35,9 +35,11 @@ from ocr_translate import (
     build_pass2_per_message_ocr_hints,
     _gemini_ocr_hints_refine_pass,
     _gemini_reference_resolution_pass,
+    get_gemini_pass_outcomes,
     _pass3_fallback_messages_from_pass2,
     _jpeg_b64_from_bgr,
     _meta_from_gemini_messages,
+    reset_gemini_pass_outcomes,
     _set_source_language,
     gemini_pass_timeout_sec,
     _compact_verbose_logs,
@@ -1070,6 +1072,8 @@ def run_pipeline_job(
     target_output_lang = output_language if output_language is not None else OutputLanguage.ENGLISH
     pipeline_start = time.time()
     retry_eta_extra_sec = 0.0
+    reset_gemini_pass_outcomes()
+    pass_outcomes: Dict[str, Any] = {}
     current_phase_state: Dict[str, Any] = {
         "phase": "starting",
         "label": "Starting…",
@@ -1142,6 +1146,7 @@ def run_pipeline_job(
     def _on_gemini_retry(payload: Dict[str, Any]) -> None:
         nonlocal retry_eta_extra_sec
         if bool(payload.get("clear_retry_label")):
+            retry_eta_extra_sec = 0.0
             _check_cancel()
             clear_payload: Dict[str, Any] = {
                 "phase": str(current_phase_state.get("phase") or "running"),
@@ -1301,6 +1306,7 @@ def run_pipeline_job(
             ocr_pass2_by_message=ocr_pass2_by_message,
         )
         gemini_pass_sec["pass1"] = round(time.time() - _t_g1, 2)
+        pass_outcomes["pass1"] = get_gemini_pass_outcomes().get(1) or {}
         if not ok or not all_meta:
             failure_reason = str((pass_debug or {}).get("failure_reason") or "").strip()
             if failure_reason == "request_failed":
@@ -1383,7 +1389,7 @@ def run_pipeline_job(
 
             _t_g2 = time.time()
             try:
-                pass2_messages, contact_name2 = _gemini_ocr_hints_refine_pass(
+                pass2_messages, contact_name2, pass2_meta = _gemini_ocr_hints_refine_pass(
                     contact_name,
                     pass1_for_pass2,
                     pass2_ocr_text,
@@ -1397,7 +1403,15 @@ def run_pipeline_job(
                 )
                 pass2_messages = [dict(m) for m in pass1_for_pass2]
                 contact_name2 = None
+                last_p2 = get_gemini_pass_outcomes().get(2) or {}
+                pass2_meta = {
+                    "applied": False,
+                    "successful_attempt": last_p2.get("successful_attempt"),
+                    "status": last_p2.get("status"),
+                    "reason": "wrapper_exception",
+                }
             gemini_pass_sec["pass2"] = round(time.time() - _t_g2, 2)
+            pass_outcomes["pass2"] = pass2_meta
             if contact_name2:
                 contact_name = contact_name2
         else:
@@ -1410,6 +1424,12 @@ def run_pipeline_job(
                     json.dumps({"skipped": True, "reason": "difficulty=1"}, ensure_ascii=False, indent=2)
                 )
             pass2_messages = _pass2_messages_from_pass1(pass1_for_pass2)
+            pass_outcomes["pass2"] = {
+                "applied": False,
+                "successful_attempt": None,
+                "status": None,
+                "reason": "difficulty=1",
+            }
 
         all_meta = _meta_from_gemini_messages(pass2_messages)
         for i, item in enumerate(all_meta or []):
@@ -1432,7 +1452,7 @@ def run_pipeline_job(
                     status_bar_b64 = _sb_b64 if _sb_b64 else None
             _t_g3 = time.time()
             try:
-                final_messages, contact_name3, pass3_reference_debug, status_bar_info = (
+                final_messages, contact_name3, pass3_reference_debug, status_bar_info, pass3_meta = (
                     _gemini_reference_resolution_pass(
                         contact_name,
                         pass2_messages,
@@ -1449,13 +1469,27 @@ def run_pipeline_job(
                 contact_name3 = None
                 pass3_reference_debug = []
                 status_bar_info = _default_status_bar_info(contact_name)
+                last_p3 = get_gemini_pass_outcomes().get(3) or {}
+                pass3_meta = {
+                    "applied": False,
+                    "successful_attempt": last_p3.get("successful_attempt"),
+                    "status": last_p3.get("status"),
+                    "reason": "wrapper_exception",
+                }
             gemini_pass_sec["pass3"] = round(time.time() - _t_g3, 2)
+            pass_outcomes["pass3"] = pass3_meta
             if contact_name3:
                 contact_name = contact_name3
         else:
             final_messages = [dict(m) for m in pass2_messages]
             pass3_reference_debug = []
             status_bar_info = _default_status_bar_info(contact_name)
+            pass_outcomes["pass3"] = {
+                "applied": False,
+                "successful_attempt": None,
+                "status": None,
+                "reason": "difficulty<3",
+            }
 
         final_chat_meta = _meta_from_gemini_messages(final_messages)
         for i, item in enumerate(final_chat_meta or []):
@@ -1602,6 +1636,7 @@ def run_pipeline_job(
         "messages_rendered": len(json_and_final_meta),
         "total_runtime_sec": round(time.time() - pipeline_start, 2),
         "gemini_pass_sec": dict(gemini_pass_sec),
+        "pass_outcomes": pass_outcomes,
         "artifacts": {
             "json": str(json_dir / "translated_conversation.json"),
             "pass1_debug": str(json_dir / "pass1_transcript_debug.json"),

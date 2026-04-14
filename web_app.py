@@ -33,7 +33,13 @@ from billing_store import (
 from db_postgres import raw_database_url_from_environment
 from rate_limit import RateLimitMiddleware
 from user_store import UserRecord
-from usage_report import note_algorithm_run, note_free_trial_attempt, read_usage_report
+from usage_report import (
+    note_algorithm_completed,
+    note_algorithm_failed,
+    note_algorithm_started,
+    note_free_trial_attempt,
+    read_usage_report,
+)
 
 _log = logging.getLogger("translate_chat.web")
 
@@ -211,7 +217,7 @@ def _run_job(
     from main import JobCancelledError, run_pipeline_job
 
     try:
-        note_algorithm_run()
+        note_algorithm_started()
         _write_status(
             job_id,
             status="running",
@@ -261,6 +267,7 @@ def _run_job(
             artifacts_count=len(result.get("artifacts") or {}),
             **actor_fields(user_id=billing_user_id, guest_key=billing_guest_key),
         )
+        note_algorithm_completed(result.get("pass_outcomes"))
     except JobCancelledError:
         _write_status(
             job_id,
@@ -275,6 +282,16 @@ def _run_job(
             except OSError:
                 pass
     except Exception as exc:
+        pass_outcomes = {}
+        try:
+            from ocr_translate import get_gemini_pass_outcomes
+
+            raw_outcomes = get_gemini_pass_outcomes()
+            pass_outcomes = {
+                f"pass{pn}": meta for pn, meta in raw_outcomes.items() if isinstance(meta, dict)
+            }
+        except Exception:
+            pass
         prior_status = {}
         try:
             prior_status = _load_status(job_id)
@@ -297,6 +314,7 @@ def _run_job(
             error_summary=str(exc),
             **actor_fields(user_id=billing_user_id, guest_key=billing_guest_key),
         )
+        note_algorithm_failed(pass_outcomes)
 
 
 def _billing_block_detail(code: str) -> dict:

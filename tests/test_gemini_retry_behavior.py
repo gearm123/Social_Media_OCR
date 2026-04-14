@@ -37,6 +37,9 @@ class _FakeResponse:
 
 
 class TestGeminiRetryBehavior(unittest.TestCase):
+    def setUp(self):
+        ocr_translate.reset_gemini_pass_outcomes()
+
     def test_transient_status_retry_delay_defaults_are_spread_out(self):
         with patch.dict(
             os.environ,
@@ -96,9 +99,62 @@ class TestGeminiRetryBehavior(unittest.TestCase):
             result = ocr_translate._gemini_generate("hello", timeout=66, pass_num=1)
 
         self.assertEqual(result.text, "ok")
+        self.assertEqual(result.meta["successful_attempt"], 2)
+        self.assertEqual(result.meta["status"], "success")
         self.assertEqual(post_mock.call_count, 5)
         self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [4.0, 8.0, 16.0])
         self.assertTrue(any(event.get("clear_retry_label") for event in retry_events))
+        self.assertEqual(
+            ocr_translate.get_gemini_pass_outcomes().get(1, {}).get("successful_attempt"),
+            2,
+        )
+
+    def test_pass3_retries_once_after_timeout(self):
+        payload = {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {"parts": [{"text": "ok-pass3"}]},
+                }
+            ],
+            "usageMetadata": {},
+        }
+        responses = [requests.exceptions.Timeout(), _FakeResponse(200, payload)]
+
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_HTTP_RETRIES": "",
+            },
+            clear=False,
+        ), patch.object(
+            ocr_translate, "_gemini_discover_if_needed", return_value=True
+        ), patch.object(
+            ocr_translate, "_gemini_pipeline_http_wait", side_effect=lambda *_a, **_k: _noop_wait()
+        ), patch.object(
+            ocr_translate, "_gemini_build_generation_config", return_value={"maxOutputTokens": 1024}
+        ), patch.object(
+            ocr_translate, "_compact_verbose_logs", return_value=False
+        ), patch.object(
+            ocr_translate, "_pipeline_verbose", return_value=False
+        ), patch.object(
+            ocr_translate, "_notify_gemini_retry"
+        ), patch.object(
+            ocr_translate, "_gemini_api_key", "test-key"
+        ), patch.object(
+            ocr_translate, "_gemini_active_model", ("gemini-2.5-pro", "v1beta")
+        ), patch(
+            "requests.post", side_effect=responses
+        ) as post_mock:
+            result = ocr_translate._gemini_generate("hello", timeout=66, pass_num=3)
+
+        self.assertEqual(result.text, "ok-pass3")
+        self.assertEqual(result.meta["successful_attempt"], 2)
+        self.assertEqual(post_mock.call_count, 2)
+        self.assertEqual(
+            ocr_translate.get_gemini_pass_outcomes().get(3, {}).get("successful_attempt"),
+            2,
+        )
 
 
 if __name__ == "__main__":
