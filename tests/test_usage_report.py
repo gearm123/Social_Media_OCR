@@ -74,6 +74,17 @@ class TestUsageReport(unittest.TestCase):
         store = usage_report.UsageReportStore.__new__(usage_report.UsageReportStore)
         self.assertTrue(store._table_exists(_FakeCursor(), "users"))
 
+    def test_query_scalar_accepts_dict_row_shape(self):
+        class _FakeCursor:
+            def execute(self, *_args, **_kwargs):
+                return None
+
+            def fetchone(self):
+                return {"count": 7}
+
+        store = usage_report.UsageReportStore.__new__(usage_report.UsageReportStore)
+        self.assertEqual(store._query_scalar(_FakeCursor(), "SELECT COUNT(*) FROM users"), 7)
+
     def test_note_updates_use_store_when_available(self):
         fake_store = _FakeUsageStore()
         pass_outcomes = {

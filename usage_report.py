@@ -116,6 +116,10 @@ class UsageReportStore:
     def _query_scalar(self, cur, sql: str, params: tuple = ()) -> int:
         cur.execute(sql, params)
         row = cur.fetchone()
+        if not row:
+            return 0
+        if isinstance(row, dict):
+            return int((next(iter(row.values())) if row else 0) or 0)
         return int((row[0] if row else 0) or 0)
 
     def _seed_counts(self, cur) -> dict[str, Any]:
