@@ -8,6 +8,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from activity_log import write_activity
 from auth_deps import get_current_user_required, get_user_store
 from auth_jwt import create_access_token
 from auth_oauth import (
@@ -27,6 +28,7 @@ from user_store import (
     validate_password,
     validate_username,
 )
+from usage_report import note_user_signup
 
 router = APIRouter()
 
@@ -80,6 +82,33 @@ def _user_public(u: UserRecord) -> UserPublic:
     )
 
 
+def _emit_auth_event(
+    event: str,
+    *,
+    auth_method: str,
+    success: bool = True,
+    user: Optional[UserRecord] = None,
+    email: Optional[str] = None,
+    reason: Optional[str] = None,
+    is_new_user: Optional[bool] = None,
+) -> None:
+    payload: dict[str, object] = {
+        "auth_method": auth_method,
+        "success": success,
+    }
+    if user is not None:
+        payload["user_id"] = user.id
+        payload["email"] = user.email
+        payload["username"] = user.username
+    elif email:
+        payload["email"] = email.strip().lower()
+    if reason:
+        payload["reason"] = reason
+    if is_new_user is not None:
+        payload["is_new_user"] = is_new_user
+    write_activity(event, **payload)
+
+
 def _oauth_sign_in(store: UserStore, provider: str, profile: dict) -> TokenResponse:
     sub = profile["sub"]
     email = profile["email"]
@@ -87,6 +116,13 @@ def _oauth_sign_in(store: UserStore, provider: str, profile: dict) -> TokenRespo
 
     existing = store.get_by_oauth(provider, sub)
     if existing:
+        _emit_auth_event(
+            "user_login",
+            auth_method=provider,
+            success=True,
+            user=existing,
+            is_new_user=False,
+        )
         return TokenResponse(access_token=create_access_token(existing.id))
 
     row = store.get_by_email(email)
@@ -104,6 +140,20 @@ def _oauth_sign_in(store: UserStore, provider: str, profile: dict) -> TokenRespo
         candidate = candidate[:32]
         try:
             user = store.create_oauth_user(provider, sub, email, candidate)
+            _emit_auth_event(
+                "user_registered",
+                auth_method=provider,
+                success=True,
+                user=user,
+            )
+            note_user_signup()
+            _emit_auth_event(
+                "user_login",
+                auth_method=provider,
+                success=True,
+                user=user,
+                is_new_user=True,
+            )
             return TokenResponse(access_token=create_access_token(user.id))
         except ValueError as e:
             last_err = e
@@ -140,6 +190,8 @@ def register(body: RegisterBody, store: Annotated[UserStore, Depends(get_user_st
         if "username" in msg:
             raise HTTPException(status_code=409, detail="Username already taken") from e
         raise HTTPException(status_code=400, detail=str(e)) from e
+    _emit_auth_event("user_registered", auth_method="password", success=True, user=user)
+    note_user_signup()
     return _user_public(user)
 
 
@@ -147,15 +199,37 @@ def register(body: RegisterBody, store: Annotated[UserStore, Depends(get_user_st
 def login(body: LoginBody, store: Annotated[UserStore, Depends(get_user_store)]):
     row = store.get_by_email(body.email)
     if not row:
+        _emit_auth_event(
+            "user_login",
+            auth_method="password",
+            success=False,
+            email=body.email,
+            reason="invalid_credentials",
+        )
         raise HTTPException(status_code=401, detail="Invalid email or password")
     user, pw_hash = row
     if pw_hash == OAUTH_PASSWORD_SENTINEL:
+        _emit_auth_event(
+            "user_login",
+            auth_method="password",
+            success=False,
+            user=user,
+            reason="oauth_only_account",
+        )
         raise HTTPException(
             status_code=401,
             detail="This account uses social sign-in. Use Google or Facebook.",
         )
     if not verify_password(body.password, pw_hash):
+        _emit_auth_event(
+            "user_login",
+            auth_method="password",
+            success=False,
+            user=user,
+            reason="invalid_credentials",
+        )
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    _emit_auth_event("user_login", auth_method="password", success=True, user=user)
     return TokenResponse(access_token=create_access_token(user.id))
 
 

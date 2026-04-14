@@ -15,11 +15,12 @@ if os.environ.get("RENDER", "").strip().lower() != "true":
 
     load_dotenv(BASE_DIR / ".env")
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from starlette.responses import Response
 
+from activity_log import actor_fields, read_activity_summary, read_recent_activity, write_activity
 from auth_api import router as auth_router
 from auth_deps import assert_job_readable, get_current_user_optional, get_job_user
 from billing_api import paddle_webhook_handler, router as billing_router
@@ -32,6 +33,7 @@ from billing_store import (
 from db_postgres import raw_database_url_from_environment
 from rate_limit import RateLimitMiddleware
 from user_store import UserRecord
+from usage_report import note_algorithm_run, note_free_trial_attempt, read_usage_report
 
 _log = logging.getLogger("translate_chat.web")
 
@@ -209,6 +211,7 @@ def _run_job(
     from main import JobCancelledError, run_pipeline_job
 
     try:
+        note_algorithm_run()
         _write_status(
             job_id,
             status="running",
@@ -241,9 +244,23 @@ def _run_job(
         )
         store = get_billing_store(BASE_DIR)
         if billing_guest_key and billing_consumption in ("guest_free", "guest_credit"):
-            store.guest_apply_successful_job(billing_guest_key, billing_consumption)
+            store.guest_apply_successful_job(
+                billing_guest_key, billing_consumption, job_id=job_id
+            )
         elif billing_user_id and billing_consumption:
-            store.apply_successful_job(billing_user_id, billing_consumption)
+            store.apply_successful_job(
+                billing_user_id, billing_consumption, job_id=job_id
+            )
+        write_activity(
+            "job_completed",
+            job_id=job_id,
+            images_count=len(image_paths),
+            language=language,
+            duration_sec=result.get("total_runtime_sec"),
+            billing_consumption=billing_consumption,
+            artifacts_count=len(result.get("artifacts") or {}),
+            **actor_fields(user_id=billing_user_id, guest_key=billing_guest_key),
+        )
     except JobCancelledError:
         _write_status(
             job_id,
@@ -258,12 +275,27 @@ def _run_job(
             except OSError:
                 pass
     except Exception as exc:
+        prior_status = {}
+        try:
+            prior_status = _load_status(job_id)
+        except HTTPException:
+            prior_status = {}
         _write_status(
             job_id,
             status="failed",
             stage="failed",
             error=str(exc),
             traceback=traceback.format_exc(),
+        )
+        write_activity(
+            "job_failed",
+            job_id=job_id,
+            images_count=len(image_paths),
+            language=language,
+            billing_consumption=billing_consumption,
+            failure_stage=prior_status.get("stage"),
+            error_summary=str(exc),
+            **actor_fields(user_id=billing_user_id, guest_key=billing_guest_key),
         )
 
 
@@ -283,6 +315,14 @@ def _check_smoke_secret(x_smoke_secret: Optional[str]) -> None:
         return
     if (x_smoke_secret or "").strip() != expected:
         raise HTTPException(status_code=403, detail="Invalid or missing X-Smoke-Secret")
+
+
+def _check_monitor_token(x_monitor_token: Optional[str]) -> None:
+    expected = os.environ.get("MONITOR_READ_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="MONITOR_READ_TOKEN is not configured")
+    if (x_monitor_token or "").strip() != expected:
+        raise HTTPException(status_code=403, detail="Invalid or missing X-Monitor-Token")
 
 
 @app.head("/")
@@ -320,6 +360,35 @@ def health():
         "ok": True,
         "database_url_configured": bool(raw_database_url_from_environment()),
         "render_git_commit": os.environ.get("RENDER_GIT_COMMIT"),
+    }
+
+
+@app.get("/monitor/activity")
+def monitor_activity(
+    limit: int = Query(default=100, ge=1, le=500),
+    event: Optional[str] = Query(default=None),
+    x_monitor_token: Optional[str] = Header(default=None, alias="X-Monitor-Token"),
+):
+    _check_monitor_token(x_monitor_token)
+    events = read_recent_activity(limit=limit, event=event)
+    return {
+        "ok": True,
+        "storage": "postgres",
+        "events": events,
+        "summary": read_activity_summary(event=event),
+    }
+
+
+@app.get("/monitor/usage")
+def monitor_usage(
+    x_monitor_token: Optional[str] = Header(default=None, alias="X-Monitor-Token"),
+):
+    _check_monitor_token(x_monitor_token)
+    usage = read_usage_report()
+    return {
+        "ok": True,
+        "database_configured": bool(usage),
+        "usage": usage,
     }
 
 
@@ -514,6 +583,18 @@ async def create_job(
         daemon=True,
     ).start()
     status["artifact_urls"] = {}
+    if billing_consumption in ("free", "guest_free"):
+        note_free_trial_attempt()
+    write_activity(
+        "job_created",
+        job_id=job_id,
+        images_count=len(image_paths),
+        language=language,
+        difficulty=difficulty_i,
+        hurry_up=hurry_up_b,
+        billing_consumption=billing_consumption,
+        **actor_fields(user_id=(job_user.id if job_user else None), guest_key=billing_guest_key),
+    )
     return status
 
 

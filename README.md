@@ -119,5 +119,5 @@ After a successful pipeline run, the server decrements credits or increments fre
 - **Rate limits:** In-memory per IP on `POST` (`RATE_LIMIT_*` env vars; disable with `RATE_LIMIT_ENABLED=0`). `/billing/webhook` has a high limit; tune if Paddle shares egress IPs.
 - **Job caps:** `MAX_JOB_FILES` (default 30), `MAX_JOB_UPLOAD_MB` (default 80 total per job).
 - **PostgreSQL:** Use Render Postgres (**translate-chat-db**) or another host; set `DATABASE_URL` on the API. Backups: provider snapshots or `pg_dump`.
-- **Monitoring:** Optional `SENTRY_DSN` + `SENTRY_TRACES_SAMPLE_RATE`. Paddle webhooks log to stdout at `INFO` (`translate_chat.billing`).
+- **Monitoring:** Optional `SENTRY_DSN` + `SENTRY_TRACES_SAMPLE_RATE`. Set `MONITOR_READ_TOKEN` to enable `GET /monitor/activity` and `GET /monitor/usage`. The usage report is stored in its own PostgreSQL table and tracks live counters such as total algorithm runs, free-trial attempts, users signed up today, and total users. Paddle webhooks log to stdout at `INFO` (`translate_chat.billing`).
 - **Legal:** `GET /legal/terms`, `GET /legal/privacy` (set `PUBLIC_CONTACT_EMAIL`).

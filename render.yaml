@@ -60,6 +60,8 @@ services:
         sync: false
       - key: SENTRY_TRACES_SAMPLE_RATE
         value: "0"
+      - key: MONITOR_READ_TOKEN
+        sync: false
       - key: GOOGLE_OAUTH_CLIENT_ID
         sync: false
       - key: FACEBOOK_APP_ID

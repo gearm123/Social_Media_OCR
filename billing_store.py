@@ -12,6 +12,7 @@ from typing import Any, Optional, Tuple
 from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 
+from activity_log import actor_fields, write_activity
 from db_postgres import get_pool
 
 # Anonymous free tier: client generates id (e.g. UUID hex), sends as X-Guest-Billing-Id
@@ -624,7 +625,9 @@ class BillingStore:
                     )
                 conn.commit()
 
-    def guest_apply_successful_job(self, guest_key: str, consumption: str) -> None:
+    def guest_apply_successful_job(
+        self, guest_key: str, consumption: str, job_id: Optional[str] = None
+    ) -> None:
         consumption = (consumption or "").strip().lower()
         if consumption not in ("guest_free", "guest_credit"):
             return
@@ -653,6 +656,13 @@ class BillingStore:
                             (GUEST_FREE_RUNS_MAX, now, guest_key),
                         )
                 conn.commit()
+        if consumption == "guest_free":
+            write_activity(
+                "free_trial_consumed",
+                job_id=job_id,
+                free_trial_type=consumption,
+                **actor_fields(guest_key=guest_key),
+            )
 
     def can_start_job(self, user_id: str, image_count: int) -> Tuple[bool, str, str]:
         """
@@ -728,7 +738,9 @@ class BillingStore:
                     conn.commit()
                     return False, "", "free_exhausted"
 
-    def apply_successful_job(self, user_id: str, consumption: str) -> None:
+    def apply_successful_job(
+        self, user_id: str, consumption: str, job_id: Optional[str] = None
+    ) -> None:
         consumption = (consumption or "").strip().lower()
         if consumption in ("unlimited", "") or not consumption:
             return
@@ -788,6 +800,13 @@ class BillingStore:
                                 (now, user_id),
                             )
                 conn.commit()
+        if consumption == "free":
+            write_activity(
+                "free_trial_consumed",
+                job_id=job_id,
+                free_trial_type=consumption,
+                **actor_fields(user_id=user_id),
+            )
 
 
 _billing_singleton: Optional[BillingStore] = None

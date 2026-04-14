@@ -15,6 +15,7 @@ from typing import Annotated, Any, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from activity_log import actor_fields, write_activity
 from auth_deps import get_current_user_required
 from billing_store import (
     GUEST_FREE_RUNS_MAX,
@@ -195,6 +196,38 @@ def _normalize_custom_data(raw: Any) -> dict[str, Any]:
     if "user_id" not in out and out.get("userId") is not None:
         out["user_id"] = out.get("userId")
     return out
+
+
+def _payment_activity_payload(
+    store, event_type: str, event_id: str, data: dict[str, Any]
+) -> dict[str, Any]:
+    custom = _normalize_custom_data(data.get("custom_data"))
+    plan = (_custom_str(custom, "plan") or "").lower() or None
+    customer_id = _custom_str(data, "customer_id")
+    user_id = _custom_str(custom, "user_id")
+    guest_key_raw = _custom_str(custom, "guest_key")
+    guest_key = normalize_guest_key(guest_key_raw) if guest_key_raw else None
+    if not guest_key and customer_id:
+        guest_key = store.get_guest_key_by_paddle_customer_id(customer_id)
+    if not user_id and customer_id:
+        user_id = store.get_user_id_by_paddle_customer(customer_id)
+    payload = {
+        "provider": "paddle",
+        "payment_event_type": event_type,
+        "event_id": event_id,
+        "plan": plan,
+        "customer_id": customer_id,
+        "status": _custom_str(data, "status"),
+        "transaction_id": _custom_str(data, "transaction_id"),
+        "subscription_id": _custom_str(data, "subscription_id"),
+    }
+    data_id = _custom_str(data, "id")
+    if event_type.startswith("transaction.") and not payload["transaction_id"]:
+        payload["transaction_id"] = data_id
+    if event_type.startswith("subscription.") and not payload["subscription_id"]:
+        payload["subscription_id"] = data_id
+    payload.update(actor_fields(user_id=user_id, guest_key=guest_key))
+    return payload
 
 
 def _ensure_paddle_customer_and_address(store, user: UserRecord) -> tuple[str, str]:
@@ -705,6 +738,10 @@ async def paddle_webhook_handler(request: Request) -> dict:
     try:
         if etype in ("transaction.completed", "transaction.paid"):
             _apply_transaction_completed(data)
+            write_activity(
+                "payment_event",
+                **_payment_activity_payload(store, etype, event_id, data),
+            )
             _log.info(
                 "paddle_webhook ok event=%s event_id=%s transaction_id=%s",
                 etype,
@@ -718,6 +755,10 @@ async def paddle_webhook_handler(request: Request) -> dict:
             "subscription.activated",
         ):
             _apply_subscription_entity(data)
+            write_activity(
+                "payment_event",
+                **_payment_activity_payload(store, etype, event_id, data),
+            )
             _log.info("paddle_webhook ok event=%s event_id=%s", etype, event_id)
         else:
             _log.info("paddle_webhook ignored event=%s event_id=%s", etype, event_id)
