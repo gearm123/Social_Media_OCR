@@ -220,19 +220,24 @@ def _gemini_http_extra_retries_on_timeout() -> int:
 
 
 def _gemini_http_max_tries_for_pass(pass_num: Optional[int]) -> int:
-    """Pass **2**: **2** HTTP attempts (timeout retry). Pass **3**: **2** attempts.
+    """Pass **1** (when ``GEMINI_HTTP_RETRIES`` is unset): **3** timeout attempts; else ``1 + GEMINI_HTTP_RETRIES``.
 
-    Pass **1** (when ``GEMINI_HTTP_RETRIES`` is unset): **3** attempts; else ``1 + GEMINI_HTTP_RETRIES``.
+    Pass **2** and **3**: **1** HTTP attempt each (no timeout retry loop; pipeline skips the pass on failure).
     Other passes: ``1 + GEMINI_HTTP_RETRIES`` (default **2** attempts).
     """
-    if pass_num is not None and int(pass_num) == 2:
-        return 2
-    if pass_num is not None and int(pass_num) == 3:
-        return 2
+    if pass_num is not None and int(pass_num) in (2, 3):
+        return 1
     if pass_num is not None and int(pass_num) == 1:
         if not os.environ.get("GEMINI_HTTP_RETRIES", "").strip():
             return 3
     return 1 + _gemini_http_extra_retries_on_timeout()
+
+
+def _gemini_transient_status_max_retries_for_pass(pass_num: Optional[int]) -> int:
+    """Transient HTTP retries (429/5xx) on the same attempt. Pass **1** only; pass **2**/**3** use **0**."""
+    if pass_num is not None and int(pass_num) in (2, 3):
+        return 0
+    return _gemini_http_extra_retries_on_transient_status()
 
 
 def _gemini_http_extra_retries_on_transient_status() -> int:
@@ -1074,7 +1079,16 @@ _gemini_api_key = None
 _gemini_active_model = None   # (model_name, api_version) tuple once found
 _gemini_model_candidates = None
 
-# Preferred model name substrings in priority order
+# Pass 1 multimodal pipeline: fixed REST model ids (no ListModels at init or on failover).
+# Order = primary → first fallback → second fallback. API version from ``GEMINI_API_VERSION`` or v1beta.
+# Override the list with env ``GEMINI_PASS1_MODEL_CHAIN`` (comma-separated model names).
+_GEMINI_PASS1_DEFAULT_MODEL_NAMES = (
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+)
+
+# Preferred model name substrings in priority order (used only by legacy ListModels helper).
 _GEMINI_PREFER = ["gemini-2.5", "gemini-2.0", "gemini-1.5"]
 
 
@@ -1107,6 +1121,59 @@ def _gemini_sort_model_candidates(candidates: List[Tuple[str, str]]) -> List[Tup
     return sorted(unique, key=_priority)
 
 
+def _gemini_exclude_from_pipeline_discovery(model_name: str) -> bool:
+    """Models to skip when picking a multimodal OCR/transcription model.
+
+    Some specialized models (e.g. **TTS**) still list ``generateContent`` in ListModels, but they
+    expect a different request/response shape than vision+text chat. Using them yields **400** from
+    the REST API. Exclude them so discovery prefers standard Pro/Flash chat models.
+    """
+    n = (model_name or "").lower()
+    if "-tts" in n or n.endswith("tts"):
+        return True
+    return False
+
+
+def _gemini_api_version_for_pipeline() -> str:
+    v = os.environ.get("GEMINI_API_VERSION", "").strip()
+    return v if v else "v1beta"
+
+
+def _gemini_pass1_fixed_model_chain() -> List[Tuple[str, str]]:
+    """Ordered (model_name, api_version) pairs for Pass 1 — no runtime ListModels."""
+    ver = _gemini_api_version_for_pipeline()
+    raw = os.environ.get("GEMINI_PASS1_MODEL_CHAIN", "").strip()
+    if raw:
+        names = [x.strip() for x in raw.split(",") if x.strip()]
+        return [(n, ver) for n in names]
+    return [(n, ver) for n in _GEMINI_PASS1_DEFAULT_MODEL_NAMES]
+
+
+def _gemini_pass1_failover_chain(active: Tuple[str, str]) -> List[Tuple[str, str]]:
+    """Suffix of the fixed Pass 1 chain starting at *active* (same ``model`` id as globals)."""
+    chain = _gemini_pass1_fixed_model_chain()
+    for i, item in enumerate(chain):
+        if item[0] == active[0]:
+            return list(chain[i:])
+    out: List[Tuple[str, str]] = [active]
+    seen = {active[0]}
+    for item in chain:
+        if item[0] not in seen:
+            out.append(item)
+            seen.add(item[0])
+    return out
+
+
+def _gemini_model_chain_for_generate(pass_num: Optional[int]) -> List[Tuple[str, str]]:
+    """Pass **1**: fixed multimodal failover chain. Other passes: single active model (no failover)."""
+    global _gemini_active_model
+    if not _gemini_active_model:
+        return []
+    if pass_num is not None and int(pass_num) == 1:
+        return _gemini_pass1_failover_chain(_gemini_active_model)
+    return [_gemini_active_model]
+
+
 def _gemini_discover_models(api_key: str) -> List[Tuple[str, str]]:
     """Query ListModels to find generateContent-capable models in priority order."""
     import requests as _req
@@ -1125,6 +1192,9 @@ def _gemini_discover_models(api_key: str) -> List[Tuple[str, str]]:
                 for m in models
                 if "generateContent" in m.get("supportedGenerationMethods", [])
                 and "name" in m
+                and not _gemini_exclude_from_pipeline_discovery(
+                    m["name"].replace("models/", "")
+                )
             ]
             if capable:
                 return _gemini_sort_model_candidates(capable)
@@ -1150,7 +1220,7 @@ class GeminiApiResult(NamedTuple):
 
 
 def _gemini_discover_if_needed() -> bool:
-    """Load API key from env and pick a model. Returns False if Gemini is unavailable."""
+    """Load API key from env and set the active model from the fixed Pass 1 chain (no ListModels)."""
     global _gemini_api_key, _gemini_active_model, _gemini_model_candidates
 
     if _gemini_api_key is None:
@@ -1158,34 +1228,22 @@ def _gemini_discover_if_needed() -> bool:
     if not _gemini_api_key:
         return False
     if _gemini_active_model is None or not _gemini_model_candidates:
-        if not _compact_verbose_logs():
-            _pv("[GEMINI] Discovering available models...")
-        models = _gemini_discover_models(_gemini_api_key)
-        if models:
-            _gemini_model_candidates = list(models)
-            _gemini_active_model = models[0]
-            if _compact_verbose_logs():
-                print("**************", flush=True)
-            _pv(
-                "[GEMINI] Using model: "
-                f"{_gemini_active_model[0]} (API {_gemini_active_model[1]})"
-            )
-        else:
-            _pv("[GEMINI] No generateContent-capable model found — refinement disabled")
+        models = _gemini_pass1_fixed_model_chain()
+        if not models:
+            _pv("[GEMINI] No models in GEMINI_PASS1_MODEL_CHAIN — refinement disabled")
             _gemini_api_key = ""
             return False
+        _gemini_model_candidates = list(models)
+        _gemini_active_model = models[0]
+        if _compact_verbose_logs():
+            print("**************", flush=True)
+        _pv(
+            "[GEMINI] Using model: "
+            f"{_gemini_active_model[0]} (API {_gemini_active_model[1]}); "
+            f"Pass 1 fallbacks (no runtime lookup): "
+            f"{', '.join(m for m, _ in models)}"
+        )
     return True
-
-
-def _gemini_failover_chain(active_model: Tuple[str, str]) -> List[Tuple[str, str]]:
-    chain: List[Tuple[str, str]] = []
-    seen: Set[Tuple[str, str]] = set()
-    for item in [active_model] + list(_gemini_model_candidates or []):
-        if not item or item in seen:
-            continue
-        seen.add(item)
-        chain.append(item)
-    return chain
 
 
 def _gemini_activate_model(model_info: Tuple[str, str], *, reason: Optional[str] = None) -> None:
@@ -1364,12 +1422,11 @@ def _gemini_generate(
 
     **Gemini 2.5** (passes **1–3**): pass **1** — no ``thinkingConfig`` on first try (Pro: historical
     omit; **66** s default HTTP read timeout); second try **1920** thinking budget, **80** s; third try
-    **960** thinking budget, **40** s. Pass **2** — **36** s / **22** s per attempt; first try omits
-    ``thinkingConfig``, second try **1920** thinking budget. Pass **3** — **36** s then **24** s, with retry
-    using minimal thinking on the second attempt.
-    With ``PIPELINE_HURRY_UP`` / ``--hurry-up``, passes **1–3** use fixed ``thinkingBudget`` and shorter
-    timeouts: pass **1** **35**/**45**/**27** s with **1920**/**960**/**960** thinking; pass **2** retries once
-    (**18** s / **10** s; **960** / **480** thinking); pass **3** **16** s / **10** s, **960** then retry-minimal thinking.
+    **960** thinking budget, **40** s; **model failover** uses the fixed
+    ``GEMINI_PASS1_MODEL_CHAIN`` only on pass **1**. Pass **2** and **3** use **one** HTTP attempt each
+    (no timeout retry loop, no transient 429/5xx retries, no model failover; failures skip that pass).
+    With ``PIPELINE_HURRY_UP`` / ``--hurry-up``, pass **1** uses **35**/**45**/**27** s with
+    **1920**/**960**/**960** thinking; pass **2**/**3** still use a single attempt with hurry-up budgets.
     Pass **4+** / unset: **3840** first try; retry **Pro** **128** / **Flash** ``0``.
     See ``_gemini_build_generation_config`` and ``_gemini_attempt_timeout_sec``.
 
@@ -1382,7 +1439,7 @@ def _gemini_generate(
     if not _gemini_discover_if_needed():
         return None
 
-    model_chain = _gemini_failover_chain(_gemini_active_model)
+    model_chain = _gemini_model_chain_for_generate(pass_num)
 
     parts = []
     if image_b64_list:
@@ -1537,7 +1594,7 @@ def _gemini_generate(
                 except _req.exceptions.HTTPError as e:
                     status_code = int(getattr(getattr(e, "response", None), "status_code", 0) or 0)
                     err_text = _redact_gemini_api_key(str(e))
-                    max_status_retries = _gemini_http_extra_retries_on_transient_status()
+                    max_status_retries = _gemini_transient_status_max_retries_for_pass(pass_num)
                     if _is_transient_gemini_http_status(status_code) and transient_status_retry_i < max_status_retries:
                         retry_delay = _gemini_transient_status_retry_delay_sec(transient_status_retry_i)
                         eta_extra_sec = _retry_eta_elapsed_sec(t_pass_wall)
@@ -1610,7 +1667,35 @@ def _gemini_generate(
                 break
             if exhausted_transient_status_code is not None:
                 status_code = int(exhausted_transient_status_code)
-                if active_model_idx < len(model_chain) - 1:
+                pn_ex = int(pass_num) if pass_num is not None else None
+                if pn_ex in (2, 3):
+                    sc = int(status_code)
+                    print(
+                        f"[GEMINI] Pass {pn_ex}: HTTP {sc} from Gemini — skipping Pass {pn_ex} "
+                        "(no transient retries; no model fallback). Pipeline will continue without this pass.",
+                        flush=True,
+                    )
+                    if http_timing:
+                        http_timing.pass_failed = True
+                        _flush_http_timing()
+                    _record_gemini_pass_outcome(
+                        pass_num,
+                        status="failed",
+                        successful_attempt=None,
+                        max_tries=max_tries,
+                        timed_out_attempts=timed_out_attempts,
+                        transient_status_retry_count=transient_status_retry_i,
+                        final_http_status=sc,
+                        model=active_model_name,
+                        model_failovers=max(0, active_model_idx),
+                    )
+                    raise RuntimeError(
+                        f"Gemini Pass {pn_ex} skipped after HTTP {sc} (upstream unavailable)."
+                    )
+                if (
+                    active_model_idx < len(model_chain) - 1
+                    and (pass_num is None or int(pass_num) == 1)
+                ):
                     _notify_gemini_retry({"clear_retry_label": True})
                     next_model = model_chain[active_model_idx + 1][0]
                     print(
@@ -1711,7 +1796,10 @@ def _gemini_generate(
                         flush=True,
                     )
                     continue
-                if active_model_idx < len(model_chain) - 1:
+                if (
+                    active_model_idx < len(model_chain) - 1
+                    and (pass_num is None or int(pass_num) == 1)
+                ):
                     next_model = model_chain[active_model_idx + 1][0]
                     print(
                         f"[GEMINI] HTTP timeouts exhausted on pass={pass_num!r} "
