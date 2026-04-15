@@ -233,11 +233,43 @@ def _gemini_http_max_tries_for_pass(pass_num: Optional[int]) -> int:
     return 1 + _gemini_http_extra_retries_on_timeout()
 
 
-def _gemini_transient_status_max_retries_for_pass(pass_num: Optional[int]) -> int:
-    """Transient HTTP retries (429/5xx) on the same attempt. Pass **1** only; pass **2**/**3** use **0**."""
-    if pass_num is not None and int(pass_num) in (2, 3):
-        return 0
-    return _gemini_http_extra_retries_on_transient_status()
+def _gemini_reset_patience_for_pass(pass_num: Optional[int]) -> int:
+    """How many times a pass may restart the **current** outer attempt after HTTP 503.
+
+    Each restart waits ``_gemini_http_503_reset_wait_sec()`` then repeats the same attempt
+    (same timeout index / thinking budget). Defaults: Pass **1** = **2**, Pass **2**/**3** = **0**.
+    Override with ``GEMINI_PASS{n}_RESET_PATIENCE``.
+    """
+    def _parse(raw: Optional[str], default: int) -> int:
+        s = (raw or "").strip()
+        if not s:
+            return default
+        try:
+            return max(0, int(s))
+        except ValueError:
+            return default
+
+    if pass_num is None:
+        return _parse(os.environ.get("GEMINI_RESET_PATIENCE", ""), 0)
+    pn = int(pass_num)
+    if pn == 1:
+        return _parse(os.environ.get("GEMINI_PASS1_RESET_PATIENCE", ""), 2)
+    if pn == 2:
+        return _parse(os.environ.get("GEMINI_PASS2_RESET_PATIENCE", ""), 0)
+    if pn == 3:
+        return _parse(os.environ.get("GEMINI_PASS3_RESET_PATIENCE", ""), 0)
+    return 0
+
+
+def _gemini_http_503_reset_wait_sec() -> float:
+    """Idle window before retrying the same attempt after HTTP 503 (default **12** s)."""
+    raw = os.environ.get("GEMINI_503_RESET_WAIT_SEC", "").strip()
+    if not raw:
+        return 12.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 12.0
 
 
 def _gemini_http_extra_retries_on_transient_status() -> int:
@@ -1496,11 +1528,21 @@ def _gemini_generate(
     active_model_idx = 0
     active_model_name = model_chain[0][0]
     last_attempt_i = 0
-    transient_status_retry_i = 0
+    reset_patience_remaining = _gemini_reset_patience_for_pass(pass_num)
+    pass_503_resets_used = 0
 
     while active_model_idx < len(model_chain):
         model, ver = model_chain[active_model_idx]
         active_model_name = model
+        attempt_loop_tries = (
+            1
+            if (
+                pass_num is not None
+                and int(pass_num) == 1
+                and active_model_idx > 0
+            )
+            else max_tries
+        )
         url = (
             f"https://generativelanguage.googleapis.com/{ver}/models/"
             f"{model}:generateContent?key={_gemini_api_key}"
@@ -1512,7 +1554,8 @@ def _gemini_generate(
             )
         switch_to_next_model = False
 
-        for attempt_i in range(max_tries):
+        for attempt_i in range(attempt_loop_tries):
+            attempt_503_restarts = 0
             last_attempt_i = attempt_i
             if (
                 _cp
@@ -1555,9 +1598,8 @@ def _gemini_generate(
                     f"[GEMINI] generateContent POST: model={model} pass={pass_num!r} "
                     f"images_in_payload={image_count} prompt_chars={prompt_chars} "
                     f"max_tokens={gen_cfg['maxOutputTokens']} thinkingBudget={_tb_disp_attempt!r} "
-                    f"timeout={attempt_timeout}s attempt={attempt_i + 1}/{max_tries}{_retry_tag}",
+                    f"timeout={attempt_timeout}s attempt={attempt_i + 1}/{attempt_loop_tries}{_retry_tag}",
                 )
-            transient_status_retry_i = 0
             timed_out = False
             exhausted_transient_status_code: Optional[int] = None
             exhausted_transient_error_text = ""
@@ -1583,7 +1625,7 @@ def _gemini_generate(
                     if http_timing:
                         http_timing.record_success(attempt_i, time.time() - t_attempt_wall)
                     _tb_disp = _tb_disp_attempt
-                    if transient_status_retry_i > 0:
+                    if attempt_503_restarts > 0:
                         _notify_gemini_retry({"clear_retry_label": True})
                     attempt_succeeded = True
                     break
@@ -1594,34 +1636,35 @@ def _gemini_generate(
                 except _req.exceptions.HTTPError as e:
                     status_code = int(getattr(getattr(e, "response", None), "status_code", 0) or 0)
                     err_text = _redact_gemini_api_key(str(e))
-                    max_status_retries = _gemini_transient_status_max_retries_for_pass(pass_num)
-                    if _is_transient_gemini_http_status(status_code) and transient_status_retry_i < max_status_retries:
-                        retry_delay = _gemini_transient_status_retry_delay_sec(transient_status_retry_i)
+                    if status_code == 503 and reset_patience_remaining > 0:
+                        reset_patience_remaining -= 1
+                        pass_503_resets_used += 1
+                        attempt_503_restarts += 1
+                        wait_sec = _gemini_http_503_reset_wait_sec()
                         eta_extra_sec = _retry_eta_elapsed_sec(t_pass_wall)
-                        retry_label = (
-                            f"Pass {pass_num} — Gemini {status_code} retrying current attempt…"
-                            if pass_num is not None
-                            else f"Gemini {status_code} retrying current attempt…"
-                        )
                         _notify_gemini_retry(
                             {
-                                "label": retry_label,
+                                "label": (
+                                    f"Pass {pass_num} — HTTP 503; reset patience {reset_patience_remaining} left…"
+                                    if pass_num is not None
+                                    else "HTTP 503; resetting attempt…"
+                                ),
                                 "eta_extra_sec": eta_extra_sec,
                                 "reset_phase_started_at": True,
                                 "pass_num": int(pass_num) if pass_num is not None else None,
                                 "attempt_i": int(attempt_i),
                                 "attempt_timeout_sec": int(attempt_timeout),
-                                "status_code": status_code,
+                                "status_code": 503,
                             }
                         )
                         print(
-                            f"[GEMINI] HTTP {status_code} on pass={pass_num!r} "
-                            f"(attempt {attempt_i + 1}/{max_tries}, retry {transient_status_retry_i + 1}/{max_status_retries}) "
-                            f"— retrying same attempt in {retry_delay:.1f}s…",
+                            f"[GEMINI] HTTP 503 on pass={pass_num!r} "
+                            f"(attempt {attempt_i + 1}/{attempt_loop_tries}) — "
+                            f"{reset_patience_remaining} reset patience remaining — "
+                            f"waiting {wait_sec:.1f}s before retrying same attempt…",
                             flush=True,
                         )
-                        transient_status_retry_i += 1
-                        time.sleep(retry_delay)
+                        time.sleep(wait_sec)
                         continue
                     if _is_transient_gemini_http_status(status_code):
                         exhausted_transient_status_code = status_code
@@ -1636,7 +1679,7 @@ def _gemini_generate(
                         successful_attempt=None,
                         max_tries=max_tries,
                         timed_out_attempts=timed_out_attempts,
-                        transient_status_retry_count=transient_status_retry_i,
+                        transient_status_retry_count=pass_503_resets_used,
                         final_http_status=status_code,
                         model=active_model_name,
                         model_failovers=max(0, active_model_idx),
@@ -1655,7 +1698,7 @@ def _gemini_generate(
                         successful_attempt=None,
                         max_tries=max_tries,
                         timed_out_attempts=timed_out_attempts,
-                        transient_status_retry_count=transient_status_retry_i,
+                        transient_status_retry_count=pass_503_resets_used,
                         final_http_status=http_code or None,
                         model=active_model_name,
                         model_failovers=max(0, active_model_idx),
@@ -1684,7 +1727,7 @@ def _gemini_generate(
                         successful_attempt=None,
                         max_tries=max_tries,
                         timed_out_attempts=timed_out_attempts,
-                        transient_status_retry_count=transient_status_retry_i,
+                        transient_status_retry_count=pass_503_resets_used,
                         final_http_status=sc,
                         model=active_model_name,
                         model_failovers=max(0, active_model_idx),
@@ -1692,26 +1735,25 @@ def _gemini_generate(
                     raise RuntimeError(
                         f"Gemini Pass {pn_ex} skipped after HTTP {sc} (upstream unavailable)."
                     )
-                if (
-                    active_model_idx < len(model_chain) - 1
-                    and (pass_num is None or int(pass_num) == 1)
+                if active_model_idx < len(model_chain) - 1 and (
+                    pass_num is None or int(pass_num) == 1
                 ):
                     _notify_gemini_retry({"clear_retry_label": True})
                     next_model = model_chain[active_model_idx + 1][0]
                     print(
-                        f"[GEMINI] HTTP {status_code} kept failing on pass={pass_num!r} "
-                        f"(model={model}, attempt {attempt_i + 1}/{max_tries}) — "
+                        f"[GEMINI] HTTP {status_code} on pass={pass_num!r} "
+                        f"(model={model}, attempt {attempt_i + 1}/{attempt_loop_tries}) — "
                         f"switching to fallback model {next_model}.",
                         flush=True,
                     )
                     switch_to_next_model = True
                     break
-                if attempt_i < max_tries - 1:
+                if attempt_i < attempt_loop_tries - 1:
                     _notify_gemini_retry({"clear_retry_label": True})
                     _next_to = _gemini_attempt_timeout_sec(pass_num, attempt_i + 1, timeout)
                     print(
                         f"[GEMINI] HTTP {status_code} kept failing on pass={pass_num!r} "
-                        f"(attempt {attempt_i + 1}/{max_tries}) — advancing to next attempt "
+                        f"(attempt {attempt_i + 1}/{attempt_loop_tries}) — advancing to next attempt "
                         f"with timeout={_next_to}s.",
                         flush=True,
                     )
@@ -1725,14 +1767,14 @@ def _gemini_generate(
                     successful_attempt=None,
                     max_tries=max_tries,
                     timed_out_attempts=timed_out_attempts,
-                    transient_status_retry_count=transient_status_retry_i,
+                    transient_status_retry_count=pass_503_resets_used,
                     final_http_status=status_code,
                     model=active_model_name,
                     model_failovers=max(0, active_model_idx),
                 )
                 if pass_num is not None and _gemini_pass_summary_enabled():
                     print(
-                        f"[gemini] pass {pass_num} stopped: HTTP {status_code} after transient retries: "
+                        f"[gemini] pass {pass_num} stopped: HTTP {status_code} after Pass 1 attempts: "
                         f"{exhausted_transient_error_text}",
                         flush=True,
                     )
@@ -1741,18 +1783,18 @@ def _gemini_generate(
                         pass_num=pass_num,
                         reason="transient_http_status_exhausted",
                         max_tries=max_tries,
-                        transient_status_retry_count=transient_status_retry_i,
+                        transient_status_retry_count=pass_503_resets_used,
                         timed_out_attempts=timed_out_attempts,
                         final_http_status=status_code,
                     )
                     raise RuntimeError(
-                        "SERVERS_OVERLOADED: Gemini Pass 1 stayed unavailable after all attempts and transient retries."
+                        "SERVERS_OVERLOADED: Gemini Pass 1 stayed unavailable after all attempts and model failover."
                     )
                 raise RuntimeError(exhausted_transient_error_text or f"HTTP {status_code}")
             if timed_out:
                 if http_timing:
                     http_timing.record_timeout(attempt_i, float(attempt_timeout))
-                if attempt_i < max_tries - 1:
+                if attempt_i < attempt_loop_tries - 1:
                     _mlow = (model or "").lower()
                     _retry_hint = ""
                     if "2.5" in _mlow:
@@ -1792,7 +1834,7 @@ def _gemini_generate(
                             )
                     print(
                         f"[GEMINI] HTTP timeout after {attempt_timeout}s "
-                        f"(attempt {attempt_i + 1}/{max_tries}, pass={pass_num!r}) — retrying…{_retry_hint}",
+                        f"(attempt {attempt_i + 1}/{attempt_loop_tries}, pass={pass_num!r}) — retrying…{_retry_hint}",
                         flush=True,
                     )
                     continue
@@ -1833,7 +1875,7 @@ def _gemini_generate(
                     successful_attempt=None,
                     max_tries=max_tries,
                     timed_out_attempts=timed_out_attempts,
-                    transient_status_retry_count=transient_status_retry_i,
+                    transient_status_retry_count=pass_503_resets_used,
                     final_http_status=http_code or None,
                     model=active_model_name,
                     model_failovers=max(0, active_model_idx),
@@ -1843,7 +1885,7 @@ def _gemini_generate(
                         pass_num=pass_num,
                         reason="timeout_exhausted",
                         max_tries=max_tries,
-                        transient_status_retry_count=transient_status_retry_i,
+                        transient_status_retry_count=pass_503_resets_used,
                         timed_out_attempts=timed_out_attempts,
                         final_http_status=http_code or None,
                         final_attempt_timeout_sec=_gemini_attempt_timeout_sec(pass_num, max_tries - 1, timeout),
@@ -1861,7 +1903,7 @@ def _gemini_generate(
         "successful_attempt": int(last_attempt_i) + 1,
         "max_tries": max_tries,
         "timed_out_attempts": timed_out_attempts,
-        "transient_status_retry_count": transient_status_retry_i,
+        "transient_status_retry_count": pass_503_resets_used,
         "final_http_status": http_code or None,
         "model": active_model_name,
         "model_failovers": max(0, active_model_idx),

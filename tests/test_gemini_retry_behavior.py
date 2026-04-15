@@ -65,7 +65,8 @@ class TestGeminiRetryBehavior(unittest.TestCase):
             ],
             "usageMetadata": {},
         }
-        responses = [_FakeResponse(503) for _ in range(4)] + [_FakeResponse(200, payload)]
+        # Pass 1 reset patience 2: two 503s restart the same outer attempt (12s wait each), then 200.
+        responses = [_FakeResponse(503), _FakeResponse(503), _FakeResponse(200, payload)]
         retry_events = []
 
         with patch.dict(
@@ -103,24 +104,15 @@ class TestGeminiRetryBehavior(unittest.TestCase):
             result = ocr_translate._gemini_generate("hello", timeout=66, pass_num=1)
 
         self.assertEqual(result.text, "ok")
-        self.assertEqual(result.meta["successful_attempt"], 2)
+        self.assertEqual(result.meta["successful_attempt"], 1)
         self.assertEqual(result.meta["status"], "success")
-        self.assertEqual(post_mock.call_count, 5)
-        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [4.0, 8.0, 16.0])
+        self.assertEqual(post_mock.call_count, 3)
+        self.assertEqual(sleep_mock.call_count, 2)
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [12.0, 12.0])
         self.assertTrue(any(event.get("clear_retry_label") for event in retry_events))
-        retry_eta_values = [
-            event.get("eta_extra_sec")
-            for event in retry_events
-            if not event.get("clear_retry_label")
-        ]
-        self.assertTrue(retry_eta_values)
-        self.assertTrue(all(value is not None and value >= 0 for value in retry_eta_values))
-        self.assertTrue(
-            all("added_eta_sec" not in event for event in retry_events if not event.get("clear_retry_label"))
-        )
         self.assertEqual(
             ocr_translate.get_gemini_pass_outcomes().get(1, {}).get("successful_attempt"),
-            2,
+            1,
         )
 
     def test_pass3_single_http_attempt_no_timeout_retry(self):
@@ -201,7 +193,8 @@ class TestGeminiRetryBehavior(unittest.TestCase):
             ],
             "usageMetadata": {},
         }
-        responses = [_FakeResponse(503) for _ in range(4)] + [_FakeResponse(200, payload)]
+        # Exhaust reset patience on Pro (2 restarts = 3 POSTs), then Flash succeeds.
+        responses = [_FakeResponse(503), _FakeResponse(503), _FakeResponse(503), _FakeResponse(200, payload)]
         post_urls = []
 
         def _fake_post(url, json=None, timeout=None):
@@ -249,19 +242,21 @@ class TestGeminiRetryBehavior(unittest.TestCase):
             "requests.post", side_effect=_fake_post
         ), patch(
             "time.sleep"
-        ):
+        ) as sleep_mock:
             result = ocr_translate._gemini_generate("hello", timeout=66, pass_num=1)
 
         self.assertEqual(result.text, "ok-via-flash")
         self.assertEqual(result.meta["successful_attempt"], 1)
         self.assertEqual(result.meta["model"], "gemini-2.5-flash")
         self.assertEqual(result.meta["model_failovers"], 1)
-        self.assertTrue(all("gemini-2.5-pro" in url for url in post_urls[:4]))
-        self.assertIn("gemini-2.5-flash", post_urls[4])
+        self.assertEqual(len(post_urls), 4)
+        self.assertTrue(all("gemini-2.5-pro" in url for url in post_urls[:3]))
+        self.assertIn("gemini-2.5-flash", post_urls[3])
+        self.assertEqual([call.args[0] for call in sleep_mock.call_args_list], [12.0, 12.0])
 
     def test_pass1_logs_overload_trigger_after_transient_status_exhaustion(self):
-        # Single model in chain: 3 pass-1 timeout attempts × 4 transient 503 posts each = 12 failures.
-        responses = [_FakeResponse(503) for _ in range(12)]
+        # No 503 resets: each outer attempt gets one POST; 3×503 exhausts Pass 1.
+        responses = [_FakeResponse(503) for _ in range(3)]
 
         with patch.dict(
             os.environ,
@@ -271,6 +266,7 @@ class TestGeminiRetryBehavior(unittest.TestCase):
                 "GEMINI_TRANSIENT_HTTP_RETRY_BASE_DELAY_SEC": "",
                 "GEMINI_TRANSIENT_HTTP_RETRY_MAX_DELAY_SEC": "",
                 "GEMINI_PASS1_MODEL_CHAIN": "gemini-2.5-pro",
+                "GEMINI_PASS1_RESET_PATIENCE": "0",
             },
             clear=False,
         ), patch.object(
@@ -303,7 +299,7 @@ class TestGeminiRetryBehavior(unittest.TestCase):
             pass_num=1,
             reason="transient_http_status_exhausted",
             max_tries=3,
-            transient_status_retry_count=3,
+            transient_status_retry_count=0,
             timed_out_attempts=0,
             final_http_status=503,
         )

@@ -1,6 +1,9 @@
 # Local scratch / mistaken saves (not part of the app)
 gtag_test.js
 
+# Cursor rule containing Render API key / local-only log commands
+.cursor/rules/backend-log-inspection.mdc
+
 .env
 .env.local
 __pycache__/
