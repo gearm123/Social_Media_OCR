@@ -23,7 +23,9 @@ from billing_store import (
     billing_exempt_user,
     get_billing_store,
     normalize_guest_key,
+    subscription_runs_by_price_env,
     subscription_runs_cap,
+    subscription_runs_cap_default,
 )
 from paddle_client import (
     PaddleAPIError,
@@ -304,7 +306,10 @@ def billing_status():
         in ("1", "true", "yes", "on"),
         "webhook_configured": bool(_webhook_secret()),
         "prices": {k: bool(os.environ.get(v, "").strip()) for k, v in _PRICE_ENV.items()},
-        "subscription_runs_per_month": subscription_runs_cap(),
+        "subscription_runs_default_per_month": subscription_runs_cap_default(),
+        "subscription_runs_by_price_id": subscription_runs_by_price_env(),
+        # Same as subscription_runs_default_per_month; kept for older clients.
+        "subscription_runs_per_month": subscription_runs_cap_default(),
     }
 
 
@@ -354,6 +359,7 @@ def billing_me(
             "free_runs_max": USER_FREE_RUNS_MAX,
             "paddle_customer_id": None,
             "paddle_subscription_id": None,
+            "paddle_subscription_price_id": None,
         }
     e = store.get_entitlements(user.id)
     return {
@@ -371,6 +377,7 @@ def billing_me(
         "free_runs_max": USER_FREE_RUNS_MAX,
         "paddle_customer_id": e.get("paddle_customer_id"),
         "paddle_subscription_id": e.get("paddle_subscription_id"),
+        "paddle_subscription_price_id": e.get("paddle_subscription_price_id"),
     }
 
 
@@ -692,6 +699,39 @@ def _apply_transaction_completed(data: dict[str, Any]) -> None:
         _apply_subscription_entity(sub)
 
 
+def _extract_subscription_price_id(sub: dict[str, Any]) -> Optional[str]:
+    """Recurring Paddle price id (``pri_…``) from a subscription API / webhook payload."""
+    items = sub.get("items")
+    if not isinstance(items, list):
+        return None
+
+    def from_item(it: Any) -> Optional[str]:
+        if not isinstance(it, dict):
+            return None
+        price = it.get("price")
+        if isinstance(price, dict):
+            pid = price.get("id")
+            if isinstance(pid, str) and pid.strip().startswith("pri_"):
+                return pid.strip()
+        pid = it.get("price_id")
+        if isinstance(pid, str) and pid.strip().startswith("pri_"):
+            return pid.strip()
+        return None
+
+    for it in items:
+        st = str(it.get("status") or "").strip().lower() if isinstance(it, dict) else ""
+        if st and st not in ("active", "trialing", "past_due", "paused"):
+            continue
+        pid = from_item(it)
+        if pid:
+            return pid
+    for it in items:
+        pid = from_item(it)
+        if pid:
+            return pid
+    return None
+
+
 def _apply_subscription_entity(sub: dict[str, Any]) -> None:
     store = get_billing_store(BASE_DIR)
     cid = sub.get("customer_id")
@@ -701,8 +741,14 @@ def _apply_subscription_entity(sub: dict[str, Any]) -> None:
     sub_id = sub.get("id")
     period = sub.get("current_billing_period") or {}
     ends = period.get("ends_at")
+    price_id = _extract_subscription_price_id(sub)
     if ends:
-        store.set_subscription_access_iso(uid, sub_id, ends)
+        if price_id:
+            store.set_subscription_access_iso(uid, sub_id, ends, paddle_price_id=price_id)
+        else:
+            store.set_subscription_access_iso(uid, sub_id, ends)
+    elif price_id:
+        store.update_paddle_subscription_price_id(uid, sub_id, price_id)
 
 
 async def paddle_webhook_handler(request: Request) -> dict:

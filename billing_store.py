@@ -24,12 +24,69 @@ USER_FREE_RUNS_MAX = 1
 GUEST_FREE_RUNS_MAX = 1
 
 
-def subscription_runs_cap() -> int:
-    """Max successful jobs per calendar month while subscription is active (~$2.50 COGS at default)."""
+def subscription_runs_cap_default() -> int:
+    """Default max successful jobs per calendar month when no per-price mapping applies."""
     try:
         return max(1, int(os.environ.get("BILLING_SUBSCRIPTION_RUNS_PER_MONTH", "7").strip()))
     except ValueError:
         return 7
+
+
+def subscription_runs_by_price_env() -> dict[str, int]:
+    """Parsed ``BILLING_SUBSCRIPTION_RUNS_BY_PRICE`` for debugging / GET /billing/status."""
+    out: dict[str, int] = {}
+    raw = os.environ.get("BILLING_SUBSCRIPTION_RUNS_BY_PRICE", "").strip()
+    if not raw:
+        return out
+    default = subscription_runs_cap_default()
+    for segment in raw.split(","):
+        segment = segment.strip()
+        if ":" not in segment:
+            continue
+        key, _, rest = segment.partition(":")
+        key = key.strip()
+        try:
+            out[key] = max(1, int(rest.strip()))
+        except ValueError:
+            out[key] = default
+    return out
+
+
+def subscription_runs_cap_for_price_id(price_id: Optional[str]) -> int:
+    """
+    Monthly successful-job cap for an active Paddle subscription.
+
+    Set ``BILLING_SUBSCRIPTION_RUNS_BY_PRICE`` to a comma-separated list of
+    ``pri_…:runs`` (e.g. ``pri_abc:10,pri_def:25``). Whitespace is ignored.
+    Unknown or missing price ids fall back to :func:`subscription_runs_cap_default`.
+    """
+    default = subscription_runs_cap_default()
+    raw = os.environ.get("BILLING_SUBSCRIPTION_RUNS_BY_PRICE", "").strip()
+    if not raw or not price_id or not str(price_id).strip():
+        return default
+    pid = str(price_id).strip()
+    for segment in raw.split(","):
+        segment = segment.strip()
+        if ":" not in segment:
+            continue
+        key, _, rest = segment.partition(":")
+        key = key.strip()
+        if key != pid:
+            continue
+        try:
+            return max(1, int(rest.strip()))
+        except ValueError:
+            return default
+    return default
+
+
+def subscription_runs_cap() -> int:
+    """Backward-compatible alias: default cap only (no per-user price)."""
+    return subscription_runs_cap_default()
+
+
+# ``set_subscription_access_iso(..., paddle_price_id=…)`` — omit means leave DB unchanged.
+_SUBSCRIPTION_PRICE_ID_UNSET = object()
 
 
 def _utc_now() -> datetime:
@@ -119,9 +176,16 @@ class BillingStore:
                             paddle_customer_id TEXT,
                             paddle_address_id TEXT,
                             paddle_subscription_id TEXT,
+                            paddle_subscription_price_id TEXT,
                             sub_quota_month TEXT,
                             sub_quota_used INTEGER NOT NULL DEFAULT 0
                         )
+                        """
+                    )
+                    cur.execute(
+                        """
+                        ALTER TABLE billing_entitlements
+                        ADD COLUMN IF NOT EXISTS paddle_subscription_price_id TEXT
                         """
                     )
                     cur.execute(
@@ -251,6 +315,7 @@ class BillingStore:
                         """
                         SELECT user_id, stripe_customer_id, stripe_subscription_id,
                                paddle_customer_id, paddle_address_id, paddle_subscription_id,
+                               paddle_subscription_price_id,
                                access_until, paid_job_credits, free_runs_used, updated_at,
                                sub_quota_month, sub_quota_used
                         FROM billing_entitlements WHERE user_id = %s
@@ -267,7 +332,10 @@ class BillingStore:
             "stripe_subscription_id"
         )
         au = d.get("access_until")
-        cap = subscription_runs_cap()
+        pprice = d.get("paddle_subscription_price_id")
+        cap = subscription_runs_cap_for_price_id(
+            str(pprice).strip() if pprice else None
+        )
         ym = _utc_now().strftime("%Y-%m")
         sm = d.get("sub_quota_month")
         su = int(d.get("sub_quota_used") or 0)
@@ -476,8 +544,15 @@ class BillingStore:
         user_id: str,
         subscription_id: Optional[str],
         access_until_iso: str,
+        *,
+        paddle_price_id: Any = _SUBSCRIPTION_PRICE_ID_UNSET,
     ) -> None:
-        """Paddle subscription period end as RFC 3339 / ISO 8601."""
+        """Paddle subscription period end as RFC 3339 / ISO 8601.
+
+        Pass ``paddle_price_id="pri_…"`` when the subscription payload includes a
+        recurring price id (needed for per-tier monthly caps). If omitted, the
+        stored ``paddle_subscription_price_id`` is unchanged.
+        """
         now = _utc_now_iso()
         self.ensure_row(user_id)
         s = access_until_iso.strip()
@@ -487,6 +562,54 @@ class BillingStore:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         normalized = dt.astimezone(timezone.utc).isoformat()
+        update_price = paddle_price_id is not _SUBSCRIPTION_PRICE_ID_UNSET
+        price_val: Optional[str] = None
+        if update_price:
+            if paddle_price_id is None:
+                price_val = None
+            else:
+                price_val = str(paddle_price_id).strip() or None
+        with self._lock:
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    if update_price:
+                        cur.execute(
+                            """
+                            UPDATE billing_entitlements
+                            SET paddle_subscription_id = COALESCE(%s, paddle_subscription_id),
+                                access_until = %s,
+                                paddle_subscription_price_id = %s,
+                                updated_at = %s
+                            WHERE user_id = %s
+                            """,
+                            (subscription_id, normalized, price_val, now, user_id),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE billing_entitlements
+                            SET paddle_subscription_id = COALESCE(%s, paddle_subscription_id),
+                                access_until = %s,
+                                updated_at = %s
+                            WHERE user_id = %s
+                            """,
+                            (subscription_id, normalized, now, user_id),
+                        )
+                conn.commit()
+
+    def update_paddle_subscription_price_id(
+        self,
+        user_id: str,
+        subscription_id: Optional[str],
+        price_id: str,
+    ) -> None:
+        """When a webhook carries a price id but no billing period end (unusual)."""
+        now = _utc_now_iso()
+        self.ensure_row(user_id)
+        pid = str(price_id).strip()
+        if not pid:
+            return
         with self._lock:
             pool = get_pool()
             with pool.connection() as conn:
@@ -495,11 +618,11 @@ class BillingStore:
                         """
                         UPDATE billing_entitlements
                         SET paddle_subscription_id = COALESCE(%s, paddle_subscription_id),
-                            access_until = %s,
+                            paddle_subscription_price_id = %s,
                             updated_at = %s
                         WHERE user_id = %s
                         """,
-                        (subscription_id, normalized, now, user_id),
+                        (subscription_id, pid, now, user_id),
                     )
                 conn.commit()
 
@@ -675,7 +798,6 @@ class BillingStore:
 
         self.ensure_row(user_id)
         now_iso = _utc_now_iso()
-        cap = subscription_runs_cap()
         ym = _utc_now().strftime("%Y-%m")
 
         with self._lock:
@@ -685,7 +807,8 @@ class BillingStore:
                     cur.execute(
                         """
                         SELECT access_until, paid_job_credits, free_runs_used,
-                               sub_quota_month, sub_quota_used
+                               sub_quota_month, sub_quota_used,
+                               paddle_subscription_price_id
                         FROM billing_entitlements WHERE user_id = %s
                         """,
                         (user_id,),
@@ -699,6 +822,10 @@ class BillingStore:
                     free_used = int(row["free_runs_used"] or 0)
                     sm = row["sub_quota_month"]
                     used = int(row["sub_quota_used"] or 0)
+                    ppi = row.get("paddle_subscription_price_id")
+                    cap = subscription_runs_cap_for_price_id(
+                        str(ppi).strip() if ppi else None
+                    )
 
                     if access_until_active(au):
                         if sm != ym:
